@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_DIR="$ROOT/android-runtime-apk"
-BUILD_DIR="$ROOT/build-android-runtime-apk"
-SDK="${ANDROID_HOME:-/mnt/c/Users/flori/AppData/Local/Android/Sdk}"
-NDK="${ANDROID_NDK_HOME:-$SDK/ndk/27.1.12297006}"
-BUILD_TOOLS="${ANDROID_BUILD_TOOLS:-$SDK/build-tools/36.0.0}"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+APP_DIR="$ROOT/tests/android/android_loader_probe"
+BUILD_DIR="$ROOT/out/android/loader-probe"
+SDK="${ANDROID_HOME:?Set ANDROID_HOME to your Android SDK}"
+NDK="${ANDROID_NDK_HOME:-$SDK/ndk/27.3.13750724}"
+BUILD_TOOLS="${ANDROID_BUILD_TOOLS:-$SDK/build-tools/36.1.0}"
 ANDROID_PLATFORM="${ANDROID_PLATFORM:-android-29}"
 ABI="${ANDROID_ABI:-x86_64}"
 
@@ -35,6 +35,13 @@ cmake -S "$ROOT" -B "$BUILD_DIR/runtime" \
     -DAXRB_BUILD_TESTS=OFF
 cmake --build "$BUILD_DIR/runtime"
 
+cmake -S "$APP_DIR/native" -B "$BUILD_DIR/native" \
+    -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
+    -DANDROID_ABI="$ABI" \
+    -DANDROID_PLATFORM="$ANDROID_PLATFORM" \
+    -DAXRB_ROOT="$ROOT"
+cmake --build "$BUILD_DIR/native"
+
 mkdir -p "$BUILD_DIR/compiled-res" "$BUILD_DIR/gen" "$BUILD_DIR/classes" "$BUILD_DIR/dex" "$BUILD_DIR/package/lib/$ABI"
 
 "$AAPT2" compile --dir "$APP_DIR/res" -o "$BUILD_DIR/compiled-res"
@@ -55,7 +62,8 @@ javac \
 "$D8" --min-api 29 --output "$BUILD_DIR/dex" $(find "$BUILD_DIR/classes" -name '*.class' -print)
 
 cp "$BUILD_DIR/base.apk" "$BUILD_DIR/unsigned.apk"
-cp "$BUILD_DIR/runtime/android-runtime/libopenxr_runtime.so" "$BUILD_DIR/package/lib/$ABI/"
+cp "$BUILD_DIR/runtime/runtime/src/libopenxr_runtime.so" "$BUILD_DIR/package/lib/$ABI/"
+cp "$BUILD_DIR/native/libloader_probe.so" "$BUILD_DIR/package/lib/$ABI/"
 cp "$BUILD_DIR/dex/classes.dex" "$BUILD_DIR/package/"
 
 jar uf "$BUILD_DIR/unsigned.apk" \
@@ -79,9 +87,9 @@ keytool -genkeypair \
     --ks "$KEYSTORE" \
     --ks-pass pass:android \
     --key-pass pass:android \
-    --out "$BUILD_DIR/axrb-openxr-runtime-debug.apk" \
+    --out "$BUILD_DIR/axrb-loader-probe-debug.apk" \
     "$BUILD_DIR/aligned.apk"
 
-"$APKSIGNER" verify "$BUILD_DIR/axrb-openxr-runtime-debug.apk"
+"$APKSIGNER" verify "$BUILD_DIR/axrb-loader-probe-debug.apk"
 
-echo "Built $BUILD_DIR/axrb-openxr-runtime-debug.apk"
+echo "Built $BUILD_DIR/axrb-loader-probe-debug.apk"

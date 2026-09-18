@@ -2,15 +2,13 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-APP_DIR="$ROOT/tests/android_openxr_loader_probe"
-BUILD_DIR="$ROOT/build-android-openxr-loader-probe"
-SDK="${ANDROID_HOME:-/mnt/c/Users/flori/AppData/Local/Android/Sdk}"
-NDK="${ANDROID_NDK_HOME:-$SDK/ndk/27.1.12297006}"
-BUILD_TOOLS="${ANDROID_BUILD_TOOLS:-$SDK/build-tools/36.0.0}"
+APP_DIR="$ROOT/runtime/apk"
+BUILD_DIR="$ROOT/out/android/runtime"
+SDK="${ANDROID_HOME:?Set ANDROID_HOME to your Android SDK}"
+NDK="${ANDROID_NDK_HOME:-$SDK/ndk/27.3.13750724}"
+BUILD_TOOLS="${ANDROID_BUILD_TOOLS:-$SDK/build-tools/36.1.0}"
 ANDROID_PLATFORM="${ANDROID_PLATFORM:-android-29}"
 ABI="${ANDROID_ABI:-x86_64}"
-OPENXR_AAR="$ROOT/third_party/openxr-loader-aar/openxr_loader_for_android-1.1.60.aar"
-OPENXR_AAR_DIR="$ROOT/third_party/openxr-loader-aar"
 
 AAPT2="$BUILD_TOOLS/aapt2"
 D8="$BUILD_TOOLS/d8"
@@ -19,29 +17,22 @@ APKSIGNER="$BUILD_TOOLS/apksigner"
 ANDROID_JAR="$SDK/platforms/$ANDROID_PLATFORM/android.jar"
 TOOLCHAIN="$NDK/build/cmake/android.toolchain.cmake"
 
-for required in "$AAPT2" "$D8" "$ZIPALIGN" "$APKSIGNER" "$ANDROID_JAR" "$TOOLCHAIN" "$OPENXR_AAR"; do
+for required in "$AAPT2" "$D8" "$ZIPALIGN" "$APKSIGNER" "$ANDROID_JAR" "$TOOLCHAIN"; do
     if [[ ! -e "$required" ]]; then
-        echo "Missing required Android tool or OpenXR AAR: $required" >&2
+        echo "Missing required Android tool: $required" >&2
         exit 1
     fi
 done
 
-rm -rf "$BUILD_DIR"
-mkdir -p "$BUILD_DIR" "$OPENXR_AAR_DIR/extracted"
+mkdir -p "$BUILD_DIR"
 
-(
-    cd "$OPENXR_AAR_DIR/extracted"
-    unzip -q -o "$OPENXR_AAR" \
-        "jni/$ABI/libopenxr_loader.so" \
-        "prefab/modules/headers/include/*"
-)
-
-cmake -S "$APP_DIR/native" -B "$BUILD_DIR/native" \
+cmake -S "$ROOT" -B "$BUILD_DIR/runtime" \
     -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
     -DANDROID_ABI="$ABI" \
     -DANDROID_PLATFORM="$ANDROID_PLATFORM" \
-    -DOPENXR_AAR_DIR="$OPENXR_AAR_DIR"
-cmake --build "$BUILD_DIR/native"
+    -DAXRB_BUILD_HOST_BRIDGE=OFF \
+    -DAXRB_BUILD_TESTS=OFF
+cmake --build "$BUILD_DIR/runtime"
 
 mkdir -p "$BUILD_DIR/compiled-res" "$BUILD_DIR/gen" "$BUILD_DIR/classes" "$BUILD_DIR/dex" "$BUILD_DIR/package/lib/$ABI"
 
@@ -63,8 +54,7 @@ javac \
 "$D8" --min-api 29 --output "$BUILD_DIR/dex" $(find "$BUILD_DIR/classes" -name '*.class' -print)
 
 cp "$BUILD_DIR/base.apk" "$BUILD_DIR/unsigned.apk"
-cp "$BUILD_DIR/native/libopenxr_loader_probe.so" "$BUILD_DIR/package/lib/$ABI/"
-cp "$OPENXR_AAR_DIR/extracted/jni/$ABI/libopenxr_loader.so" "$BUILD_DIR/package/lib/$ABI/"
+cp "$BUILD_DIR/runtime/runtime/src/libopenxr_runtime.so" "$BUILD_DIR/package/lib/$ABI/"
 cp "$BUILD_DIR/dex/classes.dex" "$BUILD_DIR/package/"
 
 jar uf "$BUILD_DIR/unsigned.apk" \
@@ -73,7 +63,9 @@ jar uf "$BUILD_DIR/unsigned.apk" \
 
 "$ZIPALIGN" -f -p 4 "$BUILD_DIR/unsigned.apk" "$BUILD_DIR/aligned.apk"
 
-KEYSTORE="$BUILD_DIR/debug.keystore"
+KEYSTORE="$ROOT/.local/keys/runtime.keystore"
+mkdir -p "$(dirname "$KEYSTORE")"
+if [[ ! -f "$KEYSTORE" ]]; then
 keytool -genkeypair \
     -keystore "$KEYSTORE" \
     -storepass android \
@@ -83,14 +75,15 @@ keytool -genkeypair \
     -keysize 2048 \
     -validity 10000 \
     -dname "CN=Android Debug,O=Android,C=US" >/dev/null
+fi
 
 "$APKSIGNER" sign \
     --ks "$KEYSTORE" \
     --ks-pass pass:android \
     --key-pass pass:android \
-    --out "$BUILD_DIR/axrb-openxr-loader-probe-debug.apk" \
+    --out "$BUILD_DIR/axrb-openxr-runtime-debug.apk" \
     "$BUILD_DIR/aligned.apk"
 
-"$APKSIGNER" verify "$BUILD_DIR/axrb-openxr-loader-probe-debug.apk"
+"$APKSIGNER" verify "$BUILD_DIR/axrb-openxr-runtime-debug.apk"
 
-echo "Built $BUILD_DIR/axrb-openxr-loader-probe-debug.apk"
+echo "Built $BUILD_DIR/axrb-openxr-runtime-debug.apk"

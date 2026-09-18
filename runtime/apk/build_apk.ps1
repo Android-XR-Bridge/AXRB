@@ -6,14 +6,15 @@ param(
     [ValidateSet('x86_64', 'arm64-v8a')][string]$Abi = 'x86_64'
 )
 $ErrorActionPreference = 'Stop'
-$root = Split-Path $PSScriptRoot -Parent
-$build = Join-Path $root "build-android-runtime-windows-$Abi"
+. "$PSScriptRoot/../../scripts/paths.ps1"
+$root = $AxrbRoot
+$build = Join-Path $AxrbOut "android/runtime-$Abi"
 $bt = Join-Path $Sdk "build-tools\$BuildToolsVersion"
 $androidJar = Join-Path $Sdk 'platforms\android-29\android.jar'
 $toolchain = Join-Path $Sdk "ndk\$NdkVersion\build\cmake\android.toolchain.cmake"
 $ninja = Join-Path $Sdk 'cmake\3.22.1\bin\ninja.exe'
 # ABI variants replace the same package and must use the same signing identity.
-$keystore = Join-Path $root 'build-android-runtime-windows-x86_64\debug.keystore'
+$keystore = Join-Path $root '.local\keys\runtime.keystore'
 function Run([string]$Exe, [string[]]$Arguments) {
     & $Exe @Arguments
     if ($LASTEXITCODE -ne 0) { throw "$Exe failed ($LASTEXITCODE)" }
@@ -37,7 +38,7 @@ try {
     $classes = @(Get-ChildItem "$build\classes" -Recurse -Filter *.class | ForEach-Object FullName)
     Run "$bt\d8.bat" (@('--min-api', '29', '--output', "$build\dex") + $classes)
     Copy-Item "$build\base.apk" "$build\unsigned.apk" -Force
-    Copy-Item "$build\runtime\android-runtime\libopenxr_runtime.so" "$build\package\lib\$Abi" -Force
+    Copy-Item "$build\runtime\runtime\src\libopenxr_runtime.so" "$build\package\lib\$Abi" -Force
     Copy-Item "$build\dex\classes.dex" "$build\package" -Force
     Run "$Jdk\bin\jar.exe" @('uf', "$build\unsigned.apk", '-C', "$build\package", 'classes.dex', '-C', "$build\package", 'lib')
     Run "$bt\zipalign.exe" @('-f', '-p', '4', "$build\unsigned.apk", "$build\aligned.apk")

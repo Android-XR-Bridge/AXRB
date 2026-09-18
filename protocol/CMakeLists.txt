@@ -2,9 +2,7 @@ add_library(axrb_protocol STATIC
   gpu_transport.cpp
   image_transport.cpp
   transport_tcp.cpp
-  transport_shm.cpp
   video_transport.cpp
-  clock_sync.cpp
 )
 
 target_include_directories(axrb_protocol

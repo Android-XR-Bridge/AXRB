@@ -1,4 +1,4 @@
-param([string]$BuildDirectory = "$PSScriptRoot\..\..\build-windows-gpu-layer")
+param([string]$BuildDirectory = "$PSScriptRoot\..\..\out/gpu")
 $ErrorActionPreference = 'Stop'
 cmake -S $PSScriptRoot -B $BuildDirectory -A x64 -DAXRB_VULKAN_HEADERS=
 if ($LASTEXITCODE) { throw 'GPU layer configuration failed.' }

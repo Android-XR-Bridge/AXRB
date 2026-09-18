@@ -5,6 +5,8 @@ project(android_xr_bridge LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(AXRB_BUILD_ANDROID_RUNTIME "Build Android OpenXR runtime shim" ON)
 option(AXRB_BUILD_HOST_BRIDGE "Build host bridge service" ON)
@@ -13,11 +15,11 @@ option(AXRB_BUILD_TESTS "Build native tests" ON)
 add_subdirectory(protocol)
 
 if(AXRB_BUILD_ANDROID_RUNTIME)
-  add_subdirectory(android-runtime)
+  add_subdirectory(runtime/src)
 endif()
 
 if(AXRB_BUILD_HOST_BRIDGE)
-  add_subdirectory(host-bridge)
+  add_subdirectory(host/src)
 endif()
 
 if(AXRB_BUILD_TESTS)

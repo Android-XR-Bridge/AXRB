@@ -10,7 +10,7 @@ add_library(loader_probe SHARED loader_probe.cpp)
 
 target_include_directories(loader_probe
   PRIVATE
-    ${AXRB_ROOT}/android-runtime
+    ${AXRB_ROOT}/runtime/src
 )
 
 target_link_libraries(loader_probe

@@ -1,14 +1,19 @@
 param(
     [string]$Sdk = "$env:LOCALAPPDATA\Android\Sdk",
     [string]$Jdk = "$env:ProgramFiles\Android\Android Studio\jbr",
-    [string]$Source = "$PSScriptRoot\..\..\third_party\OpenXR-SDK-Source",
+    [string]$Source = "$PSScriptRoot\..\..\..\third_party\OpenXR-SDK-Source",
     [ValidateSet('x86_64', 'arm64-v8a')][string]$Abi = 'x86_64',
     [ValidateSet('OpenGLES', 'Vulkan')][string]$Graphics = 'OpenGLES'
 )
 $ErrorActionPreference = 'Stop'
-$root = (Resolve-Path "$PSScriptRoot\..\..").Path
+$root = (Resolve-Path "$PSScriptRoot\..\..\..").Path
+if (!(Test-Path -LiteralPath $Source)) {
+    New-Item -ItemType Directory -Force (Split-Path $Source -Parent) | Out-Null
+    & git clone --depth 1 --branch release-1.1.60 https://github.com/KhronosGroup/OpenXR-SDK-Source.git $Source
+    if ($LASTEXITCODE -ne 0) { throw 'OpenXR sample source download failed.' }
+}
 $Source = (Resolve-Path $Source).Path
-$build = "$root\build-hello-xr-windows"
+$build = "$root\out/android/hello-xr"
 if ($Abi -ne 'x86_64') { $build += "-$Abi" }
 if ($Graphics -eq 'Vulkan') { $build += '-vulkan' }
 $bt = "$Sdk\build-tools\36.1.0"
@@ -44,7 +49,7 @@ Run "$bt\zipalign.exe" @('-f', '-p', '4', "$build\sample.apk", "$build\aligned.a
 $oldJavaHome = $env:JAVA_HOME
 try {
     $env:JAVA_HOME = $Jdk
-    Run "$bt\apksigner.bat" @('sign', '--ks', "$root\build-android-runtime-windows-x86_64\debug.keystore", '--ks-pass', 'pass:android', '--out', "$build\hello-xr-emulator.apk", "$build\aligned.apk")
+    Run "$bt\apksigner.bat" @('sign', '--ks', "$root\.local\keys\runtime.keystore", '--ks-pass', 'pass:android', '--out', "$build\hello-xr-emulator.apk", "$build\aligned.apk")
     Run "$bt\apksigner.bat" @('verify', "$build\hello-xr-emulator.apk")
 } finally { $env:JAVA_HOME = $oldJavaHome }
 Write-Host "Built $build\hello-xr-emulator.apk"
