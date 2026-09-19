@@ -103,19 +103,19 @@ try {
     if ($UnrealMemoryPolicy -eq 'Off') { $policyArgs += '--restore' }
     $policyJson = & python @policyArgs
     if ($LASTEXITCODE -ne 0) { throw 'Unreal memory policy failed. The game was not started.' }
-    Write-Host "Unreal memory policy: $policyJson"
+    Write-Output "Unreal memory policy: $policyJson"
     # Compatibility must be supplied by AXRB/Android, never by rewriting installed
     # application libraries. Keep the guest-wide mapping policy independent.
     $runtimePolicy = & python "$PSScriptRoot\..\emulator\android_runtime_policy.py" --sdk $Sdk --serial $serial --package $Package --storage-read-ahead-kib $StorageReadAheadKB
     if ($LASTEXITCODE -ne 0) { throw 'Android runtime policy failed. The game was not started.' }
-    Write-Host "Android runtime policy: $runtimePolicy"
+    Write-Output "Android runtime policy: $runtimePolicy"
     $appMetadataDir = Join-Path $logs "apps\$Package"
     $labelJson = & python "$PSScriptRoot\android_app_label.py" --sdk $Sdk --serial $serial --package $Package --icon-output "$appMetadataDir\icon.png"
     if ($LASTEXITCODE -ne 0) { throw 'Could not read the installed APK metadata.' }
     $appMetadata = $labelJson | ConvertFrom-Json
     if ([string]::IsNullOrWhiteSpace($GameName)) {
         $GameName = $appMetadata.label
-        Write-Host "APK display name: $GameName"
+        Write-Output "APK display name: $GameName"
     }
     $steamManifest = Join-Path $appMetadataDir 'app.vrmanifest'
     $steamIdentity = $false
@@ -127,8 +127,8 @@ try {
         if ($appMetadata.icon) { $identityArgs += @('--icon', $appMetadata.icon) }
         $identityResult = & python @identityArgs
         $steamIdentity = $LASTEXITCODE -eq 0
-        if ($steamIdentity) { Write-Host "SteamVR metadata: $identityResult" }
-        else { Write-Warning 'SteamVR metadata registration failed; using the OpenXR application name.' }
+        if ($steamIdentity) { Write-Output "SteamVR metadata: $identityResult" }
+        else { Write-Output 'Warning: SteamVR metadata registration failed; using the OpenXR application name.' }
     }
     # Quote one Windows command-line argument, including embedded quotes and
     # trailing backslashes in APK labels. Never interpret the label as code.
@@ -151,13 +151,13 @@ try {
     if ($bridgeProcess.HasExited) { throw 'Host failed to start. See out/logs/game/host.err.' }
     if ($steamIdentity) {
         $identityResult = & python "$PSScriptRoot\steamvr_app_identity.py" --manifest $steamManifest --package $Package --pid $bridgeProcess.Id
-        if ($LASTEXITCODE -eq 0) { Write-Host "SteamVR identity: $identityResult" }
-        else { Write-Warning 'SteamVR process identification failed; using the OpenXR application name.' }
+        if ($LASTEXITCODE -eq 0) { Write-Output "SteamVR identity: $identityResult" }
+        else { Write-Output 'Warning: SteamVR process identification failed; using the OpenXR application name.' }
     }
     $launch = Invoke-Adb @('shell', 'am', 'start', '-W', '-n', $Activity) 60000
     if ($launch.Code -ne 0 -or $launch.Text -match 'Error:') { throw "Game launch failed: $($launch.Text) $($launch.Error)" }
     $gameStarted = $true
-    Write-Host "$GameName | AXRB is running. Closing its window stops this game session."
+    Write-Output "$GameName | AXRB is running. Closing its window stops this game session."
     $missing = 0
     while (!$bridgeProcess.HasExited) {
         if ($closeRequest.WaitOne(0)) { break }
@@ -176,8 +176,8 @@ try {
             Start-Sleep -Seconds 2
             $flush = Invoke-Adb @('shell', 'sync')
             if ($flush.Code -ne 0) { throw "Android sync failed: $($flush.Error)" }
-            Write-Host 'Android activity backgrounded and filesystem flushed before shutdown.'
-        } catch { Write-Warning "Save/pause did not complete: $_" }
+            Write-Output 'Android activity backgrounded and filesystem flushed before shutdown.'
+        } catch { Write-Output "Warning: save/pause did not complete: $_" }
     }
     if ($closeReady) { $null = $closeReady.Set() }
     if ($bridgeProcess -and !$bridgeProcess.HasExited) {
@@ -188,13 +188,13 @@ try {
     if ($ownsEmulator) {
         # North Star's force-stop can crash Gfxstream. A session-owned emulator
         # is shut down as a whole, which also terminates the Android game.
-        try { $null = Invoke-Adb @('shell', 'sync'); $null = Invoke-Adb @('emu', 'kill') } catch { Write-Warning $_ }
+        try { $null = Invoke-Adb @('shell', 'sync'); $null = Invoke-Adb @('emu', 'kill') } catch { Write-Output "Warning: $_" }
     } elseif ($gameStarted) {
-        try { $null = Invoke-Adb @('shell', 'am', 'force-stop', $Package) } catch { Write-Warning $_ }
+        try { $null = Invoke-Adb @('shell', 'am', 'force-stop', $Package) } catch { Write-Output "Warning: $_" }
     }
     if ($bridgeProcess) { $bridgeProcess.Dispose() }
     if ($closeRequest) { $closeRequest.Dispose() }
     if ($closeReady) { $closeReady.Dispose() }
     if ($fpsHudEvent) { $fpsHudEvent.Dispose() }
-    Write-Host 'AXRB game session stopped.'
+    Write-Output 'AXRB game session stopped.'
 }

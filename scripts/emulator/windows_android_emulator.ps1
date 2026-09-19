@@ -36,25 +36,35 @@ function Run([string]$Exe, [string[]]$Arguments) {
     & $Exe @Arguments
     if ($LASTEXITCODE -ne 0) { throw "$Exe failed ($LASTEXITCODE)" }
 }
+# Drive the child process directly. Windows PowerShell's Start-Process -PassThru
+# returns a process whose ExitCode always reads back as $null, so an exit-code
+# check against it treats every successful command as a failure.
 function Invoke-ExternalWithTimeout([string]$Exe, [string[]]$Arguments, [int]$TimeoutSeconds = 30) {
-    $token = [guid]::NewGuid().ToString('N')
-    $stdout = Join-Path $env:TEMP "axrb-$token.out"
-    $stderr = Join-Path $env:TEMP "axrb-$token.err"
-    $quoted = $Arguments | ForEach-Object { '"' + ([string]$_).Replace('"', '\"') + '"' }
+    $info = New-Object System.Diagnostics.ProcessStartInfo
+    $info.FileName = $Exe
+    $info.Arguments = (($Arguments | ForEach-Object { '"' + ([string]$_).Replace('"', '\"') + '"' }) -join ' ')
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $process = [System.Diagnostics.Process]::Start($info)
+    if ($null -eq $process) { throw "Could not start $Exe." }
     try {
-        $process = Start-Process -FilePath $Exe -ArgumentList ($quoted -join ' ') -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-        if ($null -eq $process) { throw "Could not start $Exe." }
+        # Drain both pipes before waiting; a full pipe would block the child.
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
         if (!$process.WaitForExit($TimeoutSeconds * 1000)) {
-            $process.Kill(); $process.WaitForExit(5000)
+            try { $process.Kill() } catch { }
+            $process.WaitForExit(5000)
             throw "$Exe timed out after $TimeoutSeconds seconds."
         }
-        $output = if (Test-Path -LiteralPath $stdout) { Get-Content -LiteralPath $stdout -Raw -ErrorAction SilentlyContinue } else { '' }
-        $error = if (Test-Path -LiteralPath $stderr) { Get-Content -LiteralPath $stderr -Raw -ErrorAction SilentlyContinue } else { '' }
-        if ($process.ExitCode -ne 0) { throw (($error + $output).Trim() + " (exit $($process.ExitCode))") }
-        return $output
-    } finally {
-        Remove-Item -LiteralPath $stdout, $stderr -Force -ErrorAction SilentlyContinue
-    }
+        [string]$output = $stdout.Result
+        [string]$failure = $stderr.Result
+        if ($process.ExitCode -ne 0) { throw (($failure + $output).Trim() + " (exit $($process.ExitCode))") }
+        # Callers expect the per-line form that `& adb` produces, so line-anchored
+        # matches and -join keep working on the result.
+        return [string[]]@($output.TrimEnd("`r`n") -split '\r?\n')
+    } finally { $process.Dispose() }
 }
 function Stop-StaleManagedEmulator {
     # PowerShell/CIM reports quoted command-line arguments for some launches;
@@ -82,12 +92,12 @@ function Verify-Gpu {
     New-Item -ItemType Directory -Force $logs | Out-Null
     $gles | Set-Content "$logs\guest-gles.txt"
     $raw | Set-Content "$logs\guest-vulkan.json"
-    Write-Host $gles
-    $devices | ForEach-Object { Write-Host "Vulkan: $($_.properties.deviceName) (vendor $($_.properties.vendorID), type $($_.properties.deviceType))" }
+    Write-Output $gles
+    $devices | ForEach-Object { Write-Output "Vulkan: $($_.properties.deviceName) (vendor $($_.properties.vendorID), type $($_.properties.deviceType))" }
 }
 function Verify-Abi {
     Write-Output 'Android startup diagnostic: checking guest ABI.'
-    [string]$abis = (Invoke-ExternalWithTimeout $adb @('-s', $serial, 'shell', 'getprop', 'ro.product.cpu.abilist') -join '')
+    [string]$abis = ((Invoke-ExternalWithTimeout $adb @('-s', $serial, 'shell', 'getprop', 'ro.product.cpu.abilist') 30) -join '')
     if ($Abi -notin $abis.Trim().Split(',')) {
         throw "Guest does not support requested ABI $Abi (advertised: $abis)."
     }
@@ -97,7 +107,7 @@ function Verify-Abi {
         if ($LASTEXITCODE -ne 0 -or !$bridge -or $bridge -eq '0') {
             throw 'ARM64 on this x86_64 AVD requires an enabled native bridge.'
         }
-        Write-Host "ARM64 native bridge: $bridge; guest ABIs: $abis"
+        Write-Output "ARM64 native bridge: $bridge; guest ABIs: $abis"
     }
 }
 switch ($Action) {
@@ -121,7 +131,7 @@ switch ($Action) {
         $drive = [IO.Path]::GetPathRoot($(if ($env:ANDROID_AVD_HOME) { $env:ANDROID_AVD_HOME } else { $Sdk }))
         if ($drive) {
             $freeGB = (Get-PSDrive -Name $drive.TrimEnd(':\') -ErrorAction SilentlyContinue).Free / 1GB
-            if ($freeGB -and $freeGB -lt 8) { Write-Warning ("Android startup diagnostic: only {0:N1} GB is free on {1}." -f $freeGB, $drive) }
+            if ($freeGB -and $freeGB -lt 8) { Write-Output ("Android startup diagnostic: warning: only {0:N1} GB is free on {1}." -f $freeGB, $drive) }
         }
         # Start the isolated local server explicitly.  Supplying only
         # ANDROID_ADB_SERVER_PORT keeps this a local daemon; setting
@@ -131,7 +141,7 @@ switch ($Action) {
         $devices = Invoke-ExternalWithTimeout $adb @('devices') 15
         $existingState = ''
         if ($devices -match "^$serial\s") {
-            try { $existingState = [string](Invoke-ExternalWithTimeout $adb @('-s', $serial, 'get-state') 10); $existingState = $existingState.Trim() } catch { }
+            try { $existingState = [string]((Invoke-ExternalWithTimeout $adb @('-s', $serial, 'get-state') 10) -join ''); $existingState = $existingState.Trim() } catch { }
             if ($existingState -eq 'device') { throw "$serial is already running; use Verify or Stop first." }
             Write-Output "Android startup diagnostic: $serial is offline; cleaning up its stale managed emulator."
         }
@@ -182,6 +192,9 @@ switch ($Action) {
         if ($GuestClock -eq 'TscCorrected') {
             $qemu = Join-Path $Sdk 'emulator/qemu/windows-x86_64/qemu-system-x86_64-headless.exe'
             $knownHash = 'DCEC1CC23AC57FF04EC748CDE7E42BFC713BF2AD532E49606A4A9332CFB94B56'
+            Require-Path $qemu 'headless QEMU binary for clock correction'
+            Require-Path "$AxrbClockDirectory/axrb_clock_launcher.exe" 'AXRB clock launcher'
+            Require-Path "$AxrbClockDirectory/axrb_whpx_clock.dll" 'AXRB clock adapter'
             if ((Get-FileHash -LiteralPath $qemu -Algorithm SHA256).Hash -ne $knownHash) {
                 throw 'Clock correction is tested only with emulator 36.5.11 build 15261927. Use -GuestClock Default for other builds.'
             }
@@ -201,6 +214,10 @@ switch ($Action) {
                 $env:VK_INSTANCE_LAYERS = 'VK_LAYER_AXRB_gpu_share'
             }
             $process = Start-Process $launchExe -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardOutput "$logs\emulator.stdout.log" -RedirectStandardError "$logs\emulator.stderr.log"
+            if ($null -eq $process) { throw "Could not start $launchExe." }
+            # Caching the handle while the process is alive is what keeps
+            # ExitCode readable later; without it the property reads back $null.
+            $null = $process.Handle
         } finally {
             $env:VK_LAYER_PATH = $oldLayerPath
             $env:VK_INSTANCE_LAYERS = $oldLayers
@@ -217,22 +234,23 @@ switch ($Action) {
         # several minutes unpacking and registering APEX modules on first use.
         $bootTimeoutMinutes = if ($GuestClock -eq 'TscCorrected') { 15 } else { 8 }
         $deadline = $startedAt.AddMinutes($bootTimeoutMinutes)
+        $booted = $false
         do {
             Start-Sleep -Seconds 2
             $ErrorActionPreference = 'Continue'
             # ADB commonly reports `offline` while adbd is starting. Treat
             # that as a retryable state instead of aborting the whole launch.
-            $boot = ''
-            try { $boot = Invoke-ExternalWithTimeout $adb @('-s', $serial, 'shell', 'getprop', 'sys.boot_completed') 10 } catch { $boot = '' }
+            [string]$bootText = ''
+            try { $bootText = (Invoke-ExternalWithTimeout $adb @('-s', $serial, 'shell', 'getprop', 'sys.boot_completed') 10) -join '' } catch { $bootText = '' }
             $ErrorActionPreference = 'Stop'
-            if ($boot -eq '1') { break }
+            $bootText = $bootText.Trim()
+            if ($bootText -eq '1') { $booted = $true; break }
             if (((Get-Date) - $lastDiagnostic).TotalSeconds -ge 30) {
                 $adbState = 'offline'
                 try { $adbState = (Invoke-ExternalWithTimeout $adb @('-s', $serial, 'get-state') 10) -join '' } catch { }
                 [string]$adbText = $adbState
                 $adbText = $adbText.Trim(); if (!$adbText) { $adbText = 'offline' }
-                $bootText = [string]($boot -join '')
-                Write-Output ("Android startup diagnostic: {0}s elapsed; adb={1}; boot={2}; processExited={3}" -f [int]((Get-Date) - $startedAt).TotalSeconds, $adbText, $bootText.Trim(), $process.HasExited)
+                Write-Output ("Android startup diagnostic: {0}s elapsed; adb={1}; boot={2}; processExited={3}" -f [int]((Get-Date) - $startedAt).TotalSeconds, $adbText, $bootText, $process.HasExited)
                 if ($adbText -eq 'offline') {
                     if (!$adbReconnectAttempted) {
                         Write-Output 'Android startup diagnostic: reconnecting offline ADB transport.'
@@ -254,28 +272,28 @@ switch ($Action) {
                 throw "Emulator exited ($exitCode). Recent emulator output: $detail Logs: $logs\emulator.stdout.log and $logs\emulator.stderr.log"
             }
         } while ((Get-Date) -lt $deadline)
-        if ($boot -ne '1') { throw "Android did not finish booting within $bootTimeoutMinutes minutes. Last emulator output: $(Read-LogTail) Logs: $logs\emulator.stdout.log and $logs\emulator.stderr.log" }
+        if (!$booted) { throw "Android did not finish booting within $bootTimeoutMinutes minutes. Last emulator output: $(Read-LogTail) Logs: $logs\emulator.stdout.log and $logs\emulator.stderr.log" }
         try { Verify-Gpu; Verify-Abi; Write-Output 'Android startup diagnostic: guest verification complete.' } catch {
             & $adb -s $serial emu kill | Out-Null
             throw
         }
         if ($GuestClock -ne 'Default') {
             [string]$clock = (& $adb -s $serial shell su 0 cat /sys/devices/system/clocksource/clocksource0/current_clocksource) -join ''
-            if ($clock.Trim() -eq 'tsc') { Write-Host 'Guest clock: TSC (accepted by Linux stability checks).' }
-            else { Write-Warning "Guest retained '$($clock.Trim())'; the requested TSC optimization is not active. Stability checks were not overridden." }
+            if ($clock.Trim() -eq 'tsc') { Write-Output 'Guest clock: TSC (accepted by Linux stability checks).' }
+            else { Write-Output "Android startup diagnostic: warning: guest retained '$($clock.Trim())'; the requested TSC optimization is not active. Stability checks were not overridden." }
         }
-        Run $adb @('-s', $serial, 'reverse', 'tcp:38490', 'tcp:38490')
-        Run $adb @('-s', $serial, 'reverse', 'tcp:38491', 'tcp:38491')
-        Run $adb @('-s', $serial, 'shell', 'setprop', 'debug.axrb.gpu_share', $(if ($GpuSharing) { '1' } else { '0' }))
-        Write-Host "Ready: $serial. Images use adb reverse :38491; native pose stream uses 10.0.2.2:38490."
+        Run $adb @('-s', $serial, 'reverse', 'tcp:38490', 'tcp:38490') | Out-Null
+        Run $adb @('-s', $serial, 'reverse', 'tcp:38491', 'tcp:38491') | Out-Null
+        Run $adb @('-s', $serial, 'shell', 'setprop', 'debug.axrb.gpu_share', $(if ($GpuSharing) { '1' } else { '0' })) | Out-Null
+        Write-Output "Ready: $serial. Images use adb reverse :38491; native pose stream uses 10.0.2.2:38490."
     }
     Verify { Verify-Gpu; Verify-Abi }
     Install {
         Verify-Gpu
         Verify-Abi
         Run $adb @('-s', $serial, 'install', '--no-incremental', '--force-queryable', '-r', $RuntimeApk)
-        Run $adb @('-s', $serial, 'reverse', 'tcp:38490', 'tcp:38490')
-        Run $adb @('-s', $serial, 'reverse', 'tcp:38491', 'tcp:38491')
+        Run $adb @('-s', $serial, 'reverse', 'tcp:38490', 'tcp:38490') | Out-Null
+        Run $adb @('-s', $serial, 'reverse', 'tcp:38491', 'tcp:38491') | Out-Null
         if ($AppApk) { Run $adb @('-s', $serial, 'install', '--no-incremental', '-r', $AppApk) }
     }
     Stop { Run $adb @('-s', $serial, 'emu', 'kill') }
