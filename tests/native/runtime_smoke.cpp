@@ -772,8 +772,7 @@ int main()
     projectionViews[1].subImage = projectionViews[0].subImage;
     // Projections retain their own cameras and may appear after any layer type.
     XrCompositionLayerProjection overlay = projection;
-    overlay.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT |
-                         XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT;
+    overlay.layerFlags = 6; // Source alpha with unpremultiplied color.
     std::array<XrCompositionLayerProjectionView, 2> overlayViews{projectionViews[0], projectionViews[1]};
     overlayViews[0].fov = {-0.5f, 0.6f, 0.4f, -0.3f};
     overlayViews[1].fov = {-0.6f, 0.5f, 0.3f, -0.4f};
