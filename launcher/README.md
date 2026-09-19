@@ -99,7 +99,7 @@ Source components are in `ui/`, with shared shadcn components in `ui/components/
   with original filenames. Transfers can be cancelled/retried, incomplete files
   stay `.part`, resume requires an ETag, and completed files receive a local
   SHA-256 for verification before installation. The download folder is selectable.
-- **Game actions (⋯):** Versions, add-ons, patching, content imports and installation
+- **Game actions (â‹¯):** Versions, add-ons, patching, content imports and installation
   updates are in the game's menu. Runtime settings are collapsed under Settings.
 - **Add-ons:** Ownership must be returned by Meta before a separate DLC download
   is enabled. Some DLC is only an entitlement to content inside the base game,
@@ -108,9 +108,10 @@ Source components are in `ui/`, with shared shadcn components in `ui/components/
 - **Local games:** Import an APK (including already-patched APKs) and optional
   expansion files. Originals are referenced in place, not deleted or modified.
 - **Patch:** Optionally configure the ovrport **CLI** `.exe` or `.jar` in Settings
-  (the JAR requires Java). It writes a separate `-axrb.apk`; installation remains
-  a separate explicit action. General patching does not guarantee every game's
-  compatibility with AXRB.
+  (the JAR requires Java), then save Settings. Patching writes a separate
+  `axrb-patched/<input-name>-axrb.apk`; installation remains a separate explicit
+  action. For an already-installed game, choose **Update installation** after
+  patching. General patching does not guarantee every game's compatibility with AXRB.
 - **Install:** Uses `adb install -r`, preserving app data. Signature conflicts
   report an error; the launcher does not uninstall the existing app. Assets are
   pushed into `/sdcard/Android/obb/<package>/`. After downloading more content,

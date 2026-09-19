@@ -307,8 +307,9 @@ handler('patch', id => exclusive(async () => {
   const game = getGame(id), cli = state.data.settings.ovrportCli;
   if (!cli || !await exists(cli)) throw new Error('Choose the ovrport CLI executable or JAR in Settings first.');
   if (!game.apk) throw new Error('Download or import the APK first.');
-  const output = path.join(path.dirname(game.apk), `${path.basename(game.apk, '.apk')}-axrb.apk`);
-  const args = ['patch', `--input=${game.apk}`, `--output=${output}`];
+  const outputDirectory = path.join(path.dirname(game.apk), 'axrb-patched');
+  const output = path.join(outputDirectory, `${path.basename(game.apk, path.extname(game.apk))}-axrb.apk`);
+  const args = ['patch', `--input=${game.apk}`, `--output=${outputDirectory}`, '--output-name={filename}-axrb.apk'];
   await run(cli.endsWith('.jar') ? 'java' : cli, cli.endsWith('.jar') ? ['-jar', cli, ...args] : args, { timeout: 20 * 60 * 1000 });
   const metadata = await runtime.inspect(output);
   if (metadata.package !== game.package) throw new Error('Patched APK changed its package name; import it separately.');
