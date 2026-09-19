@@ -27,8 +27,46 @@ without a signing certificate, the installer is unsigned.
 
 ## Develop
 
-Requires Node.js 24+, Python, and the project's existing Android SDK/Windows AXRB
-setup. From the project root:
+Requires Windows x64, Visual Studio 2022 Build Tools with **Desktop development
+with C++** and a Windows SDK, CMake 3.22+, Node.js 24+, Python, and JDK 17+.
+The installed launcher bundles AXRB's native files; a source checkout must build
+them before first-run Android setup can boot the emulator.
+
+From the project root, install the development SDK and build the native files:
+
+```powershell
+# Read https://developer.android.com/studio/terms before accepting.
+powershell -ExecutionPolicy Bypass -File scripts/build/android_sdk.ps1 -AcceptLicense
+powershell -ExecutionPolicy Bypass -File scripts/build/windows.ps1
+powershell -ExecutionPolicy Bypass -File runtime/apk/build_apk.ps1 -Abi arm64-v8a
+python scripts/build/runtime_adapters.py
+```
+
+SDK setup installs the pinned NDK, API 29, build-tools and Android CMake under
+`%LOCALAPPDATA%\Android\Sdk`. It uses `JAVA_HOME` or `javac.exe` on `PATH`; `-Jdk`
+can select another JDK. It requires explicit license consent and does not install
+the emulator or replace the launcher's separate managed Android SDK.
+At launch, development adapters use `ANDROID_NDK_HOME` when set; otherwise they
+look in the selected SDK, `ANDROID_HOME`, `ANDROID_SDK_ROOT`, then the standard
+development SDK above. The managed emulator SDK does not need its own NDK.
+An invalid explicit `ANDROID_NDK_HOME` is reported rather than silently ignored.
+Packaged installations continue to use their checksum-verified bundled adapters.
+Native outputs go under `out/`; keep these generated files out of commits.
+
+For a Windows GPU-layer-only rebuild:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File host/gpu/build.ps1
+ctest --test-dir out/gpu -C Release --output-on-failure
+```
+
+The GPU build selects Visual Studio explicitly, even if CMake defaults to Ninja.
+It normally uses Vulkan headers from the development NDK. `-VulkanHeaders`
+accepts a headers directory containing `vulkan/` and `vk_video/` when using a
+separate Khronos headers checkout; `-Generator` selects another Visual Studio
+version.
+
+After the native build, start the launcher:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/run/run_launcher.ps1

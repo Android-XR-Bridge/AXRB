@@ -7,7 +7,7 @@ import subprocess
 import shlex
 from storage_policy import apply_storage_policy
 from audio_policy import apply_audio_policy
-from distribution import bundled_library
+from distribution import bundled_library, ndk_compiler
 
 
 def ensure_adb_root(run):
@@ -65,10 +65,8 @@ def main():
     if not bundled:
         output.parent.mkdir(parents=True, exist_ok=True)
     if not bundled and (not output.exists() or output.stat().st_mtime < max(source.stat().st_mtime, header.stat().st_mtime)):
-        compilers = sorted((args.sdk / 'ndk').glob('*/toolchains/llvm/prebuilt/windows-x86_64/bin/x86_64-linux-android29-clang++.cmd'),
-                           key=lambda p: tuple(int(n) for n in p.parents[5].name.split('.')))
-        if not compilers: raise RuntimeError('Android NDK required for the runtime Vulkan layer')
-        subprocess.run([str(compilers[-1]), '-std=c++17', '-shared', '-fPIC', '-O2', '-static-libstdc++',
+        compiler = ndk_compiler(args.sdk, cxx=True)
+        subprocess.run([str(compiler), '-std=c++17', '-shared', '-fPIC', '-O2', '-static-libstdc++',
                         '-Wl,-Bsymbolic', str(source), '-llog', '-o', str(output)], check=True, timeout=120)
     directory = '/data/local/debug/vulkan'
     remote = directory + '/libVkLayer_AXRB_runtime.so'

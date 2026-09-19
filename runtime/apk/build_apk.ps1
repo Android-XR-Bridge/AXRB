@@ -1,11 +1,19 @@
 param(
     [string]$Sdk = "$env:LOCALAPPDATA\Android\Sdk",
-    [string]$Jdk = "$env:ProgramFiles\Android\Android Studio\jbr",
+    [string]$Jdk,
     [string]$NdkVersion = '27.3.13750724',
     [string]$BuildToolsVersion = '36.1.0',
     [ValidateSet('x86_64', 'arm64-v8a')][string]$Abi = 'x86_64'
 )
 $ErrorActionPreference = 'Stop'
+if (!$Jdk) {
+    if ($env:JAVA_HOME) { $Jdk = $env:JAVA_HOME }
+    else {
+        $javac = Get-Command javac.exe -ErrorAction SilentlyContinue
+        if ($javac) { $Jdk = Split-Path (Split-Path $javac.Source -Parent) -Parent }
+        else { $Jdk = "$env:ProgramFiles\Android\Android Studio\jbr" }
+    }
+}
 . "$PSScriptRoot/../../scripts/paths.ps1"
 $root = $AxrbRoot
 $build = Join-Path $AxrbOut "android/runtime-$Abi"

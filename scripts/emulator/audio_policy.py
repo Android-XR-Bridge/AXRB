@@ -14,18 +14,14 @@ STOCK_SHA256 = '817284e98733d95a32df9c0cea2b09d500ee42adc05c60c605c79afeb7df018f
 
 
 def build_adapter(sdk, root):
-    from distribution import bundled_library
+    from distribution import bundled_library, ndk_compiler
     bundled = bundled_library(root, 'out/android/audio/libaxrb_audio_compat.so')
     if bundled:
         return bundled
     source = root / 'runtime/audio/ranchu_audio_compat.cpp'
     output = root / 'out/android/audio'
     output.mkdir(parents=True, exist_ok=True)
-    compilers = sorted(sdk.glob('ndk/*/toolchains/llvm/prebuilt/windows-x86_64/bin/x86_64-linux-android29-clang.cmd'),
-                       key=lambda p: tuple(int(n) for n in p.parents[5].name.split('.')))
-    if not compilers:
-        raise RuntimeError('Android NDK required for the audio adapter')
-    compiler = compilers[-1]
+    compiler = ndk_compiler(sdk)
     library = output / 'libaxrb_audio_compat.so'
     stamp = output / 'build.sha256'
     header = source.with_name('pcm_recovery.h')

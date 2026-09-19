@@ -126,7 +126,7 @@ int main(int argc, char** argv) {
     for (unsigned sequence = 100; sequence < concurrentEnd && !failed; ++sequence) {
         auto batch = pool.acquire();
         if (!batch) { failed = true; break; }
-        batch->count = sequence % 2 ? 1 : 5;
+        batch->resize(sequence % 2 ? 1 : 5);
         for (unsigned part = 0; part < batch->count && !failed; ++part) {
             for (unsigned eye = 0; eye < 2; ++eye) {
                 std::vector<unsigned> pixels(static_cast<size_t>(width)*height, 0xff000000u | (sequence << 8) | (part << 1) | eye);
