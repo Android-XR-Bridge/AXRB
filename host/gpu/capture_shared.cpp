@@ -20,6 +20,14 @@ int wmain(int argc,wchar_t** argv){
     context->CopyResource(stage.Get(),source.Get());D3D11_MAPPED_SUBRESOURCE mapped{};
     if(FAILED(context->Map(stage.Get(),0,D3D11_MAP_READ,0,&mapped)))return 7;
     std::ofstream output(argv[2],std::ios::binary);output<<"P6\n"<<desc.Width<<" "<<desc.Height<<"\n255\n";
-    for(UINT y=0;y<desc.Height;++y)for(UINT x=0;x<desc.Width;++x)output.write((char*)mapped.pData+y*mapped.RowPitch+x*4,3);
+    unsigned long long transparent=0,opaque=0;
+    unsigned minAlpha=255,maxAlpha=0;
+    for(UINT y=0;y<desc.Height;++y)for(UINT x=0;x<desc.Width;++x){
+        const auto* pixel=static_cast<const unsigned char*>(mapped.pData)+y*mapped.RowPitch+x*4;
+        output.write(reinterpret_cast<const char*>(pixel),3);
+        const unsigned alpha=pixel[3];transparent+=alpha==0;opaque+=alpha==255;
+        if(alpha<minAlpha)minAlpha=alpha;if(alpha>maxAlpha)maxAlpha=alpha;
+    }
+    std::printf("alpha min=%u max=%u transparent=%llu opaque=%llu total=%llu\n",minAlpha,maxAlpha,transparent,opaque,static_cast<unsigned long long>(desc.Width)*desc.Height);
     context->Unmap(stage.Get(),0);return output?0:8;
 }

@@ -160,3 +160,26 @@ and procedural test imagery using real D3D11 textures and test OpenXR swapchains
 Native multi-projection presentation remains runtime-dependent; use the optional
 compatibility policy when a native stack renders incorrectly. Successful layer
 transport alone does not establish full game compatibility.
+
+## Shared-texture snapshot diagnostics
+
+`axrb_capture_shared` opens an AXRB-exported D3D11 texture read-only and writes
+its RGB channels to a binary PPM image. It also prints the extent, DXGI format,
+minimum/maximum alpha, counts of fully transparent and fully opaque pixels, and
+total pixels. This distinguishes opaque black content from transparent content
+that looks identical in the RGB image. RGBA8 UNORM and sRGB formats are supported.
+
+Build from the checkout root with the Windows GPU build prerequisites installed
+(Visual Studio, CMake and an Android NDK, or configured Vulkan headers):
+
+```powershell
+cmake -S host/gpu -B out/gpu -G "Visual Studio 17 2022" -A x64
+cmake --build out/gpu --config Release --target axrb_capture_shared
+.\out\gpu\Release\axrb_capture_shared.exe 'Local\AXRB_GPU_<session-hex>_<eye>' .\out\eye.ppm
+```
+
+Replace `<session-hex>` with the current GPU descriptor's 16-digit hexadecimal
+session identifier and `<eye>` with its eye index (`0` or `1`). The exporter must
+still own that shared texture. The utility does not freeze the producer or
+guarantee frame-level synchronization; use it for diagnostic samples, not timing
+measurements. PPM output contains RGB only; alpha statistics are printed to stdout.
