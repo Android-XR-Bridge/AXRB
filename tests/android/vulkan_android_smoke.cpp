@@ -1,5 +1,6 @@
 // Run on the x86_64 emulator. Uses a real Vulkan device, not mocked GPU calls.
 #include "vulkan_backend.h"
+#include "runtime_internal.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -217,6 +218,84 @@ int main(int argc, char** argv) {
         backend.destroy(sc);
     }
     REQUIRE(backend.scratch_allocation_count() == 8); // Two eyes, two formats, one growth each; revisits allocate nothing.
+    // Exercise the actual FOV-to-image preparation, not hand-written flip flags.
+    // Off-center crops and unique pixel coordinates detect whole-image flips,
+    // wrong crop origins, swapped axes, and incorrect array-layer selection.
+    {
+        using namespace axrb::runtime::detail;
+        constexpr uint32_t side = 8;
+        REQUIRE(vkMapMemory(device, memory, 0, bytes, 0, &mapped) == VK_SUCCESS);
+        pixels = static_cast<uint8_t*>(mapped);
+        for (uint32_t eye = 0; eye < 2; ++eye) for (uint32_t y = 0; y < side; ++y) for (uint32_t x = 0; x < side; ++x) {
+            const size_t p = ((eye * side + y) * side + x) * 4;
+            pixels[p] = 40 + x * 19; pixels[p+1] = 15 + y * 27;
+            pixels[p+2] = 35 + eye * 110; pixels[p+3] = 255;
+        }
+        vkUnmapMemory(device, memory);
+        info.width = info.height = side; info.format = VK_FORMAT_R8G8B8A8_UNORM;
+        REQUIRE(backend.create(sc, info) == XR_SUCCESS);
+        REQUIRE(vkResetCommandBuffer(cmd, 0) == VK_SUCCESS);
+        VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        REQUIRE(vkBeginCommandBuffer(cmd, &begin) == VK_SUCCESS);
+        VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        barrier.image = sc.images[0]; barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 2};
+        barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT; barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+        VkBufferImageCopy copy{}; copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 2}; copy.imageExtent = {side, side, 1};
+        vkCmdCopyBufferToImage(cmd, buffer, sc.images[0], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+        REQUIRE(vkEndCommandBuffer(cmd) == VK_SUCCESS);
+        VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO}; submit.commandBufferCount = 1; submit.pCommandBuffers = &cmd;
+        REQUIRE(vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE) == VK_SUCCESS);
+
+        g_swapchains.emplace_back();
+        auto& record = g_swapchains.back();
+        record.created = record.hasReleasedImage = true;
+        record.width = record.height = side; record.arraySize = 2; record.vulkan = sc;
+        XrCompositionLayerProjectionView views[2]{};
+        for (auto& view : views) {
+            view.type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW;
+            view.pose.orientation.w = 1;
+            view.subImage.swapchain = reinterpret_cast<XrSwapchain>(&record);
+        }
+        views[0].fov = {-0.8f, 0.7f, 0.6f, -0.5f};
+        views[1].fov = {-0.75f, 0.65f, -0.3f, 0.75f};
+        views[0].subImage.imageRect = {{1,1},{4,3}};
+        views[1].subImage.imageRect = {{3,4},{4,3}};
+        XrCompositionLayerProjection projection{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+        projection.space = make_space(SpaceKind::View); projection.viewCount = 2; projection.views = views;
+        const void* layers[] = {&projection};
+        XrFrameEndInfo end{XR_TYPE_FRAME_END_INFO}; end.layerCount = 1; end.layers = layers;
+        XrCompositionLayerImageLayoutFB layout{XR_TYPE_COMPOSITION_LAYER_IMAGE_LAYOUT_FB, nullptr,
+            XR_COMPOSITION_LAYER_IMAGE_LAYOUT_VERTICAL_FLIP_BIT_FB};
+        for (uint32_t rightArray : {0u,1u}) for (bool extensionFlip : {false,true}) {
+            views[1].subImage.imageArrayIndex = rightArray;
+            projection.next = extensionFlip ? &layout : nullptr;
+            PreparedGpuLayer prepared{};
+            REQUIRE(submit_projection_frame(end, 0, true, &prepared) == XR_SUCCESS);
+            const VulkanSwapchain* chains[] = {&record.vulkan, &record.vulkan};
+            const uint32_t indices[] = {0,0};
+            const XrSwapchainSubImage* subimages[] = {&prepared.subimages[0], &prepared.subimages[1]};
+            std::vector<uint8_t> result[2];
+            REQUIRE(backend.readback(chains, indices, subimages, 4, 3, result, prepared.verticalFlip));
+            for (uint32_t eye = 0; eye < 2; ++eye) for (uint32_t row = 0; row < 3; ++row) for (uint32_t col = 0; col < 4; ++col) {
+                // Decode the bottom-up wire representation into display order.
+                const size_t p = ((2-row)*4+col)*4;
+                const uint32_t sourceX = (eye ? 3 : 1) + col;
+                const bool reversed = (eye == 1) != extensionFlip;
+                const uint32_t sourceY = (eye ? 4 : 1) + (reversed ? 2-row : row);
+                REQUIRE(result[eye][p] == 40 + sourceX*19 && result[eye][p+1] == 15 + sourceY*27 &&
+                    result[eye][p+2] == 35 + (eye ? rightArray : 0)*110 && result[eye][p+3] == 255);
+            }
+        }
+        g_swapchains.clear(); g_spaces.clear(); g_spaceCount = 0;
+        backend.destroy(sc);
+        std::puts("PASS: signed per-eye FOV, extension XOR, off-center asymmetric pixels, shared/array stereo images");
+    }
     backend.shutdown(); vkDestroyBuffer(device, buffer, nullptr); vkFreeMemory(device, memory, nullptr);
     vkDestroyCommandPool(device, pool, nullptr); vkDestroyDevice(device, nullptr); vkDestroyInstance(instance, nullptr);
     std::puts("PASS: real Vulkan images, UNORM/sRGB, array eyes, cropping/downscale, row orientation, synchronization and reuse");

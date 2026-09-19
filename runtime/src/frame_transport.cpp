@@ -708,6 +708,10 @@ XrResult submit_projection_frame(const XrFrameEndInfo& info, uint32_t batchPart,
         out.angle_right = view.fov.angleRight;
         out.angle_up = view.fov.angleUp;
         out.angle_down = view.fov.angleDown;
+        if (out.angle_down > out.angle_up) {
+            std::swap(out.angle_up, out.angle_down);
+            verticalFlip[eye] = !verticalFlip[eye];
+        }
     }
     if (!quads && !equirect && !axrb::protocol::valid_projection(projection)) {
 #if defined(__ANDROID__)

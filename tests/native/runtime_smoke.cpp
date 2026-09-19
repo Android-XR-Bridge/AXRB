@@ -668,6 +668,48 @@ int main()
             !near(world.projection.views[1].pose.y, 4.0f) ||
             !near(world.projection.views[1].pose.z, 6.0f)) return EXIT_FAILURE;
 
+        // Core XrFovf permits each eye to reverse its vertical angles. Keep the
+        // wire camera canonical and express that reversal through the same
+        // per-eye image flip used by XR_FB_composition_layer_image_layout.
+        projectionViews[0].fov = {-0.8f, 0.7f, 0.6f, -0.5f};
+        projectionViews[1].fov = {-0.75f, 0.65f, -0.3f, 0.75f};
+        projectionViews[0].subImage.imageRect = {{7, 11}, {1000, 900}};
+        projectionViews[0].subImage.imageArrayIndex = 0;
+        projectionViews[1].subImage.imageRect = {{13, 17}, {1000, 900}};
+        projectionViews[1].subImage.imageArrayIndex = 1;
+        axrb::runtime::detail::PreparedGpuLayer signedFov{};
+        if (axrb::runtime::detail::submit_projection_frame(endInfo, 0, true, &signedFov) != XR_SUCCESS ||
+            !near(signedFov.projection.views[0].angle_left, -0.8f) ||
+            !near(signedFov.projection.views[0].angle_right, 0.7f) ||
+            !near(signedFov.projection.views[0].angle_up, 0.6f) ||
+            !near(signedFov.projection.views[0].angle_down, -0.5f) ||
+            !near(signedFov.projection.views[1].angle_left, -0.75f) ||
+            !near(signedFov.projection.views[1].angle_right, 0.65f) ||
+            !near(signedFov.projection.views[1].angle_up, 0.75f) ||
+            !near(signedFov.projection.views[1].angle_down, -0.3f) ||
+            signedFov.verticalFlip[0] || !signedFov.verticalFlip[1]) return EXIT_FAILURE;
+
+        XrCompositionLayerImageLayoutFB flipLayout{
+            XR_TYPE_COMPOSITION_LAYER_IMAGE_LAYOUT_FB, nullptr,
+            XR_COMPOSITION_LAYER_IMAGE_LAYOUT_VERTICAL_FLIP_BIT_FB};
+        projection.next = &flipLayout;
+        axrb::runtime::detail::PreparedGpuLayer cancelledFlip{};
+        if (axrb::runtime::detail::submit_projection_frame(endInfo, 0, true, &cancelledFlip) != XR_SUCCESS ||
+            !cancelledFlip.verticalFlip[0] || cancelledFlip.verticalFlip[1] ||
+            !near(cancelledFlip.projection.views[1].angle_up, 0.75f) ||
+            !near(cancelledFlip.projection.views[1].angle_down, -0.3f)) return EXIT_FAILURE;
+        projection.next = nullptr;
+
+        projectionViews[1].fov.angleUp = projectionViews[1].fov.angleDown;
+        if (axrb::runtime::detail::submit_projection_frame(endInfo, 0, true, nullptr) != XR_ERROR_LAYER_INVALID)
+            return EXIT_FAILURE;
+        projectionViews[1].fov = {-0.75f, 0.65f, -0.3f, 1.5707963f};
+        if (axrb::runtime::detail::submit_projection_frame(endInfo, 0, true, nullptr) != XR_ERROR_LAYER_INVALID)
+            return EXIT_FAILURE;
+        projectionViews[1].fov = {-0.75f, 0.65f, std::numeric_limits<float>::quiet_NaN(), -0.3f};
+        if (axrb::runtime::detail::submit_projection_frame(endInfo, 0, true, nullptr) != XR_ERROR_LAYER_INVALID)
+            return EXIT_FAILURE;
+
         input = savedInput;
         projectionViews[0] = savedViews[0];
         projectionViews[1] = savedViews[1];

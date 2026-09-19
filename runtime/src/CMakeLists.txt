@@ -30,9 +30,11 @@ if(ANDROID)
   target_link_libraries(openxr_runtime PRIVATE log GLESv3 EGL android vulkan)
   option(AXRB_BUILD_VULKAN_SMOKE "Build the on-device Vulkan readback regression" OFF)
   if(AXRB_BUILD_VULKAN_SMOKE)
-    add_executable(axrb_vulkan_smoke ${PROJECT_SOURCE_DIR}/tests/android/vulkan_android_smoke.cpp vulkan_backend.cpp)
+    add_executable(axrb_vulkan_smoke ${PROJECT_SOURCE_DIR}/tests/android/vulkan_android_smoke.cpp
+      ${AXRB_RUNTIME_SOURCES} pose_client.cpp vulkan_backend.cpp
+      android_surface.cpp android_surface_swapchain.cpp vulkan_surface.cpp)
     target_include_directories(axrb_vulkan_smoke PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${PROJECT_SOURCE_DIR}/protocol)
-    target_link_libraries(axrb_vulkan_smoke PRIVATE vulkan log)
+    target_link_libraries(axrb_vulkan_smoke PRIVATE axrb_protocol vulkan log GLESv3 EGL android)
   endif()
 endif()
 

@@ -96,3 +96,24 @@ Native spatial and wire-transport regressions cover head-motion invariance,
 offset reference spaces and strict flag validation. A local D3D11 pixel smoke
 verified world-overlay motion over a head-relative scene. Live-headset visual
 stability remains unverified.
+
+## Signed vertical projection FOV
+
+Core OpenXR permits `angleDown > angleUp` to request a vertically reversed view.
+The guest normalizes these angles independently for each eye before validating
+the canonical wire metadata. The reversal is XORed with
+`XR_FB_composition_layer_image_layout`'s vertical-flip flag, so two flips cancel.
+The existing pixel, single-GPU and batch-GPU paths receive the effective flip;
+Vulkan blits reverse the selected crop's source endpoints, not the entire image.
+Projection poses and the `VIEW` tag are unaffected.
+
+No wire-layout or Windows host change is needed for this normalization. OVRPort
+uses core reversed FOV to preserve positive vertical VrApi texture scales with
+Vulkan's top-left image origin; negative scales use ordinary FOV ordering.
+
+The native runtime fixture covers mixed per-eye FOVs, flip cancellation and
+invalid angles. The on-device `axrb_vulkan_smoke` target runs actual projection
+preparation and Vulkan readback against asymmetric, off-center cropped images,
+including shared images and separate array layers. It verifies decoded pixel
+orientation through the CPU transport representation; this scenario does not
+exercise shared-GPU export or a live headset.
