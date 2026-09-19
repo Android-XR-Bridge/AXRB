@@ -126,6 +126,7 @@ export class Setup {
     await this.save(this.directory);
     for (const c of this.components) {
       signal.throwIfAborted();
+      if (!c.sha256 && !c.sha1) throw new Error(`${c.name}: missing download checksum.`);
       const destination = path.join(sdk, c.destination), receipt = path.join(destination, '.axrb-component.json');
       if (await exists(receipt) && await exists(path.join(destination, c.probe))) {
         const installed = JSON.parse(await fs.readFile(receipt, 'utf8'));
@@ -133,13 +134,12 @@ export class Setup {
       }
       await checkSpace(this.directory, c.id === 'image' ? 9 * 1024 ** 3 : c.size * 4);
       const archive = path.join(cache, `${c.id}.zip`);
-      this.update({ phase: 'download', component: c.name, completed: 0, total: c.size });
+      this.update({ phase: 'verify', component: c.name, completed: 0, total: c.size });
       if (!await verify(archive, c)) {
         await fs.rm(archive, { force: true });
+        this.update({ phase: 'download' });
         await downloadFile({ ...c, destination: archive, signal, validate: officialDownload, progress: (completed, total) => this.update({ completed, total }) });
       }
-      this.update({ phase: 'verify' });
-      if (!await verify(archive, c)) { await fs.rm(archive, { force: true }); throw new Error(`${c.name}: checksum mismatch. Retry the download.`); }
       const staging = path.join(cache, `${c.id}-extract`);
       await fs.rm(staging, { recursive: true, force: true });
       this.update({ phase: 'extract', completed: 0, total: 0 });
