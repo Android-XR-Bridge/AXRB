@@ -66,3 +66,33 @@ that Android session and falls back to AXRI v2 pixels. After uncertain completio
 the guest never reuses the shared texture pair. The layer retains allocations
 until Vulkan device teardown. Resolution/format changes that do not match the
 exported pair also fall back rather than corrupting a frame.
+
+## Projection reference spaces
+
+Stereo projection metadata preserves whether its render cameras are in host
+tracking/world space or canonical OpenXR `VIEW` space. A guest `VIEW` reference
+space's offset is folded into the eye poses without baking in a sampled world
+head pose. The host submits those projections in its own `VIEW` space, so the
+compositor can keep the content head-locked at presentation time. Untagged
+projections keep the existing world-space behavior.
+
+The 96-byte projection envelope is unchanged. Bits 0–2 of `layer_flags` remain
+OpenXR core composition flags; bit 3 is a projection-only transport `VIEW` tag
+and is stripped before calling OpenXR. Unknown bits and the tag on quad or
+equirect metadata are rejected. Older hosts reject tagged projections rather
+than silently treating their coordinates as world-space; update the Android
+runtime and Windows host together. Both pixel and shared-GPU transport preserve
+the tag. The capture tool reports it separately as `view_space`.
+
+Native mixed composition keeps a head-locked projection scene in `VIEW` and
+existing world-space quad/equirect overlays in their world space. When the
+runtime's layer limit requires software flattening, AXRB transforms private
+copies of overlay poses into the scene's camera space at predicted display
+time. Cached scene frames are recomposited when that transform changes, so
+world overlays do not become accidentally attached to the headset. Flattened
+layers cannot retain independent late reprojection.
+
+Native spatial and wire-transport regressions cover head-motion invariance,
+offset reference spaces and strict flag validation. A local D3D11 pixel smoke
+verified world-overlay motion over a head-relative scene. Live-headset visual
+stability remains unverified.

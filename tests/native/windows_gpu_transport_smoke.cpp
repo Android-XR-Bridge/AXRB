@@ -8,7 +8,7 @@
 #include <cstring>
 #include <thread>
 
-int run_case(unsigned short port, bool consumed, bool quads = false, uint32_t mixedPart = 0, bool sphere = false) {
+int run_case(unsigned short port, bool consumed, bool quads = false, uint32_t mixedPart = 0, bool sphere = false, bool viewSpace = false) {
     using namespace axrb::protocol;
     bool checked = false;
     std::thread server([&] {
@@ -19,7 +19,9 @@ int run_case(unsigned short port, bool consumed, bool quads = false, uint32_t mi
             checked = header.version == (sphere ? (mixedPart ? kMixedEquirectGpuFrameVersion : kEquirectGpuFrameVersion) : mixedPart ? (quads ? kMixedQuadGpuFrameVersion : kMixedProjectionGpuFrameVersion) : (quads ? kQuadGpuFrameVersion : kWindowsGpuFrameVersion)) && header.reserved == mixedPart && header.sequence == 42 &&
                 header.width == 5120 && header.height == 2880 && header.layers == 2 &&
                 (sphere ? valid_equirect(projection) : quads ? (projection.quad_count() == (mixedPart ? 1u : 2u) && projection.quads[0].width == 2.5f && projection.quads[0].eye_visibility == 1)
-                       : projection.view_count == 2) && frame.session == 12345 && frame.formats[1] == 43;
+                       : valid_projection(projection) && projection.is_view_space() == viewSpace) &&
+                (!viewSpace || projection.layer_flags == (kProjectionViewSpaceBit | 5u)) &&
+                frame.session == 12345 && frame.formats[1] == 43;
             return consumed;
         });
     });
@@ -35,6 +37,7 @@ int run_case(unsigned short port, bool consumed, bool quads = false, uint32_t mi
     header.header_size += sizeof(ImageProjection); header.width = 5120; header.height = 2880; header.layers = 2;
     header.sequence = 42; header.payload_size = sizeof(WindowsGpuFrame);
     ImageProjection projection{}; projection.view_count = 2;
+    projection.layer_flags = viewSpace ? (kProjectionViewSpaceBit | 5u) : 0u;
     for (auto& view : projection.views) { view.pose.qw = 1; view.angle_left = view.angle_down = -0.9f; view.angle_right = view.angle_up = 0.9f; }
     if (quads) {
         header.version = kQuadGpuFrameVersion;
@@ -71,7 +74,7 @@ int run_case(unsigned short port, bool consumed, bool quads = false, uint32_t mi
     closesocket(client); server.join();
     return sent && checked && received == sizeof(acknowledgment) && acknowledgment == (consumed ? 42 : UINT64_MAX) ? 0 : 1;
 }
-int run_batch_case(unsigned short port, bool consumed, bool duplicateSession = false, bool wrongSequence = false) {
+int run_batch_case(unsigned short port, bool consumed, bool duplicateSession = false, bool wrongSequence = false, bool unknownProjectionBit = false) {
     using namespace axrb::protocol;
     std::vector<GpuBatchPart> parts(5);
     for (uint32_t i = 0; i < parts.size(); ++i) {
@@ -84,8 +87,19 @@ int run_batch_case(unsigned short port, bool consumed, bool duplicateSession = f
         part.projection.quads[0] = {{0,1,-2,0,0,0,1},2,1,0,7};
         part.gpu = {500 + i, {43, i % 2 ? 0u : 43u}};
     }
+    parts[0].header.version = kMixedProjectionGpuFrameVersion;
+    parts[0].projection = {};
+    parts[0].projection.view_count = 2;
+    parts[0].projection.layer_flags = kProjectionViewSpaceBit | 5u;
+    for (auto& view : parts[0].projection.views) {
+        view.pose.qw = 1;
+        view.angle_left = view.angle_down = -0.9f;
+        view.angle_right = view.angle_up = 0.9f;
+    }
+    const ImageProjection outerProjection = parts[0].projection;
     if (duplicateSession) parts[4].gpu.session = parts[0].gpu.session;
     if (wrongSequence) parts[3].header.sequence++;
+    if (unknownProjectionBit) parts[0].projection.layer_flags |= 1u << 4;
     auto header = parts[0].header;
     header.version = kGpuBatchFrameVersion; header.reserved = 5; header.sequence = 104;
     header.payload_size = parts.size() * sizeof(GpuBatchPart);
@@ -93,7 +107,11 @@ int run_batch_case(unsigned short port, bool consumed, bool duplicateSession = f
     std::thread server([&] {
         TcpImageServer listener;
         listener.serve_with_callback(port, 1, [&](const ImageFrameHeader& h, const ImageProjection&, std::vector<uint8_t>&& bytes) {
-            called = true; correct = valid_gpu_batch(h, bytes.data(), bytes.size()) && h.sequence == 104;
+            GpuBatchPart first{};
+            if (bytes.size() >= sizeof(first)) std::memcpy(&first, bytes.data(), sizeof(first));
+            called = true; correct = valid_gpu_batch(h, bytes.data(), bytes.size()) && h.sequence == 104 &&
+                first.projection.is_view_space() &&
+                first.projection.layer_flags == (kProjectionViewSpaceBit | 5u);
             return consumed;
         });
     });
@@ -112,11 +130,11 @@ int run_batch_case(unsigned short port, bool consumed, bool duplicateSession = f
         while (bytes) { const int n = send(client, p, static_cast<int>(bytes > 7 ? 7 : bytes), 0); if (n <= 0) return false; p += n; bytes -= n; }
         return true;
     };
-    bool sent = sendFragmented(&header, sizeof(header)) && sendFragmented(&parts[0].projection, sizeof(ImageProjection)) &&
+    bool sent = sendFragmented(&header, sizeof(header)) && sendFragmented(&outerProjection, sizeof(outerProjection)) &&
                 sendFragmented(parts.data(), header.payload_size);
     uint64_t ack = 0; size_t received = 0;
     while (received < sizeof(ack)) { int n = recv(client, reinterpret_cast<char*>(&ack) + received, static_cast<int>(sizeof(ack)-received), 0); if (n <= 0) break; received += n; }
-    const bool invalid = duplicateSession || wrongSequence;
+    const bool invalid = duplicateSession || wrongSequence || unknownProjectionBit;
     // A complete batch produces exactly one acknowledgment, never one per part.
     char extra; const int more = recv(client, &extra, 1, 0);
     closesocket(client); server.join();
@@ -126,7 +144,8 @@ int run_batch_case(unsigned short port, bool consumed, bool duplicateSession = f
 int main() {
     WSADATA data{}; if (WSAStartup(MAKEWORD(2,2), &data)) return 1;
     int result = run_case(38495, true) | run_case(38496, false) | run_case(38497, true, true) | run_case(38498, true, false, 3u << 16) | run_case(38499, true, true, (16u << 16) | 15);
-    result |= run_case(38500, true, false, 0, true) | run_case(38501, true, false, (5u << 16) | 2, true);
+    result |= run_case(38500, true, false, 0, true) | run_case(38501, true, false, (5u << 16) | 2, true) |
+              run_case(38507, true, false, 0, false, true);
     using namespace axrb::protocol;
     if (valid_mixed_part(6, (3u << 16) | 1) || valid_mixed_part(7, (3u << 16) | 3) || !valid_mixed_part(6, 17u << 16)) result = 1;
     axrb::protocol::ImageProjection invalid{};
@@ -136,9 +155,31 @@ int main() {
     invalid.equirect = {{0,0,0,0,0,0,1},0,6.2831853f,1.5707963f,-1.5707963f,0,7};
     if (!valid_equirect(invalid)) result = 1;
     invalid.equirect.radius = -1; if (valid_equirect(invalid)) result = 1;
-    invalid.equirect.radius = 0; invalid.equirect.horizontal_angle = 7; if (valid_equirect(invalid)) result = 1;
+    invalid = {};
+    invalid.view_count = 2;
+    for (auto& view : invalid.views) {
+        view.pose.qw = 1;
+        view.angle_left = view.angle_down = -0.9f;
+        view.angle_right = view.angle_up = 0.9f;
+    }
+    invalid.layer_flags = kProjectionViewSpaceBit;
+    if (!valid_projection(invalid) || !invalid.is_view_space()) result = 1;
+    invalid.layer_flags |= 1u << 4;
+    if (valid_projection(invalid)) result = 1;
+    invalid = {};
+    invalid.view_count = kQuadCompositionBit | 1;
+    invalid.layer_flags = kProjectionViewSpaceBit;
+    invalid.quads[0] = {{0,0,-2,0,0,0,1},2,1,0,0};
+    if (valid_quads(invalid) || invalid.is_view_space()) result = 1;
+    invalid = {};
+    invalid.view_count = kEquirectComposition;
+    invalid.layer_flags = kProjectionViewSpaceBit;
+    invalid.equirect = {{0,0,0,0,0,0,1},0,6.2831853f,1.5707963f,-1.5707963f,0,0};
+    if (valid_equirect(invalid) || invalid.is_view_space()) result = 1;
+    invalid.layer_flags = 0; invalid.equirect.radius = 0; invalid.equirect.horizontal_angle = 7; if (valid_equirect(invalid)) result = 1;
     result |= run_batch_case(38502, true) | run_batch_case(38503, false) |
-              run_batch_case(38504, true, true) | run_batch_case(38505, true, false, true);
+              run_batch_case(38504, true, true) | run_batch_case(38505, true, false, true) |
+              run_batch_case(38508, true, false, false, true);
     WSACleanup();
     if (!result) std::puts("GPU metadata fragmentation and completion/rejection acknowledgments passed");
     return result;

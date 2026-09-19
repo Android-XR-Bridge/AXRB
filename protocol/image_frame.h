@@ -53,7 +53,7 @@ struct ImageFrameHeader {
 static_assert(sizeof(ImageFrameHeader) == 64);
 
 struct ImageProjectionView {
-    Pose pose; // The render camera in the host's LOCAL coordinate space, meters.
+    Pose pose; // The render camera in host LOCAL space, or VIEW when tagged.
     float angle_left = 0, angle_right = 0, angle_up = 0, angle_down = 0;
 };
 struct ImageEquirect {
@@ -70,9 +70,12 @@ struct ImageQuad {
 // metadata envelope. The high bit distinguishes them from stereo cameras.
 constexpr uint32_t kEquirectComposition = 0x40000001u;
 constexpr uint32_t kQuadCompositionBit = 0x80000000u;
+constexpr uint32_t kCompositionLayerFlagsMask = 7u;
+constexpr uint32_t kProjectionViewSpaceBit = 1u << 3;
 struct ImageProjection {
     uint32_t view_count = 0; // Zero for legacy frames; v2 requires two eyes.
-    uint32_t layer_flags = 0; // OpenXR core composition flags (bits 0..2).
+    // OpenXR core composition flags plus the transport-only VIEW-space tag.
+    uint32_t layer_flags = 0;
     union {
         ImageProjectionView views[2]{};
         ImageQuad quads[2];
@@ -80,13 +83,17 @@ struct ImageProjection {
     };
     bool is_equirect() const { return view_count == kEquirectComposition; }
     uint32_t quad_count() const { return (view_count & kQuadCompositionBit) ? (view_count & ~kQuadCompositionBit) : 0; }
+    bool is_view_space() const {
+        return view_count == 2 && (layer_flags & kProjectionViewSpaceBit) != 0;
+    }
 };
 static_assert(sizeof(ImageQuad) == 44);
 static_assert(sizeof(ImageProjectionView) == 44);
 static_assert(sizeof(ImageProjection) == 96);
 
 inline bool valid_projection(const ImageProjection& projection) {
-    if (projection.view_count != 2 || (projection.layer_flags & ~7u) != 0) { return false; }
+    if (projection.view_count != 2 ||
+        (projection.layer_flags & ~(kCompositionLayerFlagsMask | kProjectionViewSpaceBit)) != 0) { return false; }
     for (const auto& view : projection.views) {
         const auto& p = view.pose;
         for (float value : {p.x, p.y, p.z, p.qx, p.qy, p.qz, p.qw,
@@ -112,7 +119,7 @@ inline bool valid_equirect(const ImageProjection& c) {
     return std::fabs(norm-1.f) <= .01f && e.radius >= 0 &&
         e.horizontal_angle >= 0 && e.horizontal_angle <= 6.2831854f &&
         e.lower_angle >= -1.5707964f && e.upper_angle <= 1.5707964f && e.lower_angle <= e.upper_angle &&
-        e.eye_visibility <= 2 && !(e.layer_flags & ~7u);
+        e.eye_visibility <= 2 && !(e.layer_flags & ~kCompositionLayerFlagsMask);
 }
 
 inline bool valid_quads(const ImageProjection& composition) {
@@ -125,7 +132,7 @@ inline bool valid_quads(const ImageProjection& composition) {
             if (!std::isfinite(f)) return false;
         const float norm = p.qx*p.qx+p.qy*p.qy+p.qz*p.qz+p.qw*p.qw;
         if (std::fabs(norm-1.0f)>0.01f || q.width<=0 || q.height<=0 ||
-            q.eye_visibility>2 || (q.layer_flags & ~7u)) return false;
+            q.eye_visibility>2 || (q.layer_flags & ~kCompositionLayerFlagsMask)) return false;
     }
     return true;
 }

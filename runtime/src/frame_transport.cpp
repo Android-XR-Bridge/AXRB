@@ -606,13 +606,16 @@ XrResult submit_projection_frame(const XrFrameEndInfo& info, uint32_t batchPart,
     const bool equirect = layer->type == XR_TYPE_COMPOSITION_LAYER_EQUIRECT2_KHR;
     if (equirect && info.layerCount != 1) return invalid("equirect layer count");
     if (!quads && !equirect && (info.layerCount != 1 || layer->type != XR_TYPE_COMPOSITION_LAYER_PROJECTION || layer->viewCount != 2 || layer->views == nullptr ||
-        (layer->layerFlags & ~uint64_t{7}) != 0)) { return invalid("projection type/views/flags"); }
+        (layer->layerFlags & ~uint64_t{axrb::protocol::kCompositionLayerFlagsMask}) != 0)) { return invalid("projection type/views/flags"); }
     const auto* space = find_space(layer->space);
     if (!space) { return XR_ERROR_HANDLE_INVALID; }
     const XrPosef spaceWorld = world_pose_for_space(*space, g_lastViewPoseFrame);
+    const XrPosef projectionSpace =
+        space->kind == SpaceKind::View ? space->offsetInParent : spaceWorld;
     axrb::protocol::ImageProjection projection{};
     projection.view_count = 2;
-    projection.layer_flags = static_cast<uint32_t>(layer->layerFlags);
+    projection.layer_flags = static_cast<uint32_t>(layer->layerFlags) |
+        (space->kind == SpaceKind::View ? axrb::protocol::kProjectionViewSpaceBit : 0u);
     std::array<SwapchainRecord*, 2> swapchains{};
     const XrSwapchainSubImage* subimages[2]{};
     if (equirect) {
@@ -624,14 +627,16 @@ XrResult submit_projection_frame(const XrFrameEndInfo& info, uint32_t batchPart,
             pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w},
             sphere->radius, sphere->centralHorizontalAngle, sphere->upperVerticalAngle, sphere->lowerVerticalAngle,
             static_cast<uint32_t>(sphere->eyeVisibility), static_cast<uint32_t>(sphere->layerFlags)};
-        if ((sphere->layerFlags & ~uint64_t{7}) || !axrb::protocol::valid_equirect(projection)) return invalid("equirect geometry/flags");
+        if ((sphere->layerFlags & ~uint64_t{axrb::protocol::kCompositionLayerFlagsMask}) ||
+            !axrb::protocol::valid_equirect(projection)) return invalid("equirect geometry/flags");
         subimages[0] = subimages[1] = &sphere->subImage;
     } else if (quads) {
         projection.view_count = axrb::protocol::kQuadCompositionBit | info.layerCount;
         projection.layer_flags = 0;
         for (uint32_t i = 0; i < info.layerCount; ++i) {
             const auto* quad = static_cast<const XrCompositionLayerQuad*>(info.layers[i]);
-            if (!quad || quad->type != XR_TYPE_COMPOSITION_LAYER_QUAD || (quad->layerFlags & ~uint64_t{7})) return invalid("quad type/flags");
+            if (!quad || quad->type != XR_TYPE_COMPOSITION_LAYER_QUAD ||
+                (quad->layerFlags & ~uint64_t{axrb::protocol::kCompositionLayerFlagsMask})) return invalid("quad type/flags");
             const auto* quadSpace = find_space(quad->space);
             if (!quadSpace) return XR_ERROR_HANDLE_INVALID;
             const auto pose = multiply_pose(world_pose_for_space(*quadSpace, g_lastViewPoseFrame), quad->pose);
@@ -695,7 +700,7 @@ XrResult submit_projection_frame(const XrFrameEndInfo& info, uint32_t batchPart,
         if (quads || equirect) continue;
         const auto& view = layer->views[eye];
         if (view.type != XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW) { return invalid("view type"); }
-        const auto pose = multiply_pose(spaceWorld, view.pose);
+        const auto pose = multiply_pose(projectionSpace, view.pose);
         auto& out = projection.views[eye];
         out.pose = {pose.position.x, pose.position.y, pose.position.z,
                     pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w};

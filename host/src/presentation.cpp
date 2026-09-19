@@ -2,6 +2,18 @@
 #include "splash.h"
 
 namespace axrb::host::detail {
+#if defined(_WIN32)
+namespace {
+bool same_pose(const XrPosef& a, const XrPosef& b)
+{
+    return a.position.x == b.position.x && a.position.y == b.position.y &&
+        a.position.z == b.position.z && a.orientation.x == b.orientation.x &&
+        a.orientation.y == b.orientation.y && a.orientation.z == b.orientation.z &&
+        a.orientation.w == b.orientation.w;
+}
+}
+#endif
+
 
 #if defined(_WIN32)
 bool OpenXrSession::create_d3d11_device()
@@ -205,6 +217,8 @@ bool OpenXrSession::create_projection_swapchain()
     uploadedMixedCounts_.assign(imageCount, 0);
     uploadedMixedTimes_.assign(imageCount, 0);
     uploadedExtentByImage_.resize(imageCount, {static_cast<int32_t>(projectionWidth_), static_cast<int32_t>(projectionHeight_)});
+    uploadedOverflowWorldFromView_.resize(imageCount);
+    uploadedOverflowWorldFromViewValid_.assign(imageCount, false);
     result = enumerateSwapchainImages_(
         projectionSwapchain_,
         imageCount,
@@ -292,6 +306,8 @@ bool OpenXrSession::update_projection_layer(
         releaseSwapchainImage_(projectionSwapchain_, &release);
         return false;
     }
+    XrPosef overflowWorldFromView{};
+    const XrPosef* overflowWorldFromViewPtr = nullptr;
     if (frame.gpu && frame.gpu->count > nativeLayerLimit_) {
         if (frame.projection.view_count == 2) {
             for (uint32_t eye = 0; eye < 2; ++eye) {
@@ -299,6 +315,19 @@ bool OpenXrSession::update_projection_layer(
                 view = {XR_TYPE_VIEW}; view.pose.position = {source.pose.x,source.pose.y,source.pose.z};
                 view.pose.orientation = {source.pose.qx,source.pose.qy,source.pose.qz,source.pose.qw};
                 view.fov = {source.angle_left,source.angle_right,source.angle_up,source.angle_down};
+            }
+            if (frame.projection.is_view_space()) {
+                XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};
+                if (locateSpace_(viewSpace_, localSpace_, displayTime, &location) != XR_SUCCESS ||
+                    (location.locationFlags & (XR_SPACE_LOCATION_POSITION_VALID_BIT |
+                        XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) !=
+                        (XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) {
+                    XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+                    releaseSwapchainImage_(projectionSwapchain_, &release);
+                    return false;
+                }
+                overflowWorldFromView = location.pose;
+                overflowWorldFromViewPtr = &overflowWorldFromView;
             }
         } else {
             XrViewLocateInfo locate{XR_TYPE_VIEW_LOCATE_INFO}; locate.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
@@ -315,7 +344,8 @@ bool OpenXrSession::update_projection_layer(
     {
         static axrb::protocol::PerfStats copyStats("host-texture-upload");
         axrb::protocol::PerfScope copyScope(copyStats);
-        uploaded = fill_projection_texture(projectionImages_[imageIndex].texture, imageIndex, frame);
+        uploaded = fill_projection_texture(
+            projectionImages_[imageIndex].texture, imageIndex, frame, overflowWorldFromViewPtr);
     }
     if (handoffLock.owns_lock()) handoffLock.unlock();
 
@@ -414,26 +444,23 @@ bool OpenXrSession::update_projection_layer(
     }
 
     if (!quadCount) trim_composition_resources(0, false);
-    XrViewLocateInfo locateInfo{XR_TYPE_VIEW_LOCATE_INFO};
-    locateInfo.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
-    locateInfo.displayTime = displayTime;
-    locateInfo.space = localSpace_;
-
-    XrViewState viewState{XR_TYPE_VIEW_STATE};
     std::array<XrView, 2> views{XrView{XR_TYPE_VIEW}, XrView{XR_TYPE_VIEW}};
-    uint32_t viewCount = 0;
-    result = locateViews_(session_, &locateInfo, &viewState, static_cast<uint32_t>(views.size()), &viewCount, views.data());
-    if (result != XR_SUCCESS || viewCount < 2) {
-        return false;
+    // Tagged projections already carry their render cameras. In particular,
+    // a VIEW layer must not depend on being able to locate LOCAL tracking.
+    if (composition.view_count != 2) {
+        XrViewLocateInfo locateInfo{XR_TYPE_VIEW_LOCATE_INFO};
+        locateInfo.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+        locateInfo.displayTime = displayTime;
+        locateInfo.space = localSpace_;
+        XrViewState viewState{XR_TYPE_VIEW_STATE};
+        uint32_t viewCount = 0;
+        result = locateViews_(session_, &locateInfo, &viewState,
+                              static_cast<uint32_t>(views.size()), &viewCount, views.data());
+        if (result != XR_SUCCESS || viewCount < 2) return false;
     }
 
     for (uint32_t i = 0; i < 2; ++i) {
         projectionViews[i] = {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW};
-        projectionViews[i].pose = views[i].pose;
-        projectionViews[i].fov.angleLeft = -kAppProjectionHalfFovRadians;
-        projectionViews[i].fov.angleRight = kAppProjectionHalfFovRadians;
-        projectionViews[i].fov.angleUp = kAppProjectionHalfFovRadians;
-        projectionViews[i].fov.angleDown = -kAppProjectionHalfFovRadians;
         // Metadata must describe the camera that rendered this exact
         // texture, not the newest tracking pose sampled after rendering.
         const auto& projection = uploadedProjectionByImage_[imageIndex];
@@ -442,6 +469,10 @@ bool OpenXrSession::update_projection_layer(
             projectionViews[i].pose.position = {eye.pose.x, eye.pose.y, eye.pose.z};
             projectionViews[i].pose.orientation = {eye.pose.qx, eye.pose.qy, eye.pose.qz, eye.pose.qw};
             projectionViews[i].fov = {eye.angle_left, eye.angle_right, eye.angle_up, eye.angle_down};
+        } else {
+            projectionViews[i].pose = views[i].pose;
+            projectionViews[i].fov = {-kAppProjectionHalfFovRadians, kAppProjectionHalfFovRadians,
+                                     kAppProjectionHalfFovRadians, -kAppProjectionHalfFovRadians};
         }
         projectionViews[i].subImage.swapchain = projectionSwapchain_;
         projectionViews[i].subImage.imageRect.offset = {0, 0};
@@ -455,8 +486,9 @@ bool OpenXrSession::update_projection_layer(
         }
     }
 
-    projectionLayer.space = localSpace_;
-    projectionLayer.layerFlags = uploadedProjectionByImage_[imageIndex].layer_flags;
+    projectionLayer.space = composition.is_view_space() ? viewSpace_ : localSpace_;
+    projectionLayer.layerFlags =
+        composition.layer_flags & axrb::protocol::kCompositionLayerFlagsMask;
     projectionLayer.viewCount = 2;
     projectionLayer.views = projectionViews.data();
     if (!reportedProjectionSubmit_) {
@@ -468,12 +500,14 @@ bool OpenXrSession::update_projection_layer(
 #endif
 
 #if defined(_WIN32)
-bool OpenXrSession::fill_projection_texture(ID3D11Texture2D* texture, uint32_t imageIndex, const HostImageSnapshot& frame)
+bool OpenXrSession::fill_projection_texture(ID3D11Texture2D* texture, uint32_t imageIndex,
+                                            const HostImageSnapshot& frame,
+                                            const XrPosef* overflowWorldFromView)
 {
     if (texture == nullptr || d3dContext_.get() == nullptr) {
         return false;
     }
-    if (upload_android_frame(texture, imageIndex, frame)) {
+    if (upload_android_frame(texture, imageIndex, frame, overflowWorldFromView)) {
         splashUploaded_[imageIndex] = false;
         return true;
     }
@@ -525,7 +559,9 @@ bool OpenXrSession::fill_projection_texture(ID3D11Texture2D* texture, uint32_t i
 #endif
 
 #if defined(_WIN32)
-bool OpenXrSession::upload_android_frame(ID3D11Texture2D* texture, uint32_t imageIndex, const HostImageSnapshot& frame)
+bool OpenXrSession::upload_android_frame(ID3D11Texture2D* texture, uint32_t imageIndex,
+                                         const HostImageSnapshot& frame,
+                                         const XrPosef* overflowWorldFromView)
 {
     if (imageFrame_ == nullptr) {
         return false;
@@ -545,9 +581,19 @@ bool OpenXrSession::upload_android_frame(ID3D11Texture2D* texture, uint32_t imag
         const auto activeMixedCount = frame.gpu->count;
         const bool flattened = activeMixedCount > nativeLayerLimit_;
         if (activeMixedCount < 2 || activeMixedCount > axrb::protocol::kMaxWireCompositionLayers || (!flattened && !panelAcquired_)) return false;
-        if (uploadedAndroidSequenceByImage_[imageIndex] != header.sequence || uploadedMixedTimes_[imageIndex] != header.monotonic_time_ns || (!flattened && panelSequences_[panelImageIndex_] != header.sequence)) {
+        const bool scene = projection.view_count == 2;
+        if (flattened && scene && projection.is_view_space() && overflowWorldFromView == nullptr)
+            return false;
+        // Cached scene pixels can be reused, but world overlays must be
+        // recomposed whenever their transform into VIEW changes.
+        const bool viewTransformChanged = flattened && scene && projection.is_view_space() &&
+            (!uploadedOverflowWorldFromViewValid_[imageIndex] ||
+             !same_pose(uploadedOverflowWorldFromView_[imageIndex], *overflowWorldFromView));
+        if (uploadedAndroidSequenceByImage_[imageIndex] != header.sequence ||
+            uploadedMixedTimes_[imageIndex] != header.monotonic_time_ns ||
+            (!flattened && panelSequences_[panelImageIndex_] != header.sequence) ||
+            viewTransformChanged) {
             bool queued = true;
-            const bool scene = projection.view_count == 2;
             for (uint32_t i = 0; i < activeMixedCount; ++i) {
                 if (flattened && (!scene || i != 0)) continue;
                 auto& part = frame.gpu->parts[i];
@@ -559,7 +605,8 @@ bool OpenXrSession::upload_android_frame(ID3D11Texture2D* texture, uint32_t imag
                     break;
                 }
             }
-            if (queued && flattened) queued = compose_overflow(texture, frame);
+            if (queued && flattened)
+                queued = compose_overflow(texture, frame, overflowWorldFromView);
             // One completion covers every eye and layer. Keep the frame lease
             // and handoff lock until it finishes, even after a partial enqueue.
             const bool completed = frameCopyCompletion_.wait(d3dDevice_.get(), d3dContext_.get());
@@ -583,13 +630,22 @@ bool OpenXrSession::upload_android_frame(ID3D11Texture2D* texture, uint32_t imag
             uploadedProjectionByImage_[imageIndex] = projection;
             if (flattened) {
                 auto& out = uploadedProjectionByImage_[imageIndex]; out = {}; out.view_count = 2;
-                out.layer_flags = scene ? (projection.layer_flags & ~4u) : 2u;
+                out.layer_flags = scene
+                    ? projection.layer_flags &
+                        ~uint32_t(XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT)
+                    : uint32_t(XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT);
                 for (uint32_t eye = 0; eye < 2; ++eye) {
                     const auto& view = overflowViews_[eye]; auto& v = out.views[eye];
                     v.pose = to_protocol_pose(view.pose);
                     v.angle_left = view.fov.angleLeft; v.angle_right = view.fov.angleRight;
                     v.angle_up = view.fov.angleUp; v.angle_down = view.fov.angleDown;
                 }
+            }
+            if (flattened && scene && projection.is_view_space()) {
+                uploadedOverflowWorldFromView_[imageIndex] = *overflowWorldFromView;
+                uploadedOverflowWorldFromViewValid_[imageIndex] = true;
+            } else {
+                uploadedOverflowWorldFromViewValid_[imageIndex] = false;
             }
             uploadedExtentByImage_[imageIndex] = flattened && !scene ? XrExtent2Di{static_cast<int32_t>(projectionWidth_), static_cast<int32_t>(projectionHeight_)} : XrExtent2Di{static_cast<int32_t>(header.width), static_cast<int32_t>(header.height)};
             uploadedAndroidSequenceByImage_[imageIndex] = header.sequence;
@@ -602,6 +658,7 @@ bool OpenXrSession::upload_android_frame(ID3D11Texture2D* texture, uint32_t imag
         return true;
     }
     uploadedMixedCounts_[imageIndex] = 0;
+    uploadedOverflowWorldFromViewValid_[imageIndex] = false;
     if ((header.version == axrb::protocol::kWindowsGpuFrameVersion || header.version == axrb::protocol::kQuadGpuFrameVersion || axrb::protocol::equirect_gpu_version(header.version))) {
         if (pixels->size() != sizeof(axrb::protocol::WindowsGpuFrame)) return false;
         axrb::protocol::WindowsGpuFrame gpu{};

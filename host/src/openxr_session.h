@@ -274,9 +274,11 @@ private:
     bool render_equirect(uint32_t slot, XrTime time, ID3D11Texture2D* source,
         const XrCompositionLayerEquirect2KHR& layer, const axrb::protocol::ImageEquirect& metadata);
     bool update_fps_hud(XrCompositionLayerQuad& layer, uint32_t existingLayers);
-    bool fill_projection_texture(ID3D11Texture2D* texture, uint32_t imageIndex, const HostImageSnapshot& frame);
+    bool fill_projection_texture(ID3D11Texture2D* texture, uint32_t imageIndex,
+        const HostImageSnapshot& frame, const XrPosef* overflowWorldFromView);
 
-    bool upload_android_frame(ID3D11Texture2D* texture, uint32_t imageIndex, const HostImageSnapshot& frame);
+    bool upload_android_frame(ID3D11Texture2D* texture, uint32_t imageIndex,
+        const HostImageSnapshot& frame, const XrPosef* overflowWorldFromView);
 #endif
 
     bool create_reference_space(XrReferenceSpaceType type, XrSpace* space);
@@ -400,6 +402,8 @@ private:
     std::vector<uint64_t> uploadedGpuSessionByImage_;
     std::vector<axrb::protocol::ImageProjection> uploadedProjectionByImage_;
     std::vector<XrExtent2Di> uploadedExtentByImage_;
+    std::vector<XrPosef> uploadedOverflowWorldFromView_;
+    std::vector<bool> uploadedOverflowWorldFromViewValid_;
     bool reportedStereoProjection_ = false;
     int64_t projectionFormat_ = 0;
     uint32_t projectionArraySize_ = 2;
@@ -419,7 +423,7 @@ private:
     axrb::host::QuadRenderer quadRenderer_;
     uint32_t nativeLayerLimit_ = 1;
     std::array<XrView, 2> overflowViews_{};
-    bool compose_overflow(ID3D11Texture2D*, const HostImageSnapshot&);
+    bool compose_overflow(ID3D11Texture2D*, const HostImageSnapshot&, const XrPosef* worldFromView);
     void trim_composition_resources(uint32_t spheres, bool panels);
     struct EquirectTarget {
         XrSwapchain swapchain = XR_NULL_HANDLE;

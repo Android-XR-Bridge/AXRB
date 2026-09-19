@@ -5,6 +5,8 @@ import struct
 import zlib
 import json
 from pathlib import Path
+COMPOSITION_LAYER_FLAGS_MASK = 7
+PROJECTION_VIEW_SPACE_BIT = 1 << 3
 
 
 def read_exact(connection, size):
@@ -51,6 +53,8 @@ def main():
         if count not in (1, 2) or reserved:
             raise ValueError('Invalid quad metadata')
         panels = [struct.unpack_from('<9fII', metadata, 8 + i * 44) for i in range(count)]
+        if any(panel[10] & ~COMPOSITION_LAYER_FLAGS_MASK for panel in panels):
+            raise ValueError('Invalid quad metadata')
         args.output.with_suffix('.json').write_text(json.dumps({'sequence': sequence, 'quads_pose_size_visibility_flags': panels}, indent=2))
         if count == 2:
             write_png(args.output.with_name(args.output.stem + '-panel2.png'), width, height, payload[eye_bytes:eye_bytes*2])
@@ -58,10 +62,15 @@ def main():
         return
     if metadata:
         count, layer_flags = struct.unpack_from('<II', metadata)
-        if count != 2 or layer_flags & ~7 or layers != 2:
+        if count != 2 or layer_flags & ~(COMPOSITION_LAYER_FLAGS_MASK | PROJECTION_VIEW_SPACE_BIT) or layers != 2:
             raise ValueError('Invalid stereo metadata')
         views = [struct.unpack_from('<11f', metadata, 8 + eye * 44) for eye in range(2)]
-        args.output.with_suffix('.json').write_text(json.dumps({'sequence': sequence, 'layer_flags': layer_flags, 'views_position_quaternion_fov': views}, indent=2))
+        args.output.with_suffix('.json').write_text(json.dumps({
+            'sequence': sequence,
+            'layer_flags': layer_flags & COMPOSITION_LAYER_FLAGS_MASK,
+            'view_space': bool(layer_flags & PROJECTION_VIEW_SPACE_BIT),
+            'views_position_quaternion_fov': views,
+        }, indent=2))
         right = args.output.with_name(args.output.stem + '-right.png')
         write_png(right, width, height, payload[eye_bytes:eye_bytes * 2])
         differences = sum(payload[i:i+3] != payload[eye_bytes+i:eye_bytes+i+3] for i in range(0, eye_bytes, 4))

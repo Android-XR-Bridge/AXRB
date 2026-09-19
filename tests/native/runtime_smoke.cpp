@@ -8,6 +8,7 @@
 #include <limits>
 #if defined(AXRB_INPUT_FIXTURE)
 #include "pose_frame.h"
+#include "runtime_internal.h"
 axrb::protocol::PoseFrame& axrb_input_fixture();
 #endif
 #include <cstring>
@@ -603,6 +604,78 @@ int main()
     endInfo.layerCount = 1;
     endInfo.layers = layers;
     if (xrEndFrame(session, &endInfo) != XR_SUCCESS) { return EXIT_FAILURE; }
+#if defined(AXRB_INPUT_FIXTURE)
+    // Projection metadata is the host-visible spatial contract. A VIEW layer
+    // must stay relative to canonical VIEW even as tracked head pose changes,
+    // while LOCAL continues to arrive in the tracking-world coordinate frame.
+    {
+        auto& input = axrb_input_fixture();
+        const auto savedInput = input;
+        const std::array<XrCompositionLayerProjectionView, 2> savedViews{
+            projectionViews[0], projectionViews[1]};
+        const float halfSqrt2 = std::sqrt(0.5f);
+        auto near = [](float a, float b) { return std::abs(a - b) < 0.0001f; };
+
+        XrReferenceSpaceCreateInfo viewSpaceInfo{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
+        viewSpaceInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
+        viewSpaceInfo.poseInReferenceSpace.position = {0.25f, 0.5f, -0.75f};
+        viewSpaceInfo.poseInReferenceSpace.orientation = {0.0f, halfSqrt2, 0.0f, halfSqrt2};
+        XrSpace offsetViewSpace{};
+        if (xrCreateReferenceSpace(session, &viewSpaceInfo, &offsetViewSpace) != XR_SUCCESS) return EXIT_FAILURE;
+
+        for (uint32_t eye = 0; eye < 2; ++eye) {
+            projectionViews[eye].pose = {};
+            projectionViews[eye].pose.orientation.w = 1;
+            projectionViews[eye].pose.position.x = eye ? -1.0f : 1.0f;
+        }
+        projection.space = offsetViewSpace;
+        projection.layerFlags = 5;
+        input.hmd = {10.0f, 20.0f, 30.0f, 0.0f, 0.0f, halfSqrt2, halfSqrt2};
+        locateInfo.space = space;
+        if (xrLocateViews(session, &locateInfo, &viewState, 2, &locatedViewCount, views) != XR_SUCCESS) return EXIT_FAILURE;
+
+        axrb::runtime::detail::PreparedGpuLayer firstView{};
+        if (axrb::runtime::detail::submit_projection_frame(endInfo, 0, true, &firstView) != XR_SUCCESS ||
+            !firstView.projection.is_view_space() ||
+            firstView.projection.layer_flags != (axrb::protocol::kProjectionViewSpaceBit | 5u) ||
+            !near(firstView.projection.views[0].pose.x, 0.25f) ||
+            !near(firstView.projection.views[0].pose.y, 0.5f) ||
+            !near(firstView.projection.views[0].pose.z, -1.75f) ||
+            !near(firstView.projection.views[1].pose.x, 0.25f) ||
+            !near(firstView.projection.views[1].pose.y, 0.5f) ||
+            !near(firstView.projection.views[1].pose.z, 0.25f) ||
+            !near(firstView.projection.views[0].pose.qy, halfSqrt2) ||
+            !near(firstView.projection.views[0].pose.qw, halfSqrt2)) return EXIT_FAILURE;
+
+        input.hmd = {-40.0f, -50.0f, -60.0f, halfSqrt2, 0.0f, 0.0f, halfSqrt2};
+        if (xrLocateViews(session, &locateInfo, &viewState, 2, &locatedViewCount, views) != XR_SUCCESS) return EXIT_FAILURE;
+        axrb::runtime::detail::PreparedGpuLayer movedHeadView{};
+        if (axrb::runtime::detail::submit_projection_frame(endInfo, 0, true, &movedHeadView) != XR_SUCCESS ||
+            std::memcmp(firstView.projection.views, movedHeadView.projection.views,
+                        sizeof(firstView.projection.views)) != 0) return EXIT_FAILURE;
+
+        input.local_origin = {3.0f, 4.0f, 5.0f, 0.0f, halfSqrt2, 0.0f, halfSqrt2};
+        input.local_origin_flags = 15;
+        if (xrLocateViews(session, &locateInfo, &viewState, 2, &locatedViewCount, views) != XR_SUCCESS) return EXIT_FAILURE;
+        projection.space = space;
+        axrb::runtime::detail::PreparedGpuLayer world{};
+        if (axrb::runtime::detail::submit_projection_frame(endInfo, 0, true, &world) != XR_SUCCESS ||
+            world.projection.is_view_space() || world.projection.layer_flags != 5 ||
+            !near(world.projection.views[0].pose.x, 3.0f) ||
+            !near(world.projection.views[0].pose.y, 4.0f) ||
+            !near(world.projection.views[0].pose.z, 4.0f) ||
+            !near(world.projection.views[1].pose.x, 3.0f) ||
+            !near(world.projection.views[1].pose.y, 4.0f) ||
+            !near(world.projection.views[1].pose.z, 6.0f)) return EXIT_FAILURE;
+
+        input = savedInput;
+        projectionViews[0] = savedViews[0];
+        projectionViews[1] = savedViews[1];
+        projection.space = space;
+        projection.layerFlags = 0;
+        if (xrLocateViews(session, &locateInfo, &viewState, 2, &locatedViewCount, views) != XR_SUCCESS) return EXIT_FAILURE;
+    }
+#endif
     // Forward core composition flags to the host compositor, including alpha
     // blending. Reject unknown bits rather than silently dropping semantics.
     projection.layerFlags = 7;

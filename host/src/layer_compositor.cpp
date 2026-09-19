@@ -1,6 +1,55 @@
 #include "openxr_session.h"
 #if defined(_WIN32)
 namespace axrb::host::detail {
+namespace {
+XrQuaternionf multiply(const XrQuaternionf& a, const XrQuaternionf& b)
+{
+    return {
+        a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+        a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+        a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+        a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+    };
+}
+
+XrVector3f rotate(const XrQuaternionf& q, const XrVector3f& v)
+{
+    const XrVector3f u{q.x, q.y, q.z};
+    const float dot = u.x * v.x + u.y * v.y + u.z * v.z;
+    const float crossX = u.y * v.z - u.z * v.y;
+    const float crossY = u.z * v.x - u.x * v.z;
+    const float crossZ = u.x * v.y - u.y * v.x;
+    const float scale = q.w * q.w - (u.x * u.x + u.y * u.y + u.z * u.z);
+    return {
+        2.0f * dot * u.x + scale * v.x + 2.0f * q.w * crossX,
+        2.0f * dot * u.y + scale * v.y + 2.0f * q.w * crossY,
+        2.0f * dot * u.z + scale * v.z + 2.0f * q.w * crossZ,
+    };
+}
+
+protocol::Pose relative_to_view(const protocol::Pose& worldPose, const XrPosef& worldFromView)
+{
+    const XrQuaternionf viewFromWorld{
+        -worldFromView.orientation.x,
+        -worldFromView.orientation.y,
+        -worldFromView.orientation.z,
+        worldFromView.orientation.w,
+    };
+    const XrVector3f delta{
+        worldPose.x - worldFromView.position.x,
+        worldPose.y - worldFromView.position.y,
+        worldPose.z - worldFromView.position.z,
+    };
+    const XrVector3f position = rotate(viewFromWorld, delta);
+    const XrQuaternionf orientation = multiply(
+        viewFromWorld, {worldPose.qx, worldPose.qy, worldPose.qz, worldPose.qw});
+    return {
+        position.x, position.y, position.z,
+        orientation.x, orientation.y, orientation.z, orientation.w,
+    };
+}
+}
+
 void OpenXrSession::trim_composition_resources(uint32_t spheres, bool panels) {
     while (equirectTargets_.size() > spheres) {
         auto& target = equirectTargets_.back();
@@ -13,7 +62,8 @@ void OpenXrSession::trim_composition_resources(uint32_t spheres, bool panels) {
     }
 }
 
-bool OpenXrSession::compose_overflow(ID3D11Texture2D* target, const HostImageSnapshot& frame) {
+bool OpenXrSession::compose_overflow(
+    ID3D11Texture2D* target, const HostImageSnapshot& frame, const XrPosef* worldFromView) {
     const bool scene = frame.projection.view_count == 2;
     const UINT width = scene ? frame.header.width : projectionWidth_;
     const UINT height = scene ? frame.header.height : projectionHeight_;
@@ -56,11 +106,20 @@ bool OpenXrSession::compose_overflow(ID3D11Texture2D* target, const HostImageSna
             if (!source) return false;
             const uint32_t slice = 0;
             XrExtent2Di extent{static_cast<int32_t>(part.header.width),static_cast<int32_t>(part.header.height)};
-            bool rendered = part.projection.is_equirect()
+            // Overlay metadata is world-space. A VIEW projection's pixels and
+            // eye cameras are not, so render a private metadata copy in VIEW.
+            auto metadata = part.projection;
+            if (worldFromView) {
+                if (metadata.is_equirect())
+                    metadata.equirect.pose = relative_to_view(metadata.equirect.pose, *worldFromView);
+                else
+                    metadata.quads[0].pose = relative_to_view(metadata.quads[0].pose, *worldFromView);
+            }
+            bool rendered = metadata.is_equirect()
                 ? equirectRenderer_.render(d3dDevice_.get(), d3dContext_.get(), source,
-                    slice, extent, format, part.projection.equirect, view, target, eye, width, height, true)
+                    slice, extent, format, metadata.equirect, view, target, eye, width, height, true)
                 : quadRenderer_.render(d3dDevice_.get(), d3dContext_.get(), source,
-                    slice, extent, format, part.projection.quads[0], view, target, eye, width, height);
+                    slice, extent, format, metadata.quads[0], view, target, eye, width, height);
             if (!rendered) return false;
         }
     }
