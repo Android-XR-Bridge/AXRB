@@ -110,6 +110,7 @@ export class Runtime {
     this.fpsHudEvent = `Local\\AXRB.FpsHud.${randomUUID().replaceAll('-', '')}`;
     const args = powershellArgs(path.join(this.root, 'scripts/run/run_windows_game.ps1'), { Avd: this.settings.avd, Port: this.settings.port,
       Sdk: this.settings.sdk, MemoryMB: this.settings.memoryMB, CpuCores: this.settings.cpuCores ?? 4, Package: game.package, Activity: game.activity, GameName: game.name, FpsHud: this.settings.fpsHud === true, FpsHudEventName: this.fpsHudEvent,
+      ...(this.settings.precomposeProjectionLayers === true ? { PrecomposeProjectionLayers: true } : {}),
       ...(this.settings.managedDirectory ? { RuntimeApk: path.join(this.root, 'out/android/runtime-arm64-v8a/axrb-openxr-runtime-debug.apk') } : {}) });
     // Windows PowerShell can exit successfully without executing its command
     // when CREATE_NEW_PROCESS_GROUP/detached is combined with no console.

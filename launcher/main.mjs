@@ -212,6 +212,7 @@ async function bootstrap() {
 state = new State(app.getPath('userData')); await state.load();
 state.data.settings = { sdk: path.join(process.env.LOCALAPPDATA || '', 'Android/Sdk'), avd: 'axrb-games-api34', port: 5580,
   memoryMB: 8192, cpuCores: 4, downloadDir: path.join(app.getPath('downloads'), 'AXRB'), ovrportCli: '',
+  precomposeProjectionLayers: false,
   guestClock: await exists(path.join(root, 'out/clock/Release/axrb_clock_launcher.exe')) ? 'TscCorrected' : 'Default', ...state.data.settings };
 runtime = new Runtime(root, state.data.settings);
 if (!smoke && (app.isPackaged || state.data.settings.managedDirectory || !await exists(path.join(state.data.settings.sdk, 'emulator/emulator.exe')))) {
@@ -334,7 +335,7 @@ handler('fpsHud', async enabled => {
   await persist();
 });
 handler('settings', async values => {
-  const allowed = ['sdk', 'avd', 'port', 'memoryMB', 'cpuCores', 'downloadDir', 'ovrportCli', 'diagnosticsEndpoint'];
+  const allowed = ['sdk', 'avd', 'port', 'memoryMB', 'cpuCores', 'downloadDir', 'ovrportCli', 'diagnosticsEndpoint', 'precomposeProjectionLayers'];
   if (!values || typeof values !== 'object') throw new Error('Invalid settings.');
   if (busy || controllers.size || runtime.child) throw new Error('Finish current tasks before changing runtime settings.');
   const settings = { ...state.data.settings };
@@ -343,6 +344,7 @@ handler('settings', async values => {
   if (!/^[A-Za-z0-9_-]+$/.test(settings.avd) || !Number.isInteger(settings.port) || settings.port < 5554 || settings.port > 5682 || settings.port % 2 ||
     !Number.isInteger(settings.memoryMB) || settings.memoryMB < 2048 || settings.memoryMB > 16384) throw new Error('Check the Android AVD, even-numbered port, and memory settings.');
   if (!Number.isInteger(settings.cpuCores) || settings.cpuCores < 2 || settings.cpuCores > 6) throw new Error('Choose between 2 and 6 vCPUs.');
+  if (typeof settings.precomposeProjectionLayers !== 'boolean') throw new Error('Choose whether to precompose projection layers.');
   for (const key of ['sdk', 'downloadDir']) if (typeof settings[key] !== 'string' || !path.isAbsolute(settings[key])) throw new Error('Select absolute Windows paths.');
   // Empty keeps the default paste service; anything else must be a self-hosted
   // HTTPS endpoint, so logs cannot be redirected to a plaintext collector.

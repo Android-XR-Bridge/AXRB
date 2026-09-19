@@ -54,6 +54,15 @@ export function Settings({ state, run, pending, notify }) {
         </div>
       </div>
     </details>
+    <div className="flex items-center justify-between gap-4">
+      <div>
+        <label htmlFor="precompose-projection-layers">Precompose projection layers</label>
+        <p id="precompose-projection-layers-help" className="text-xs text-muted-foreground">Off by default. Enable for compatibility with games such as The Climb 2 that use multiple projection layers. This adds GPU cost and applies on the next game launch.</p>
+      </div>
+      <input id="precompose-projection-layers" type="checkbox" role="switch" checked={draft.precomposeProjectionLayers === true}
+        className="size-4 shrink-0 accent-primary" aria-describedby="precompose-projection-layers-help"
+        onChange={e => edit('precomposeProjectionLayers', e.target.checked)} />
+    </div>
     <label className="flex items-center justify-between gap-4" htmlFor="fps-hud">
       <span>Show FPS in headset <span className="text-xs text-muted-foreground">(debug)</span></span>
       <input id="fps-hud" type="checkbox" role="switch" checked={state.settings.fpsHud === true} disabled={pending.has('fpsHud')}

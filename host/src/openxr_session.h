@@ -277,10 +277,12 @@ private:
         const XrCompositionLayerEquirect2KHR& layer, const axrb::protocol::ImageEquirect& metadata);
     bool update_fps_hud(XrCompositionLayerQuad& layer, uint32_t existingLayers);
     bool fill_projection_texture(ID3D11Texture2D* texture, uint32_t imageIndex,
-        const HostImageSnapshot& frame, const XrPosef* overflowWorldFromView);
+        const HostImageSnapshot& frame, bool precompose,
+        const XrPosef* overflowWorldFromView);
 
     bool upload_android_frame(ID3D11Texture2D* texture, uint32_t imageIndex,
-        const HostImageSnapshot& frame, const XrPosef* overflowWorldFromView);
+        const HostImageSnapshot& frame, bool precompose,
+        const XrPosef* overflowWorldFromView);
 #endif
 
     bool create_reference_space(XrReferenceSpaceType type, XrSpace* space);
@@ -329,6 +331,7 @@ private:
     std::array<XrSpace, 2> handSpaces_{XR_NULL_HANDLE, XR_NULL_HANDLE};
     std::array<XrSpace, 2> aimSpaces_{XR_NULL_HANDLE, XR_NULL_HANDLE};
     bool sessionRunning_ = false;
+    bool sessionVisible_ = false;
     bool useFrameLoop_ = true;
     bool controllerActionsReady_ = false;
     MenuShortcut menuShortcut_;
@@ -379,6 +382,10 @@ private:
         const char* value = std::getenv("AXRB_ASYNC_GPU_HANDOFF");
         return value && std::strcmp(value, "1") == 0;
     }();
+    const bool precomposeProjectionLayers_ = [] {
+        const char* value = std::getenv("AXRB_PRECOMPOSE_PROJECTION_LAYERS");
+        return value && std::strcmp(value, "1") == 0;
+    }();
     std::mutex frameHandoffMutex_;
     FramePool<GpuFrameBatch> gpuFrames_;
     // Only the receiving thread assembles pending batches. Publication pins
@@ -409,6 +416,8 @@ private:
     std::vector<XrExtent2Di> uploadedExtentByImage_;
     std::vector<XrPosef> uploadedOverflowWorldFromView_;
     std::vector<bool> uploadedOverflowWorldFromViewValid_;
+    std::vector<std::array<XrView, 2>> uploadedOverflowViews_;
+    std::vector<bool> uploadedOverflowViewsValid_;
     bool reportedStereoProjection_ = false;
     int64_t projectionFormat_ = 0;
     uint32_t projectionArraySize_ = 2;
@@ -428,6 +437,7 @@ private:
     uint32_t nativeLayerLimit_ = 1;
     NativeLayerSubmission nativeSubmission_;
     std::array<XrView, 2> overflowViews_{};
+    bool should_precompose(const GpuFrameBatch& frame) const;
     bool compose_overflow(ID3D11Texture2D*, const HostImageSnapshot&, const XrPosef* worldFromView);
     void trim_composition_resources(uint32_t spheres, bool panels);
     struct EquirectTarget {

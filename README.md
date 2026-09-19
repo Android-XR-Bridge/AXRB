@@ -54,6 +54,15 @@ Meta account credentials remain in Meta’s sign-in window. The launcher stores
 the resulting session with Windows credential protection and does not expose it
 to the renderer or game processes.
 
+**Settings → Precompose projection layers** provides an optional compatibility
+workaround for incorrect multi-projection rendering, including The Climb 2 on
+VDXR. It is off by default to retain native layer submission where supported.
+Save the setting and relaunch the game; it applies globally to subsequent
+launches until disabled. Precomposition adds GPU work, while layer-capacity
+overflow handling remains automatic with either setting. See
+[projection-layer compatibility](launcher/README.md#projection-layer-compatibility)
+for behavior, tradeoffs and script-launch options.
+
 ## Repository layout
 
 | Directory | Purpose |

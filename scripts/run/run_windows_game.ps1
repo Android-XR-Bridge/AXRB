@@ -15,6 +15,7 @@ param(
     [switch]$GpuSharing,
     [switch]$FpsHud,
     [ValidatePattern('^Local\\AXRB\.FpsHud\.[a-f0-9]{32}$')][string]$FpsHudEventName,
+    [switch]$PrecomposeProjectionLayers,
     [string]$HostExe
 )
 $ErrorActionPreference = 'Stop'
@@ -142,11 +143,17 @@ try {
     $closeReady = [System.Threading.EventWaitHandle]::new($false, [System.Threading.EventResetMode]::ManualReset, "$closeEventName.ready")
     $previousCloseEvent = $env:AXRB_CLOSE_EVENT
     $previousFpsHudEvent = $env:AXRB_FPS_HUD_EVENT
+    $previousPrecomposeProjectionLayers = $env:AXRB_PRECOMPOSE_PROJECTION_LAYERS
     try {
         $env:AXRB_CLOSE_EVENT = $closeEventName
         $env:AXRB_FPS_HUD_EVENT = $FpsHudEventName
+        $env:AXRB_PRECOMPOSE_PROJECTION_LAYERS = $(if ($PrecomposeProjectionLayers) { '1' } else { '0' })
         $bridgeProcess = Start-Process -FilePath $HostExe -ArgumentList @('--serve-openxr', '38490', '0', $titleArgument) -WindowStyle Hidden -PassThru -RedirectStandardOutput "$logs\host.log" -RedirectStandardError "$logs\host.err"
-    } finally { $env:AXRB_CLOSE_EVENT = $previousCloseEvent; $env:AXRB_FPS_HUD_EVENT = $previousFpsHudEvent }
+    } finally {
+        $env:AXRB_CLOSE_EVENT = $previousCloseEvent
+        $env:AXRB_FPS_HUD_EVENT = $previousFpsHudEvent
+        $env:AXRB_PRECOMPOSE_PROJECTION_LAYERS = $previousPrecomposeProjectionLayers
+    }
     Start-Sleep -Milliseconds 800
     if ($bridgeProcess.HasExited) {
         # The old message pointed at a relative path that does not exist in an

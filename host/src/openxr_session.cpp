@@ -209,6 +209,8 @@ bool OpenXrSession::initialize(const std::string& gameName)
     }
     nativeLayerLimit_ = properties.graphicsProperties.maxLayerCount;
     std::fprintf(stderr, "AXRB compositor: native layer limit=%u; excess layers composed on GPU\n", nativeLayerLimit_);
+    std::fprintf(stderr, "AXRB compositor: multi-projection policy=%s\n",
+                 precomposeProjectionLayers_ ? "precompose on GPU" : "native runtime submission");
     if (!create_d3d11_device()) {
         std::fprintf(stderr, "AXRB OpenXR: could not create the Direct3D 11 device the runtime requires\n");
         return false;
@@ -357,6 +359,7 @@ void OpenXrSession::pump_events()
 void OpenXrSession::handle_session_state(XrSessionState state)
 {
     std::fprintf(stderr, "AXRB OpenXR: session state=%d\n", static_cast<int>(state));
+    sessionVisible_ = state == XR_SESSION_STATE_VISIBLE || state == XR_SESSION_STATE_FOCUSED;
     if (state == XR_SESSION_STATE_READY && !sessionRunning_) {
         XrSessionBeginInfo beginInfo{XR_TYPE_SESSION_BEGIN_INFO};
         beginInfo.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;

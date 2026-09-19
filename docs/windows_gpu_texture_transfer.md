@@ -88,17 +88,19 @@ the tag. The capture tool reports it separately as `view_space`.
 
 Native mixed composition keeps each projection in its own `VIEW` or world space,
 with independent stereo render cameras, and keeps quad/equirect layers in world
-space. When the runtime's layer limit requires GPU flattening, AXRB transforms
-private copies of layer poses into the output camera space at predicted display
-time. A batch mixing `VIEW` and world coordinates is recomposited when that
-transform changes, regardless of which kind comes first. All-`VIEW` projection
-stacks do not depend on valid world tracking. Flattened layers cannot retain
-independent late reprojection.
+space. When the runtime's layer limit requires GPU flattening, or the optional
+[projection compatibility policy](../launcher/README.md#projection-layer-compatibility)
+selects it, AXRB transforms private copies of `VIEW` projection poses into host
+world space at predicted display time. The output uses the runtime's actual
+stereo poses and optical FOV, including for all-`VIEW` stacks. Precomposition
+requires valid host views and, for `VIEW` sources, a valid VIEW-to-world transform.
+Cached source frames are recomposited when those target poses, FOVs or transforms
+change. Flattened layers cannot retain independent late reprojection.
 
 Native spatial and wire-transport regressions cover head-motion invariance,
 offset reference spaces and strict flag validation. A local D3D11 pixel smoke
-verified world-overlay motion over a head-relative scene. Live-headset visual
-stability remains unverified.
+verified world-overlay motion over a head-relative scene. Simulator coverage also
+checks wider rotated projections, all-`VIEW` head locking and mixed-space motion.
 
 ## Signed vertical projection FOV
 
@@ -135,14 +137,15 @@ slices; quad/equirect destinations occupy one. A projection whose eyes share the
 same source image may use one shared GPU texture while retaining two independent
 render cameras and two output eyes.
 
-Overflow composition samples projections by camera-ray orientation and FOV.
+Precomposition samples projections by camera-ray orientation and FOV.
 Without depth metadata it cannot reconstruct positional reprojection, so it does
 not place the images on an arbitrary-depth quad. Out-of-FOV samples leave the
 underlying layers untouched; opaque, premultiplied and unpremultiplied layers
-retain their ordered blending semantics. The first projection defines output
-cameras and extent when it is the first layer; otherwise the output uses the
-current host stereo cameras. This flattened target still has the field-of-view
-and independent-reprojection limitations described above.
+retain their ordered blending semantics. The output always uses the current host
+stereo cameras and the acquired projection swapchain's extent, not the first
+source layer's camera or image size. This preserves visible coverage from wider
+or rotated later projections while retaining the independent-reprojection
+limitation described above.
 
 Wire layouts and version numbers are unchanged. Older hosts reject projection
 parts after index zero; deploy the Android runtime and Windows host together.
@@ -154,7 +157,6 @@ and the Android Vulkan batch probe's dynamic layer counts and rejection handling
 A local host smoke exercised ordered native submissions, interleaved mono/stereo
 slices, equirect fallback, mixed-space overflow cache invalidation, empty frames
 and procedural test imagery using real D3D11 textures and test OpenXR swapchains.
-Live-headset presentation remains unverified. The Climb 2 now exports its three
-projection layers successfully in the controlled startup probe, but subsequently
-terminates with `Oculus platform failed to initialize`; this rendering support
-does not establish full game compatibility.
+Native multi-projection presentation remains runtime-dependent; use the optional
+compatibility policy when a native stack renders incorrectly. Successful layer
+transport alone does not establish full game compatibility.

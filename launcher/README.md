@@ -138,6 +138,37 @@ Managed installations use `axrb-managed-api36` on port 5584 with four vCPUs and
 and survive launcher updates/uninstallation. Development checkouts can continue
 using an existing SDK and AVD. Windows features and SteamVR remain user-installed.
 
+### Projection-layer compatibility
+
+**Settings → Precompose projection layers** is **off by default**. Enable it only
+when a game has incorrect multi-projection rendering, such as the boxed/cross-eyed
+menu observed in The Climb 2 with VDXR. Stop the game, change the switch, click
+**Save**, then launch again. This is a global launcher setting, not a per-game
+override: turn it off before launching games that do not need the workaround.
+
+- **Off:** submit layers natively when they fit the OpenXR runtime's capacity.
+- **On:** combine stacks containing two or more projection layers into one stereo
+  projection, preserving their contents, ordering and alpha. Single-projection
+  and within-capacity native quad/equirect paths remain unchanged.
+- **Either setting:** composition required by the runtime's layer-capacity limit
+  remains automatic; the host still uses the runtime's reported limit.
+
+Precomposition adds GPU work and replaces independent runtime handling of those
+layers with the runtime's display-time camera and optical FOV for each eye.
+Wider or rotated source projections are sampled across that visible target,
+rather than clipped to the first layer's frustum. It is a compatibility
+workaround, not a performance option; its cost depends on the game and runtime.
+It does not change VrApi controller poses, device identity or tracking origin,
+and changing the setting does not require repatching or reinstalling the APK.
+The setting requires the updated AXRB launcher, launch script and host together.
+
+For script launches, add `-PrecomposeProjectionLayers` to
+`scripts/run/run_windows_game.ps1`; omitting it explicitly disables the workaround
+for that host even if the parent environment enabled it. Direct host launches
+can set `AXRB_PRECOMPOSE_PROJECTION_LAYERS=1` before startup. Only the exact value
+`1` enables the policy; unset or `0` leaves it off. The policy is selected at
+host startup, not changed during an active session.
+
 ## Data and limitations
 
 `%APPDATA%/AXRB/library.json` stores games, settings and task history.

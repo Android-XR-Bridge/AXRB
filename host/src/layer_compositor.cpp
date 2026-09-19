@@ -27,28 +27,6 @@ XrVector3f rotate(const XrQuaternionf& q, const XrVector3f& v)
     };
 }
 
-protocol::Pose relative_to_view(const protocol::Pose& worldPose, const XrPosef& worldFromView)
-{
-    const XrQuaternionf viewFromWorld{
-        -worldFromView.orientation.x,
-        -worldFromView.orientation.y,
-        -worldFromView.orientation.z,
-        worldFromView.orientation.w,
-    };
-    const XrVector3f delta{
-        worldPose.x - worldFromView.position.x,
-        worldPose.y - worldFromView.position.y,
-        worldPose.z - worldFromView.position.z,
-    };
-    const XrVector3f position = rotate(viewFromWorld, delta);
-    const XrQuaternionf orientation = multiply(
-        viewFromWorld, {worldPose.qx, worldPose.qy, worldPose.qz, worldPose.qw});
-    return {
-        position.x, position.y, position.z,
-        orientation.x, orientation.y, orientation.z, orientation.w,
-    };
-}
-
 protocol::Pose relative_to_world(const protocol::Pose& viewPose, const XrPosef& worldFromView)
 {
     const XrVector3f position = rotate(
@@ -63,25 +41,15 @@ protocol::Pose relative_to_world(const protocol::Pose& viewPose, const XrPosef& 
     };
 }
 
-bool convert_space(protocol::Pose& pose, bool sourceIsView, bool targetIsView,
-                   const XrPosef* worldFromView)
+bool convert_view_to_world(protocol::Pose& pose, bool sourceIsView,
+                           const XrPosef* worldFromView)
 {
-    if (sourceIsView == targetIsView) return true;
+    if (!sourceIsView) return true;
     if (!worldFromView) return false;
-    pose = targetIsView
-        ? relative_to_view(pose, *worldFromView)
-        : relative_to_world(pose, *worldFromView);
+    pose = relative_to_world(pose, *worldFromView);
     return true;
 }
 
-XrView projection_target_view(const protocol::ImageProjectionView& source)
-{
-    XrView view{XR_TYPE_VIEW};
-    view.pose.position = {source.pose.x, source.pose.y, source.pose.z};
-    view.pose.orientation = {source.pose.qx, source.pose.qy, source.pose.qz, source.pose.qw};
-    view.fov = {source.angle_left, source.angle_right, source.angle_up, source.angle_down};
-    return view;
-}
 }
 
 void OpenXrSession::trim_composition_resources(uint32_t spheres, bool panels) {
@@ -96,20 +64,30 @@ void OpenXrSession::trim_composition_resources(uint32_t spheres, bool panels) {
     }
 }
 
+bool OpenXrSession::should_precompose(const GpuFrameBatch& frame) const
+{
+    if (frame.count > nativeLayerLimit_) return true;
+    if (!precomposeProjectionLayers_) return false;
+    // Optionally collapse projection stacks so runtimes that cannot order
+    // multiple projection layers receive one stereo result.
+    bool foundProjection = false;
+    for (uint32_t i = 0; i < frame.count; ++i) {
+        const auto& metadata = frame.parts[i].projection;
+        if (metadata.is_equirect() || metadata.quad_count()) continue;
+        if (foundProjection) return true;
+        foundProjection = true;
+    }
+    return false;
+}
+
 bool OpenXrSession::compose_overflow(
     ID3D11Texture2D* target, const HostImageSnapshot& frame, const XrPosef* worldFromView) {
     if (!frame.gpu || frame.gpu->count == 0) return false;
-    const auto& first = frame.gpu->parts[0];
-    const bool firstIsProjection = first.projection.view_count == 2;
-    const bool targetIsView = firstIsProjection && first.projection.is_view_space();
-    const UINT width = firstIsProjection ? first.header.width : projectionWidth_;
-    const UINT height = firstIsProjection ? first.header.height : projectionHeight_;
+    const UINT width = projectionWidth_;
+    const UINT height = projectionHeight_;
     const auto format = static_cast<DXGI_FORMAT>(projectionFormat_);
-    std::array<XrView, 2> targetViews{};
+    const auto& targetViews = overflowViews_;
     for (uint32_t eye = 0; eye < 2; ++eye) {
-        targetViews[eye] = firstIsProjection
-            ? projection_target_view(first.projection.views[eye])
-            : overflowViews_[eye];
         D3D11_RENDER_TARGET_VIEW_DESC desc{}; desc.Format = format;
         desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
         desc.Texture2DArray.FirstArraySlice = eye; desc.Texture2DArray.ArraySize = 1;
@@ -125,19 +103,13 @@ bool OpenXrSession::compose_overflow(
         const XrExtent2Di extent{
             static_cast<int32_t>(part.header.width), static_cast<int32_t>(part.header.height)};
         auto metadata = part.projection;
-        if (metadata.is_equirect()) {
-            if (!convert_space(metadata.equirect.pose, false, targetIsView, worldFromView))
-                return false;
-        } else if (metadata.view_count != 2) {
-            if (!convert_space(metadata.quads[0].pose, false, targetIsView, worldFromView))
-                return false;
-        }
         for (uint32_t eye = 0; eye < 2; ++eye) {
             const auto& targetView = targetViews[eye];
             bool rendered = false;
             if (metadata.view_count == 2) {
                 auto sourceView = metadata.views[eye];
-                if (!convert_space(sourceView.pose, metadata.is_view_space(), targetIsView, worldFromView))
+                if (!convert_view_to_world(
+                        sourceView.pose, metadata.is_view_space(), worldFromView))
                     return false;
                 rendered = quadRenderer_.render_projection(
                     d3dDevice_.get(), d3dContext_.get(), source, eye, extent, format,
@@ -156,7 +128,7 @@ bool OpenXrSession::compose_overflow(
     }
     static bool reported = false;
     if (!reported) {
-        std::fprintf(stderr, "AXRB compositor: %u ordered dynamic layers composed into stereo; native limit %u\n",
+        std::fprintf(stderr, "AXRB compositor: %u ordered dynamic layers composed into stereo by policy; native limit %u\n",
                      frame.gpu->count, nativeLayerLimit_);
         reported = true;
     }
