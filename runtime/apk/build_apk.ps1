@@ -7,13 +7,17 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 if (!$Jdk) {
-    if ($env:JAVA_HOME) { $Jdk = $env:JAVA_HOME }
-    else {
-        $javac = Get-Command javac.exe -ErrorAction SilentlyContinue
-        if ($javac) { $Jdk = Split-Path (Split-Path $javac.Source -Parent) -Parent }
-        else { $Jdk = "$env:ProgramFiles\Android\Android Studio\jbr" }
-    }
+    # Windows may expose javac through an Oracle javapath shim. Its parent is
+    # not a JDK, so validate candidate roots before selecting one.
+    $candidates = @()
+    if ($env:JAVA_HOME) { $candidates += $env:JAVA_HOME }
+    $candidates += "$env:ProgramFiles\Android\Android Studio\jbr"
+    $candidates += "$env:ProgramFiles\Java\latest"
+    $javac = Get-Command javac.exe -ErrorAction SilentlyContinue
+    if ($javac) { $candidates += (Split-Path (Split-Path $javac.Source -Parent) -Parent) }
+    $Jdk = $candidates | Where-Object { $_ -and (Test-Path -LiteralPath (Join-Path $_ 'bin\javac.exe')) } | Select-Object -First 1
 }
+if (!$Jdk) { throw 'A JDK with bin\javac.exe is required. Set JAVA_HOME or pass -Jdk.' }
 . "$PSScriptRoot/../../scripts/paths.ps1"
 $root = $AxrbRoot
 $build = Join-Path $AxrbOut "android/runtime-$Abi"
