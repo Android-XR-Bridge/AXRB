@@ -73,3 +73,36 @@ test('debug setup flag skips hardware requirements but keeps the hypervisor gate
   setup.status.hardware = weak;
   await assert.rejects(setup.start({ directory: 'unused', accepted: true }), /hypervisor/);
 });
+
+test('a slow Android shutdown does not discard a completed install', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'axrb-shutdown-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const old = { ...process.env };
+  t.after(() => { for (const name of ['AXRB_DATA_HOME', 'ANDROID_AVD_HOME', 'ANDROID_USER_HOME', 'ANDROID_HOME', 'ANDROID_SDK_ROOT']) { if (old[name] === undefined) delete process.env[name]; else process.env[name] = old[name]; } });
+  await fs.mkdir(path.join(dir, 'out/android/runtime-arm64-v8a'), { recursive: true });
+  await fs.writeFile(path.join(dir, 'out/android/runtime-arm64-v8a/axrb-openxr-runtime-debug.apk'), 'apk');
+  const avd = path.join(dir, 'AXRB Runtime/avd/axrb-managed-api36.avd');
+  await fs.mkdir(avd, { recursive: true });
+  // An existing data image means setup skips the free-space gate, as on a reinstall.
+  await fs.writeFile(path.join(avd, 'userdata-qemu.img'), 'fixture');
+  // Quick-boot snapshot save outlives the grace period: the lock never clears.
+  await fs.mkdir(path.join(avd, 'hardware-qemu.ini.lock'), { recursive: true });
+  const runtime = {
+    settings: { cpuCores: 4, memoryMB: 8192, avd: 'axrb-managed-api36' },
+    online: async () => false,
+    ensure: async () => {},
+    adb: async args => {
+      if (args[0] === 'emu' && args[1] === 'avd') return 'axrb-managed-api36\nOK';
+      if (args.includes('path')) return 'package:/data/app/base.apk';
+      return '';
+    },
+  };
+  const setup = new Setup({ root: dir, directory: dir, runtime, components: [], save: async () => {}, changed() {}, shutdownGraceMs: 400 });
+  setup.status.hardware = { hypervisor: true, supportedGpu: true, x64: true, memoryGB: 16 };
+  await setup.start({ directory: dir, accepted: true });
+  await setup.task;
+  assert.equal(setup.status.phase, 'ready', `setup must complete, got: ${setup.status.error}`);
+  await fs.access(path.join(setup.directory, 'ready.json'));
+  assert.ok(setup.status.logs.some(l => /still shutting down/i.test(l)), 'the slow shutdown is reported, not hidden');
+  assert.ok(await fs.access(path.join(avd, 'hardware-qemu.ini.lock')).then(() => true, () => false), 'the lock is left for the emulator to reclaim');
+});

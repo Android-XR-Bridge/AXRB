@@ -73,8 +73,8 @@ export function planStorageChange(currentGB, requestedGB) {
   return currentGB === null || requestedGB > currentGB;
 }
 export class Setup {
-  constructor({ root, directory, runtime, components, save, changed, debug = false }) {
-    Object.assign(this, { root, directory, runtime, components, save, changed, debug });
+  constructor({ root, directory, runtime, components, save, changed, debug = false, shutdownGraceMs = 180000 }) {
+    Object.assign(this, { root, directory, runtime, components, save, changed, debug, shutdownGraceMs });
     this.status = { phase: 'checking', directory, storageGB: runtime.settings?.storageGB ?? 32, completed: 0, total: 0, active: false, startedAt: 0, logs: [], debug };
   }
   update(value) {
@@ -102,6 +102,10 @@ export class Setup {
     // Keep AXRB's emulator transport away from Android Studio, Quest tools,
     // and other emulators that may own the default ADB server on 5037.
     process.env.ANDROID_ADB_SERVER_PORT = '5038';
+    // Settings allow console ports up to 5682, past adb's own scan ceiling.
+    // Whichever process starts the shared server must widen it, or an emulator
+    // on a high port is never discovered.
+    process.env.ADB_LOCAL_TRANSPORT_MAX_PORT = '5683';
     delete process.env.ADB_SERVER_SOCKET;
     process.env.ANDROID_HOME = this.runtime.settings.sdk;
     process.env.ANDROID_SDK_ROOT = this.runtime.settings.sdk;
@@ -213,10 +217,17 @@ export class Setup {
     } finally {
       const name = await this.runtime.adb(['emu', 'avd', 'name']).catch(() => '');
       if (name.split(/\r?\n/)[0].trim() === this.runtime.settings.avd) {
+        this.update({ component: 'Shutting down Android' });
         await this.runtime.adb(['emu', 'kill']).catch(() => {});
         const lock = path.join(avd, 'hardware-qemu.ini.lock');
-        for (let i = 0; i < 80 && await exists(lock); i++) await new Promise(resolve => setTimeout(resolve, 500));
-        if (await exists(lock)) throw new Error('Android is still shutting down. Wait a moment and retry setup.');
+        // Shutdown writes a quick-boot snapshot, so it scales with guest RAM
+        // and disk speed and can run for minutes. Everything setup installs is
+        // already on disk by now, so a slow shutdown is reported, never fatal:
+        // failing here discarded a complete install and forced the whole run
+        // again. A lock left behind is cleaned up by the next emulator start.
+        const deadline = Date.now() + this.shutdownGraceMs;
+        while (Date.now() < deadline && await exists(lock)) await new Promise(resolve => setTimeout(resolve, 500));
+        if (await exists(lock)) this.appendLog('Android is still shutting down in the background; setup is complete and you can start it now.');
       }
     }
     signal.throwIfAborted();

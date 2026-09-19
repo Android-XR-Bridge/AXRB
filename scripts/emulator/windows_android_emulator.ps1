@@ -18,6 +18,12 @@ $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/gpu_validation.ps1"
 $env:ANDROID_ADB_SERVER_PORT = '5038'
 $env:ADB_SERVER_SOCKET = $null
+# This script accepts console ports up to 5682, but adb only scans for emulator
+# transports up to its own lower default. An emulator above that ceiling boots
+# normally and is never discovered: the process stays alive while adb reports it
+# missing forever. Widen the scan to the whole range we allow, before any adb
+# call, so the server this script starts inherits it.
+$env:ADB_LOCAL_TRANSPORT_MAX_PORT = '5683'
 if ($Port % 2) { throw 'Emulator console port must be even.' }
 $adb = Join-Path $Sdk 'platform-tools\adb.exe'
 $emulator = Join-Path $Sdk 'emulator\emulator.exe'
@@ -80,12 +86,34 @@ function Stop-StaleManagedEmulator {
     }
     if ($candidates) { Start-Sleep -Seconds 2 }
 }
+# Verification runs the moment sys.boot_completed flips, while Android is still
+# starting services and dexopting, so the ADB transport can stall well past a
+# single timeout on a slow machine. One stall must not abandon a healthy boot.
+function Invoke-Adb([string[]]$Arguments, [int]$TimeoutSeconds = 60, [int]$Attempts = 3) {
+    for ($attempt = 1; ; $attempt++) {
+        try { return Invoke-ExternalWithTimeout $adb $Arguments $TimeoutSeconds }
+        catch {
+            $failure = $_.Exception.Message
+            if ($attempt -ge $Attempts) {
+                # A protocol fault means the server went away mid-command, which
+                # is what a second ADB build of a different version does when it
+                # shares this port: it restarts the server it did not start.
+                if ($failure -match 'protocol fault|connection reset') {
+                    throw "$failure. Another ADB version is restarting the server on 127.0.0.1:5038. Close other Android tools (Android Studio, scrcpy, phone suites) and try again."
+                }
+                throw
+            }
+            Write-Output "Android startup diagnostic: adb $($Arguments -join ' ') failed ($failure); retry $attempt of $($Attempts - 1)."
+            Start-Sleep -Seconds 3
+        }
+    }
+}
 function Verify-Gpu {
     Write-Output 'Android startup diagnostic: checking guest GLES renderer.'
-    $gles = (Invoke-ExternalWithTimeout $adb @('-s', $serial, 'shell', 'dumpsys', 'SurfaceFlinger') 30 | Select-String '^GLES:') -join "`n"
+    $gles = (Invoke-Adb @('-s', $serial, 'shell', 'dumpsys', 'SurfaceFlinger') 60 | Select-String '^GLES:') -join "`n"
     if (!$gles) { throw 'Cannot identify guest GLES renderer.' }
     Write-Output 'Android startup diagnostic: checking guest Vulkan device.'
-    $raw = Invoke-ExternalWithTimeout $adb @('-s', $serial, 'shell', 'cmd', 'gpu', 'vkjson') 60
+    $raw = Invoke-Adb @('-s', $serial, 'shell', 'cmd', 'gpu', 'vkjson') 90
     $vk = ($raw -join "`n") | ConvertFrom-Json
     $devices = @($vk.devices)
     Assert-AxrbGuestGpu -Gles $gles -Devices $devices
@@ -97,14 +125,15 @@ function Verify-Gpu {
 }
 function Verify-Abi {
     Write-Output 'Android startup diagnostic: checking guest ABI.'
-    [string]$abis = ((Invoke-ExternalWithTimeout $adb @('-s', $serial, 'shell', 'getprop', 'ro.product.cpu.abilist') 30) -join '')
+    [string]$abis = ((Invoke-Adb @('-s', $serial, 'shell', 'getprop', 'ro.product.cpu.abilist') 60) -join '')
     if ($Abi -notin $abis.Trim().Split(',')) {
         throw "Guest does not support requested ABI $Abi (advertised: $abis)."
     }
     if ($Abi -eq 'arm64-v8a') {
-        [string]$bridge = ((& $adb -s $serial shell getprop ro.dalvik.vm.native.bridge) -join '')
+        # Bounded like the rest: a raw `& adb` here could hang without limit.
+        [string]$bridge = ((Invoke-Adb @('-s', $serial, 'shell', 'getprop', 'ro.dalvik.vm.native.bridge') 60) -join '')
         $bridge = $bridge.Trim()
-        if ($LASTEXITCODE -ne 0 -or !$bridge -or $bridge -eq '0') {
+        if (!$bridge -or $bridge -eq '0') {
             throw 'ARM64 on this x86_64 AVD requires an enabled native bridge.'
         }
         Write-Output "ARM64 native bridge: $bridge; guest ABIs: $abis"
@@ -139,6 +168,24 @@ switch ($Action) {
         Run $emulator @('-accel-check')
         $adbPort = $Port + 1
         Write-Output "Android startup diagnostic: SDK=$Sdk; AVD=$Avd; console=$Port; adb=$adbPort; server=127.0.0.1:5038; image=$systemImage"
+        # Hyper-V, which AXRB requires, reserves TCP ranges at boot and they
+        # differ per machine. A reserved console or adb port lets the emulator
+        # start and stay alive while nothing can ever connect to it, which looks
+        # exactly like a hung boot. Say so now instead of after the timeout.
+        $reserved = @()
+        try {
+            foreach ($line in (netsh interface ipv4 show excludedportrange protocol=tcp 2>$null)) {
+                if ($line -match '^\s*(\d+)\s+(\d+)') {
+                    $rangeStart = [int]$Matches[1]; $rangeEnd = [int]$Matches[2]
+                    foreach ($candidate in @($Port, $adbPort)) {
+                        if ($candidate -ge $rangeStart -and $candidate -le $rangeEnd) { $reserved += "$candidate (in reserved range $rangeStart-$rangeEnd)" }
+                    }
+                }
+            }
+        } catch { }
+        if ($reserved) {
+            throw "Windows has reserved the port $($reserved -join ' and '). Hyper-V claims TCP ranges at startup, and Android cannot be reached on a reserved port. Choose a different Android port in Settings."
+        }
         $drive = [IO.Path]::GetPathRoot($(if ($env:ANDROID_AVD_HOME) { $env:ANDROID_AVD_HOME } else { $Sdk }))
         if ($drive) {
             $freeGB = (Get-PSDrive -Name $drive.TrimEnd(':\') -ErrorAction SilentlyContinue).Free / 1GB
@@ -148,8 +195,20 @@ switch ($Action) {
         # ANDROID_ADB_SERVER_PORT keeps this a local daemon; setting
         # ANDROID_ADB_SERVER_ADDRESS makes adb treat it as a remote server and
         # prevents the client from starting it automatically.
-        Invoke-ExternalWithTimeout $adb @('start-server') 15 | Out-Null
-        $devices = Invoke-ExternalWithTimeout $adb @('devices') 15
+        # A server left running from earlier inherited the narrower scan range,
+        # so a high port would still go undiscovered. Restart it only when the
+        # requested port actually needs the wider range.
+        if ($adbPort -gt 5585) {
+            Write-Output "Android startup diagnostic: adb port $adbPort is above the default scan range; restarting the ADB server with a wider range."
+            try { Invoke-ExternalWithTimeout $adb @('kill-server') 15 | Out-Null } catch { }
+        }
+        # These two were the only adb calls in the launch that neither retried
+        # nor tolerated failure, so one recoverable hiccup aborted everything.
+        # 'protocol fault (couldn't read status): connection reset' is the
+        # common one: another adb build sharing this server port restarts it,
+        # killing whatever was in flight. The next attempt reconnects fine.
+        Invoke-Adb @('start-server') 30 | Out-Null
+        $devices = Invoke-Adb @('devices') 30
         $existingState = ''
         if ($devices -match "^$serial\s") {
             try { $existingState = [string]((Invoke-ExternalWithTimeout $adb @('-s', $serial, 'get-state') 10) -join ''); $existingState = $existingState.Trim() } catch { }
@@ -184,16 +243,19 @@ switch ($Action) {
         $arguments = @('-avd', $Avd, '-ports', "$Port,$adbPort", '-gpu', 'host', '-accel', 'on', '-no-boot-anim', '-memory', "$MemoryMB")
         if ($PSBoundParameters.ContainsKey('CpuCores')) { $arguments += @('-cores', "$CpuCores") }
         if (!$ShowWindow) { $arguments += '-no-window' }
-        if ($GuestClock -ne 'Default') {
-            # Request the CPU clock, retaining Linux's stability checks.
-            # QEMU's extra kernel options are appended to the Android defaults.
-            $arguments += @('-show-kernel', '-qemu', '-append', 'clocksource=tsc')
-        }
         if ($GuestClock -eq 'TscCorrected') {
             # The clock-correction launcher cannot safely combine its host clock
             # shim with a persisted Android snapshot. Keep normal launches on
             # quick boot, but make the corrected-clock mode explicit and cold.
+            # This has to precede -qemu: the emulator consumes its own options
+            # only before that separator, and QEMU proper rejects -no-snapshot.
             $arguments += '-no-snapshot'
+        }
+        if ($GuestClock -ne 'Default') {
+            # Request the CPU clock, retaining Linux's stability checks.
+            # QEMU's extra kernel options are appended to the Android defaults.
+            # Keep this last; everything after -qemu goes to QEMU, not the emulator.
+            $arguments += @('-show-kernel', '-qemu', '-append', 'clocksource=tsc')
         }
         $oldLayerPath = $env:VK_LAYER_PATH
         $oldLayers = $env:VK_INSTANCE_LAYERS
@@ -240,6 +302,7 @@ switch ($Action) {
         $startedAt = Get-Date
         $lastDiagnostic = $startedAt
         $adbReconnectAttempted = $false
+        $devicesReported = $false
         $adbServerRestarted = $false
         # Corrected TSC mode deliberately cold-boots Android and can spend
         # several minutes unpacking and registering APEX modules on first use.
@@ -251,17 +314,31 @@ switch ($Action) {
             $ErrorActionPreference = 'Continue'
             # ADB commonly reports `offline` while adbd is starting. Treat
             # that as a retryable state instead of aborting the whole launch.
-            [string]$bootText = ''
-            try { $bootText = (Invoke-ExternalWithTimeout $adb @('-s', $serial, 'shell', 'getprop', 'sys.boot_completed') 10) -join '' } catch { $bootText = '' }
+            [string]$bootText = ''; $bootFailure = ''
+            try { $bootText = (Invoke-ExternalWithTimeout $adb @('-s', $serial, 'shell', 'getprop', 'sys.boot_completed') 10) -join '' }
+            catch { $bootText = ''; $bootFailure = ($_.Exception.Message -replace '\s+', ' ').Trim() }
             $ErrorActionPreference = 'Stop'
             $bootText = $bootText.Trim()
             if ($bootText -eq '1') { $booted = $true; break }
             if (((Get-Date) - $lastDiagnostic).TotalSeconds -ge 30) {
-                $adbState = 'offline'
-                try { $adbState = (Invoke-ExternalWithTimeout $adb @('-s', $serial, 'get-state') 10) -join '' } catch { }
-                [string]$adbText = $adbState
-                $adbText = $adbText.Trim(); if (!$adbText) { $adbText = 'offline' }
+                # Never collapse "adb could not reach this serial" into the same
+                # word as "adb reports the transport offline": they are different
+                # faults and reading 'offline' for both hid which one occurred.
+                [string]$adbText = ''
+                try { $adbText = ((Invoke-ExternalWithTimeout $adb @('-s', $serial, 'get-state') 10) -join '').Trim() }
+                catch { $adbText = 'unreachable: ' + (($_.Exception.Message -replace '\s+', ' ').Trim()) }
+                if (!$adbText) { $adbText = 'no answer' }
+                if ($bootFailure -and $bootText -eq '') { $bootText = "(getprop failed: $bootFailure)" }
                 Write-Output ("Android startup diagnostic: {0}s elapsed; adb={1}; boot={2}; processExited={3}" -f [int]((Get-Date) - $startedAt).TotalSeconds, $adbText, $bootText, $process.HasExited)
+                # One listing settles whether adb sees nothing at all, sees this
+                # transport but offline, or sees a different serial entirely.
+                if (!$devicesReported) {
+                    $devicesReported = $true
+                    $seen = 'none'
+                    try { $seen = ((Invoke-ExternalWithTimeout $adb @('devices') 10) | Where-Object { $_ -match '\S' -and $_ -notmatch '^List of devices' }) -join '; ' } catch { $seen = "listing failed: $($_.Exception.Message)" }
+                    if (!$seen) { $seen = 'none' }
+                    Write-Output "Android startup diagnostic: expecting $serial; adb currently lists: $seen"
+                }
                 if ($adbText -eq 'offline') {
                     if (!$adbReconnectAttempted) {
                         Write-Output 'Android startup diagnostic: reconnecting offline ADB transport.'

@@ -16,7 +16,13 @@ export function GameDetails({ game, state, local, onClose, run, pending, setPage
   const operate = fn => run(`game-${game.id}`, fn);
   const download = () => operate(async () => { await call('download', game.id, build || undefined); onClose(); setPage('downloads'); });
   const install = () => operate(async () => { await call('install', game.id); notify('Installed'); });
-  const loadExtra = kind => operate(async () => { const items = await call(kind, game.id); setExtra({ kind, items }); if (kind === 'builds') setBuild(items[0]?.id || ''); });
+  const loadExtra = kind => operate(async () => {
+    const result = await call(kind, game.id);
+    if (kind === 'permissions') { setExtra({ kind, ...result }); return; }
+    setExtra({ kind, items: result });
+    if (kind === 'builds') setBuild(result[0]?.id || '');
+  });
+  const setPermission = (name, granted) => operate(async () => setExtra({ kind: 'permissions', ...await call('setPermission', game.id, name, granted) }));
   return <Dialog open onOpenChange={open => { if (!open) onClose(); }}>
     <DialogContent id="details" aria-describedby={undefined} onCloseAutoFocus={event => { event.preventDefault(); if (returnFocus.current?.isConnected) returnFocus.current.focus(); }} className="max-h-[85vh] gap-0 overflow-y-auto p-0 sm:max-w-[520px]">
       <div className="px-6 pt-6 pr-14"><DialogTitle className="leading-snug">{game.name}</DialogTitle>{game.version && <div className="mt-1 text-xs text-muted-foreground">{game.version}</div>}</div>
@@ -38,6 +44,7 @@ export function GameDetails({ game, state, local, onClose, run, pending, setPage
               {game.source === 'meta' && <><DropdownMenuItem disabled={busy || !state.signedIn} onSelect={() => loadExtra('builds')}>Versions</DropdownMenuItem><DropdownMenuItem disabled={busy || !state.signedIn} onSelect={() => loadExtra('dlc')}>Add-ons</DropdownMenuItem></>}
               {game.apk && <>{game.source === 'meta' && <DropdownMenuSeparator />}<DropdownMenuItem disabled={busy} onSelect={() => operate(async () => { await call('patch', game.id); notify('Patched'); })}>Patch with ovrport</DropdownMenuItem><DropdownMenuItem disabled={busy} onSelect={() => operate(async () => { await call('importAssets', game.id); notify('Install to apply content files'); })}>Add content files</DropdownMenuItem><DropdownMenuItem onSelect={() => operate(() => call('openFolder', game.id))}>Open folder</DropdownMenuItem>{game.installed && <DropdownMenuItem disabled={busy} onSelect={install}>Update installation</DropdownMenuItem>}</>}
               {!game.apk && game.source !== 'meta' && <DropdownMenuItem disabled={busy} onSelect={() => run('import', () => call('import'))}>Import APK</DropdownMenuItem>}
+              {game.installed && <DropdownMenuItem disabled={busy} onSelect={() => loadExtra('permissions')}>Android permissions</DropdownMenuItem>}
               {game.installed && <><DropdownMenuSeparator /><DropdownMenuItem className="text-destructive" disabled={busy || Boolean(state.running) || Boolean(activeJob)} onSelect={() => operate(() => call('uninstall', game.id))}>Uninstall</DropdownMenuItem></>}
             </DropdownMenuContent>
           </DropdownMenu>}
@@ -45,6 +52,24 @@ export function GameDetails({ game, state, local, onClose, run, pending, setPage
         {activeJob?.status === 'installing' ? <div role="status"><div className="break-words text-xs text-muted-foreground">{activeJob.stage}</div><InstallProgress job={activeJob} /></div>
           : pending.has(`game-${game.id}`) && <div role="status" className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" />Working…</div>}
         {extra?.kind === 'builds' && <div className="flex items-center gap-2 border-t pt-4">{extra.items.length ? <><Select value={build} onValueChange={setBuild}><SelectTrigger className="min-w-0 flex-1" aria-label="Quest build"><SelectValue /></SelectTrigger><SelectContent>{extra.items.map(b => <SelectItem key={b.id} value={b.id}>{b.version || b.code}</SelectItem>)}</SelectContent></Select><Button disabled={busy || Boolean(activeJob)} onClick={download}>Download</Button></> : <span className="text-muted-foreground">No builds available</span>}</div>}
+        {extra?.kind === 'permissions' && <div className="border-t pt-4">
+          {extra.prompt && <p role="alert" className="mb-3 rounded-md bg-secondary p-3 text-xs">Android is showing a permission prompt right now. Allow what the game needs here, then relaunch it.</p>}
+          {extra.items.length ? <>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <p className="text-xs text-muted-foreground">Android asks for these inside the headset. The emulator has no window, so answer them here.</p>
+              <Button size="sm" variant="outline" disabled={busy || extra.items.every(p => p.granted)}
+                onClick={() => operate(async () => {
+                  let latest = extra;
+                  for (const item of extra.items.filter(p => !p.granted)) latest = { kind: 'permissions', ...await call('setPermission', game.id, item.name, true) };
+                  setExtra(latest); notify('Permissions allowed');
+                })}>Allow all</Button>
+            </div>
+            {extra.items.map(item => <div key={item.name} className="flex items-center justify-between gap-3 py-2">
+              <div className="min-w-0"><div className="text-sm">{item.label}</div><div className="mt-0.5 truncate text-xs text-muted-foreground" title={item.name}>{item.name}</div></div>
+              <Button size="sm" variant={item.granted ? 'ghost' : 'outline'} disabled={busy} onClick={() => setPermission(item.name, !item.granted)}>{item.granted ? 'Allowed' : 'Allow'}</Button>
+            </div>)}
+          </> : <p className="text-muted-foreground">This game asks for no permissions.</p>}
+        </div>}
         {extra?.kind === 'dlc' && <div className="border-t pt-4">{extra.items.length ? <><p className="mb-3 text-xs text-muted-foreground">Install after downloading to apply add-ons.</p>{extra.items.map(dlc => <div key={dlc.id} className="flex items-center justify-between gap-3 py-2"><div className="min-w-0"><div className="text-sm">{dlc.name}</div><div className="mt-1 text-xs text-muted-foreground">{!dlc.owned ? 'Ownership not confirmed' : !dlc.fileCount ? 'No separate download' : bytes(dlc.bytes)}</div></div><Button size="sm" variant="outline" disabled={!dlc.owned || !dlc.fileCount || busy || Boolean(activeJob)} onClick={() => operate(async () => { await call('downloadDlc', game.id, dlc.id); onClose(); setPage('downloads'); })}>Download</Button></div>)}</> : <p className="text-muted-foreground">No downloadable add-ons</p>}</div>}
       </div>
     </DialogContent>

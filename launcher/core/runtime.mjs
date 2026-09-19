@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { installFiles } from './game-files.mjs';
+import { describePermissionFailure, parsePermissionPrompt, parseRuntimePermissions, validPermission } from './permissions.mjs';
 
 export function run(executable, args, { timeout = 120000, onOutput = () => {}, signal, requireCompleteOutput = false, rejectStderr = false } = {}) {
   return new Promise((resolve, reject) => {
@@ -65,6 +66,24 @@ export class Runtime {
       Action: 'Start', Avd: this.settings.avd, Port: this.settings.port, Sdk: this.settings.sdk,
       ApiLevel: 36, Abi: 'arm64-v8a', MemoryMB: this.settings.memoryMB, CpuCores: this.settings.cpuCores ?? 4, GuestClock: this.settings.guestClock || 'Default', GpuSharing: true
     }), { timeout: (this.settings.guestClock || 'Default') === 'TscCorrected' ? 17 * 60 * 1000 : 10 * 60 * 1000, onOutput });
+  }
+  async permissions(packageName) {
+    validPackage(packageName);
+    const [dump, activities] = await Promise.all([
+      this.adb(['shell', 'dumpsys', 'package', packageName], { timeout: 20000 }),
+      this.adb(['shell', 'dumpsys', 'activity', 'activities'], { timeout: 20000 }).catch(() => ''),
+    ]);
+    return { items: parseRuntimePermissions(dump), prompt: parsePermissionPrompt(activities) };
+  }
+  async setPermission(packageName, permission, granted) {
+    validPackage(packageName);
+    validPermission(permission);
+    if (typeof granted !== 'boolean') throw new Error('Invalid permission state.');
+    try {
+      await this.adb(['shell', 'pm', granted ? 'grant' : 'revoke', packageName, permission], { timeout: 20000 });
+    } catch (error) {
+      throw new Error(describePermissionFailure(error.message, permission));
+    }
   }
   async inspect(apk, { allowSplit = false } = {}) {
     const data = JSON.parse(await run('python', [path.join(this.root, 'launcher/inspect_apk.py'), '--apk', apk, '--sdk', this.settings.sdk, ...(allowSplit ? ['--allow-split'] : [])]));
