@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Check, Loader2, X } from 'lucide-react';
-import { activeStatuses, bytes } from './common';
+import { activeStatuses, bytes, InstallProgress } from './common';
 import { cn } from '@/lib/utils';
 
 export function Toasts({ jobs, notice, dismissNotice }) {
@@ -43,6 +43,7 @@ export function Toasts({ jobs, notice, dismissNotice }) {
           <div className="min-w-0 flex-1"><div className="break-words text-sm font-medium">{title}</div>{(active || error) && <div className="mt-1 break-words text-xs text-muted-foreground">{error ? job.error : job.stage}</div>}</div>
           <button aria-label={`Dismiss ${job.name} notification`} className="shrink-0" onClick={() => dismiss(job.id)}><X className="size-4" /></button>
         </div>
+        {job.status === 'installing' && <InstallProgress job={job} />}
         {active && job.total > 0 && job.status !== 'installing' && <><progress className="mt-3 block w-full" value={job.completed || 0} max={job.total} aria-label={`${job.name} import progress`} /><div className="mt-1 text-right text-xs tabular-nums text-muted-foreground">{job.progressUnit === 'files' ? `${job.completed || 0} / ${job.total} files` : `${bytes(job.completed)} / ${bytes(job.total)}`}</div></>}
       </div>;
     })}

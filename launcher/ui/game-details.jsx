@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { activeStatuses, bytes, call, Cover, IconButton } from './common';
+import { activeStatuses, bytes, call, Cover, IconButton, InstallProgress } from './common';
 
 export function GameDetails({ game, state, local, onClose, run, pending, setPage, notify }) {
   const returnFocus = useRef(document.activeElement);
@@ -42,7 +42,8 @@ export function GameDetails({ game, state, local, onClose, run, pending, setPage
             </DropdownMenuContent>
           </DropdownMenu>}
         </div>
-        {pending.has(`game-${game.id}`) && <div role="status" className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" />Working…</div>}
+        {activeJob?.status === 'installing' ? <div role="status"><div className="break-words text-xs text-muted-foreground">{activeJob.stage}</div><InstallProgress job={activeJob} /></div>
+          : pending.has(`game-${game.id}`) && <div role="status" className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" />Working…</div>}
         {extra?.kind === 'builds' && <div className="flex items-center gap-2 border-t pt-4">{extra.items.length ? <><Select value={build} onValueChange={setBuild}><SelectTrigger className="min-w-0 flex-1" aria-label="Quest build"><SelectValue /></SelectTrigger><SelectContent>{extra.items.map(b => <SelectItem key={b.id} value={b.id}>{b.version || b.code}</SelectItem>)}</SelectContent></Select><Button disabled={busy || Boolean(activeJob)} onClick={download}>Download</Button></> : <span className="text-muted-foreground">No builds available</span>}</div>}
         {extra?.kind === 'dlc' && <div className="border-t pt-4">{extra.items.length ? <><p className="mb-3 text-xs text-muted-foreground">Install after downloading to apply add-ons.</p>{extra.items.map(dlc => <div key={dlc.id} className="flex items-center justify-between gap-3 py-2"><div className="min-w-0"><div className="text-sm">{dlc.name}</div><div className="mt-1 text-xs text-muted-foreground">{!dlc.owned ? 'Ownership not confirmed' : !dlc.fileCount ? 'No separate download' : bytes(dlc.bytes)}</div></div><Button size="sm" variant="outline" disabled={!dlc.owned || !dlc.fileCount || busy || Boolean(activeJob)} onClick={() => operate(async () => { await call('downloadDlc', game.id, dlc.id); onClose(); setPage('downloads'); })}>Download</Button></div>)}</> : <p className="text-muted-foreground">No downloadable add-ons</p>}</div>}
       </div>

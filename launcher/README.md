@@ -121,6 +121,13 @@ Source components are in `ui/`, with shared shadcn components in `ui/components/
   directory are assigned to the installed app; unrelated files, storage groups
   and permission modes are left unchanged. After downloading more content,
   use **Update installation** to copy it into Android.
+  Installation shows a byte-weighted percentage, copied/total size and the current
+  filename in Downloads, game details and ZIP install notifications. During asset
+  transfers, copied bytes are sampled roughly once a second; existing files do
+  not count until replacement or new writes are observed. If progress queries
+  are unavailable, installation continues with updates as files finish.
+  APK installation and the final **Finishing installation…** flush remain
+  indeterminate; completion is reported only after the flush succeeds.
 - **Play:** Calls `scripts/run/run_windows_game.ps1`, preserving automatic OpenXR eye
   resolution, SteamVR name/icon, GPU texture sharing, and the save-aware shutdown.
   Closing the game preview stops the game. Closing the launcher does not

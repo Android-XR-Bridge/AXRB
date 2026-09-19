@@ -118,6 +118,112 @@ test('installation cannot succeed with unknown or inaccessible asset ownership',
   await assert.rejects(installFiles(game, adb('10221', true)), /Permission denied setting asset ownership/);
 });
 
+test('installation progress uses actual byte sizes and completes only after the final flush', async t => {
+  const dir = await workspace(t), apk = path.join(dir, 'patched.apk'), split = path.join(dir, 'split.apk');
+  const small = path.join(dir, 'small.bundle'), large = path.join(dir, 'large.bundle');
+  for (const [file, content] of [[apk, 'base'], [split, 'sp'], [small, 'a'], [large, 'big']]) await fs.writeFile(file, content);
+  const game = { package: pkg, apk, files: [
+    { kind: 'split', path: split, size: 999 },
+    { kind: 'asset', name: 'small.bundle', path: small, size: 999 },
+    { kind: 'asset', name: 'large.bundle', path: large, size: 999 }
+  ] };
+  const updates = [];
+  let failFlush = false;
+  const adb = async args => {
+    if (args.includes('df')) return '/dev/data 90000000 1000 80000000 1% /data';
+    if (args.includes('id')) return '2000';
+    if (args[0] === 'push') {
+      assert.deepEqual(updates.at(-1).progress, { completed: args[1] === small ? 6 : 7, total: 10 });
+    }
+    if (args.includes('sync')) {
+      assert.equal(updates.at(-1).progress, undefined, 'Flushing must remain indeterminate');
+      assert.ok(updates.every(({ progress }) => !progress || progress.completed < progress.total));
+      if (failFlush) throw Error('Filesystem flush failed');
+    }
+    return 'Success';
+  };
+  const update = (stage, progress) => updates.push({ stage, progress });
+  await installFiles(game, adb, update);
+  assert.deepEqual(updates.at(-1).progress, { completed: 10, total: 10 });
+  updates.length = 0; failFlush = true;
+  await assert.rejects(installFiles(game, adb, update), /Filesystem flush failed/);
+  assert.ok(updates.every(({ progress }) => !progress || progress.completed < progress.total));
+});
+
+test('live install progress ignores old assets and survives unavailable progress queries', { timeout: 15000 }, async t => {
+  const dir = await workspace(t), apk = path.join(dir, 'base.apk'), asset = path.join(dir, 'asset');
+  await fs.writeFile(apk, Buffer.alloc(10)); await fs.writeFile(asset, Buffer.alloc(100));
+  const game = { package: pkg, apk, files: [{ kind: 'asset', name: 'scene.bundle', path: asset }] };
+  const pushing = Promise.withResolvers(), transfer = Promise.withResolvers();
+  const updates = [];
+  let remote = '7:100:old:old', unavailable = false, notifySample;
+  const adb = async args => {
+    if (args.includes('df')) return '/dev/data 90000000 1000 80000000 1% /data';
+    if (args.includes('id')) return '2000';
+    if (args[1]?.startsWith('if [ -e')) {
+      notifySample?.(); notifySample = null;
+      if (unavailable) throw Error('Progress query timed out');
+      return remote;
+    }
+    if (args[0] === 'push') { pushing.resolve(); await transfer.promise; }
+    return 'Success';
+  };
+  const update = (stage, progress) => updates.push({ stage, progress });
+  const observeSample = async () => {
+    await new Promise(resolve => { notifySample = resolve; });
+    await new Promise(resolve => setImmediate(resolve));
+  };
+  const installation = installFiles(game, adb, update);
+  t.after(async () => { transfer.resolve(); await installation; });
+  await pushing.promise;
+  await observeSample();
+  assert.deepEqual(updates.at(-1).progress, { completed: 10, total: 110 }, 'Old file is not a completed transfer');
+  remote = '7:25:new:new'; await observeSample();
+  assert.deepEqual(updates.at(-1).progress, { completed: 35, total: 110 }, 'Progress must advance before push exits');
+  unavailable = true; await observeSample();
+  assert.equal(updates.at(-1).progress.completed, 35);
+  unavailable = false; remote = '7:20:new:new'; await observeSample();
+  assert.equal(updates.at(-1).progress.completed, 35, 'Delayed samples must not move progress backward');
+  remote = '7:100:new:new'; await observeSample();
+  assert.ok(updates.at(-1).progress.completed < 110, 'A full-sized file still needs transfer acknowledgement');
+  transfer.resolve(); await installation;
+  assert.deepEqual(updates.at(-1).progress, { completed: 110, total: 110 });
+  unavailable = true;
+  await installFiles(game, adb, update);
+  assert.deepEqual(updates.at(-1).progress, { completed: 110, total: 110 }, 'An unavailable baseline must not prevent installation');
+});
+
+test('failed transfers cancel pending progress queries without masking the transfer error', { timeout: 10000 }, async t => {
+  const dir = await workspace(t), file = path.join(dir, 'file'); await fs.writeFile(file, 'data');
+  const game = { package: pkg, apk: file, files: [{ kind: 'asset', name: 'scene.bundle', path: file }] };
+  const pushing = Promise.withResolvers(), transfer = Promise.withResolvers(), sampling = Promise.withResolvers();
+  let probes = 0, queryAborted = false;
+  const updates = [];
+  const adb = async (args, options = {}) => {
+    if (args.includes('df')) return '/dev/data 90000000 1000 80000000 1% /data';
+    if (args.includes('id')) return '2000';
+    if (args[1]?.startsWith('if [ -e')) {
+      if (++probes === 1) return 'missing';
+      sampling.resolve();
+      return new Promise((resolve, reject) => options.signal.addEventListener('abort', () => {
+        queryAborted = true; reject(Error('Progress query cancelled'));
+      }, { once: true }));
+    }
+    if (args[0] === 'push') { pushing.resolve(); await transfer.promise; }
+    return 'Success';
+  };
+  const failure = assert.rejects(installFiles(game, adb, (stage, progress) => updates.push(progress)), /Device disconnected during copy/);
+  t.after(() => transfer.reject(Error('Device disconnected during copy')));
+  await pushing.promise; await sampling.promise;
+  transfer.reject(Error('Device disconnected during copy'));
+  await failure;
+  assert.equal(queryAborted, true);
+  assert.ok(updates.every(progress => !progress || progress.completed < progress.total));
+  const stopped = probes;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(probes, stopped, 'Failed installs must leave no polling behind');
+});
+
 function deviceFixture({ disconnect = false, denyAssets = false, truncate = false } = {}) {
   const calls = [], files = new Map([
     ['/data/app/game/base.apk', 'base'], ['/data/app/game/split_config.arm64.apk', 'split'],

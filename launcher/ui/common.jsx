@@ -5,6 +5,13 @@ import { cn } from '@/lib/utils';
 
 export const activeStatuses = ['queued', 'downloading', 'installing', 'patching', 'importing', 'uninstalling'];
 export const bytes = n => n ? `${(n / 1024 ** 3).toFixed(n < 1024 ** 3 ? 2 : 1)} GB` : '0 GB';
+export function InstallProgress({ job }) {
+  const total = job.progressUnit === 'bytes' ? job.total : 0, completed = job.completed || 0;
+  return <>
+    {total > 0 && <div className="mt-2 text-right text-xs tabular-nums text-muted-foreground">{Math.min(100, Math.floor(completed / total * 100))}% · {bytes(completed)} / {bytes(total)}</div>}
+    <progress className="mt-2 block w-full" value={total > 0 ? completed : undefined} max={total || undefined} aria-label={`${job.name} installation progress`} />
+  </>;
+}
 export async function call(method, ...args) {
   const result = await window.axrb[method](...args);
   if (!result.ok) throw new Error(result.error);

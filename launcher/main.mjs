@@ -194,10 +194,10 @@ async function importTransfer(kind, input) {
       job.gameId = game.id; job.name = game.name; job.completed = job.total;
       await persist();
       if (kind === 'zip') {
-        job.status = 'installing'; job.stage = 'Starting Android'; changed();
+        Object.assign(job, { status: 'installing', stage: 'Starting Android', completed: 0, total: 0, progressUnit: 'bytes' }); changed();
         // A cancelled extraction never reaches installation. After this point the
         // job remains an install, so its APK/asset transaction is not interrupted.
-        await runtime.install(game, stage => { job.stage = stage; notify(); });
+        await runtime.install(game, (stage, progress) => { Object.assign(job, { stage, completed: 0, total: 0, progressUnit: 'bytes' }, progress); changed(); });
         game.installed = true;
       }
       job.status = 'complete'; job.stage = kind === 'zip' ? 'Installed' : 'Ready to install';
@@ -282,7 +282,7 @@ handler('install', id => exclusive(async () => {
     if (hash.digest('hex') !== file.sha256) throw new Error(`${file.name} changed since download. Download it again.`);
   }
   const job = { id: randomUUID(), gameId: id, name: game.name, status: 'installing', stage: 'Preparing install' }; state.data.jobs.unshift(job); await persist();
-  try { await runtime.install(game, stage => { job.stage = stage; changed(); }); game.installed = true; job.status = 'complete'; job.stage = 'Installed'; }
+  try { await runtime.install(game, (stage, progress) => { Object.assign(job, { stage, completed: 0, total: 0, progressUnit: 'bytes' }, progress); changed(); }); game.installed = true; job.status = 'complete'; job.stage = 'Installed'; }
   catch (error) { job.status = 'failed'; job.error = message(error); throw error; }
   finally { await persist(); }
 }));

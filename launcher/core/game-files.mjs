@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { archivePath, extractZip, zipSize } from './archive.mjs';
 import { checkSpace, safeName } from './download.mjs';
 
@@ -95,14 +96,53 @@ export async function importGameZip(file, downloadDir, inspect, { signal, update
   } catch (error) { await fs.rm(directory, { recursive: true, force: true }); throw error; }
 }
 
+async function pushAsset(file, adb, signal, progress) {
+  const controller = new AbortController();
+  const monitorSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+  const remote = shellQuote(file.remote);
+  const command = `if [ -e ${remote} ]; then stat -c '%i:%s:%y:%z' ${remote}; else echo missing; fi`;
+  const sample = async () => {
+    try {
+      const text = (await adb(['shell', command], { timeout: 2000, signal: monitorSignal })).trim();
+      return text === 'missing' || /^\d+:\d+:/.test(text) ? text : null;
+    } catch { return null; } // Progress queries must not fail the actual transfer.
+  };
+  const initial = await sample();
+  const monitor = (async () => {
+    let started = false, reported = 0;
+    while (initial !== null && !monitorSignal.aborted) {
+      try { await delay(1000, undefined, { signal: monitorSignal }); } catch { break; }
+      const current = await sample();
+      if (monitorSignal.aborted) break;
+      const match = current?.match(/^\d+:(\d+):/);
+      // A reinstall's old file is not progress. Wait for replacement or a write.
+      if (!match || !(started ||= current !== initial)) continue;
+      const size = Number(match[1]);
+      if (!Number.isSafeInteger(size)) continue;
+      const copied = Math.min(file.size, size);
+      if (copied > reported) { reported = copied; progress(copied); }
+    }
+  })();
+  try {
+    await adb(['push', file.path, file.remote], { timeout: 60 * 60 * 1000, signal });
+  } finally {
+    controller.abort();
+    await monitor;
+  }
+}
+
 export async function installFiles(game, adb, update = () => {}, signal) {
   const splits = (game.files || []).filter(f => f.kind === 'split');
   const assets = (game.files || []).filter(f => !['apk', 'split'].includes(f.kind)).map(file => ({ ...file,
     remote: assetDestination(game.package, file.destination || `Android/obb/${game.package}/${safeName(file.name)}`) }));
   if (!game.apk) throw new Error('Import or download an APK first.');
   const apkPaths = [game.apk, ...splits.map(f => f.path)];
-  let bytes = 0;
-  for (const file of [...apkPaths, ...assets.map(f => f.path)]) bytes += (await fs.stat(file)).size;
+  let apkBytes = 0;
+  for (const file of apkPaths) apkBytes += (await fs.stat(file)).size;
+  let bytes = apkBytes;
+  for (const file of assets) { file.size = (await fs.stat(file.path)).size; bytes += file.size; }
+  let completed = 0;
+  const report = (stage, current = completed) => update(stage, { completed: current, total: bytes });
   const disk = await adb(['shell', 'df', '-k', '/data'], { signal });
   const available = disk.trim().split(/\r?\n/).at(-1)?.trim().split(/\s+/)[3];
   if (!/^\d+$/.test(available || '')) throw new Error('Could not check Android free space.');
@@ -110,15 +150,19 @@ export async function installFiles(game, adb, update = () => {}, signal) {
   const rootAdb = assets.length && (await adb(['shell', 'id', '-u'], { signal })).trim() === '0';
   signal?.throwIfAborted(); update('Installing APK');
   await adb([splits.length ? 'install-multiple' : 'install', '--no-incremental', '--force-queryable', '-r', ...apkPaths], { timeout: 30 * 60 * 1000, signal });
+  completed = apkBytes;
   let uid;
   if (rootAdb) {
     uid = (await adb(['shell', `stat -c %u ${shellQuote(`/data/user/0/${game.package}`)}`], { signal })).trim();
     if (!/^\d+$/.test(uid) || Number(uid) < 10000) throw new Error('Cannot determine app UID for asset ownership.');
   }
   for (const file of assets) {
-    signal?.throwIfAborted(); update(`Copying ${file.name}`);
+    signal?.throwIfAborted(); report(`Copying ${file.name}`);
     await adb(['shell', `mkdir -p ${shellQuote(path.posix.dirname(file.remote))}`], { signal });
-    await adb(['push', file.path, file.remote], { timeout: 60 * 60 * 1000, signal, onOutput: text => update(`Copying ${file.name}: ${text.trim().slice(-120)}`) });
+    await pushAsset(file, adb, signal, copied => {
+      // Reserve completion until ADB acknowledges the copy and final sync succeeds.
+      report(`Copying ${file.name}`, Math.min(completed + copied, bytes - 1));
+    });
     if (rootAdb) {
       // Root ADB leaves nested directories inaccessible to the app. Change only
       // this file and its ancestors through the package directory, never siblings.
@@ -126,6 +170,9 @@ export async function installFiles(game, adb, update = () => {}, signal) {
       while (parts.length >= 5) { targets.push(shellQuote(parts.join('/'))); parts.pop(); }
       await adb(['shell', `chown ${uid} ${targets.join(' ')}`], { signal });
     }
+    completed += file.size;
   }
+  update('Finishing installation…');
   await adb(['shell', 'sync'], { signal });
+  report('Installed');
 }
