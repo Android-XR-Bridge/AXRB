@@ -2,6 +2,15 @@
 
 namespace axrb::host::detail {
 
+namespace {
+
+axrb::protocol::ViewFov to_protocol_fov(const XrFovf& fov)
+{
+    return {fov.angleLeft, fov.angleRight, fov.angleUp, fov.angleDown};
+}
+
+} // namespace
+
 axrb::protocol::PoseFrame OpenXrSession::make_frame(uint64_t sequence)
 {
     pump_events();
@@ -82,12 +91,50 @@ axrb::protocol::PoseFrame OpenXrSession::make_frame(uint64_t sequence)
         return frame;
     }
 
+    const bool hadValidViewFovs = axrb::protocol::has_valid_view_fovs(frame);
+    if (!hadValidViewFovs) {
+        frame.view_fov[0] = {};
+        frame.view_fov[1] = {};
+        frame.view_fov_valid = 0;
+    }
+    XrViewLocateInfo viewLocateInfo{XR_TYPE_VIEW_LOCATE_INFO};
+    viewLocateInfo.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+    viewLocateInfo.displayTime = locateTime;
+    viewLocateInfo.space = localSpace_;
+    XrViewState viewState{XR_TYPE_VIEW_STATE};
+    std::array<XrView, 2> opticalViews{{{XR_TYPE_VIEW}, {XR_TYPE_VIEW}}};
+    uint32_t opticalViewCount = 0;
+    if (locateViews_(session_, &viewLocateInfo, &viewState,
+            static_cast<uint32_t>(opticalViews.size()), &opticalViewCount, opticalViews.data()) == XR_SUCCESS &&
+        opticalViewCount == static_cast<uint32_t>(opticalViews.size())) {
+        const auto left = to_protocol_fov(opticalViews[0].fov);
+        const auto right = to_protocol_fov(opticalViews[1].fov);
+        if (axrb::protocol::valid_view_fov(left) && axrb::protocol::valid_view_fov(right)) {
+            frame.view_fov[0] = left;
+            frame.view_fov[1] = right;
+            frame.view_fov_valid = 1;
+            if (!hadValidViewFovs) {
+                std::fprintf(stderr,
+                    "AXRB OpenXR: optical FOV L=(%.4f %.4f %.4f %.4f) R=(%.4f %.4f %.4f %.4f)\n",
+                    left.angle_left, left.angle_right, left.angle_up, left.angle_down,
+                    right.angle_left, right.angle_right, right.angle_up, right.angle_down);
+            }
+        }
+    }
+
     XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};
     XrSpaceLocation origin{XR_TYPE_SPACE_LOCATION};
-    if (!localOriginInitialized_) {
+    // Some runtimes report a tracked identity pose while still entering READY.
+    // Do not turn that provisional sample into a permanent eye-level origin.
+    if (!localOriginInitialized_ && (sessionVisible_ || !useFrameLoop_)) {
         XrSpaceLocation initialHead{XR_TYPE_SPACE_LOCATION};
+        constexpr XrSpaceLocationFlags kTrackedPoseFlags =
+            XR_SPACE_LOCATION_ORIENTATION_VALID_BIT |
+            XR_SPACE_LOCATION_POSITION_VALID_BIT |
+            XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT |
+            XR_SPACE_LOCATION_POSITION_TRACKED_BIT;
         if (locateSpace_(viewSpace_, localSpace_, locateTime, &initialHead) == XR_SUCCESS &&
-            (initialHead.locationFlags & 3) == 3) {
+            (initialHead.locationFlags & kTrackedPoseFlags) == kTrackedPoseFlags) {
             XrReferenceSpaceCreateInfo info{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
             info.referenceSpaceType = trackingSpaceType_;
             // Correct eye height without recentering heading or horizontal
@@ -109,9 +156,11 @@ axrb::protocol::PoseFrame OpenXrSession::make_frame(uint64_t sequence)
         frame.local_origin = to_protocol_pose(origin.pose);
         frame.local_origin_flags = static_cast<uint32_t>(origin.locationFlags);
         if (!reportedLocalOrigin_) {
-            std::fprintf(stderr, "AXRB OpenXR: LOCAL origin in tracking world=(%.3f %.3f %.3f) q=(%.4f %.4f %.4f %.4f)\n",
+            std::fprintf(stderr, "AXRB OpenXR: LOCAL origin in tracking world=(%.3f %.3f %.3f) "
+                "q=(%.4f %.4f %.4f %.4f) flags=0x%llx\n",
                 origin.pose.position.x, origin.pose.position.y, origin.pose.position.z,
-                origin.pose.orientation.x, origin.pose.orientation.y, origin.pose.orientation.z, origin.pose.orientation.w);
+                origin.pose.orientation.x, origin.pose.orientation.y, origin.pose.orientation.z, origin.pose.orientation.w,
+                static_cast<unsigned long long>(origin.locationFlags));
             reportedLocalOrigin_ = true;
         }
     }

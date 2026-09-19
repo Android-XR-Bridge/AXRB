@@ -23,6 +23,8 @@ uint64_t g_imageFrameSequence = 0;
 XrTime g_nextFrameStart = 0;
 uint32_t g_renderWidth = 1024, g_renderHeight = 1024;
 bool g_renderExtentQueried = false;
+std::array<axrb::protocol::ViewFov, 2> g_viewFovs{};
+bool g_viewFovsValid = false;
 axrb::protocol::PoseFrame g_lastViewPoseFrame{};
 #if defined(__ANDROID__)
 VulkanBackend g_vulkan;
@@ -31,15 +33,47 @@ VkInstance g_vulkanInstance = VK_NULL_HANDLE;
 #endif
 
 void query_render_extent() {
-    if (g_renderExtentQueried) return;
+    if (g_renderExtentQueried) {
+        // The selected extent is immutable, but FOV metadata may arrive after
+        // the initial bounded wait (or after connecting to an older host).
+        // Keep later enumerations nonblocking while the fallback is in use.
+        if (!g_viewFovsValid) {
+            const auto frame = pose_client().latest_pose_frame();
+            if (axrb::protocol::has_valid_view_fovs(frame)) {
+                g_viewFovs = {frame.view_fov[0], frame.view_fov[1]};
+                g_viewFovsValid = true;
+            }
+        }
+        return;
+    }
     g_renderExtentQueried = true;
     // View enumeration precedes the first frame. Allow the initial nonblocking
-    // pose connection to deliver the host configuration before the app allocates.
+    // pose connection to deliver the complete host view configuration before
+    // the app allocates. A v6 extent without FOV is provisional until this
+    // bounded wait expires; older hosts never promised FOV metadata.
+    uint32_t provisionalWidth = 0, provisionalHeight = 0;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     do {
         const auto frame = pose_client().latest_pose_frame();
-        if (axrb::protocol::valid_render_extent(frame.render_width, frame.render_height)) {
-            g_renderWidth = frame.render_width; g_renderHeight = frame.render_height;
+        const bool hasExtent =
+            axrb::protocol::valid_render_extent(frame.render_width, frame.render_height);
+        if (frame.version >= 6) {
+            if (hasExtent) {
+                provisionalWidth = frame.render_width;
+                provisionalHeight = frame.render_height;
+            }
+            if (axrb::protocol::has_valid_view_fovs(frame)) {
+                if (hasExtent) {
+                    g_renderWidth = frame.render_width;
+                    g_renderHeight = frame.render_height;
+                }
+                g_viewFovs = {frame.view_fov[0], frame.view_fov[1]};
+                g_viewFovsValid = true;
+                break;
+            }
+        } else if (hasExtent) {
+            g_renderWidth = frame.render_width;
+            g_renderHeight = frame.render_height;
             break;
         }
 #if defined(__ANDROID__)
@@ -48,8 +82,23 @@ void query_render_extent() {
         break;
 #endif
     } while (std::chrono::steady_clock::now() < deadline);
+    if (provisionalWidth != 0) {
+        g_renderWidth = provisionalWidth;
+        g_renderHeight = provisionalHeight;
+    }
 #if defined(__ANDROID__)
-    __android_log_print(ANDROID_LOG_INFO, "AXRB.GPU", "recommended eye extent %ux%u", g_renderWidth, g_renderHeight);
+    if (g_viewFovsValid) {
+        __android_log_print(ANDROID_LOG_INFO, "AXRB.GPU",
+            "recommended eye extent %ux%u; FOV L=(%.4f %.4f %.4f %.4f) R=(%.4f %.4f %.4f %.4f)",
+            g_renderWidth, g_renderHeight,
+            g_viewFovs[0].angle_left, g_viewFovs[0].angle_right,
+            g_viewFovs[0].angle_up, g_viewFovs[0].angle_down,
+            g_viewFovs[1].angle_left, g_viewFovs[1].angle_right,
+            g_viewFovs[1].angle_up, g_viewFovs[1].angle_down);
+    } else {
+        __android_log_print(ANDROID_LOG_INFO, "AXRB.GPU",
+            "recommended eye extent %ux%u", g_renderWidth, g_renderHeight);
+    }
 #endif
 }
 void log_call(const char* name)

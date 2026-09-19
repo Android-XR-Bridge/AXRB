@@ -32,7 +32,7 @@ public:
     }
     void reset() { used_ = 0; partial_ = {}; }
 private:
-    static size_t record_size(uint16_t version) { return version == 1 ? 112 : version == 2 ? 160 : version == 3 ? 2360 : version == 4 ? 2368 : sizeof(PoseFrame); }
+    static size_t record_size(uint16_t version) { return version == 1 ? 112 : version == 2 ? 160 : version == 3 ? 2360 : version == 4 ? 2368 : version == 5 ? 2408 : sizeof(PoseFrame); }
     PoseFrame partial_{};
     size_t used_ = 0;
 };

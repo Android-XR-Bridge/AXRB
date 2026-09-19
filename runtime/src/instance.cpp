@@ -35,6 +35,8 @@ XrResult XRAPI_CALL xrCreateInstance_impl(const XrInstanceCreateInfo* createInfo
     g_nextFrameStart = 0;
     g_renderWidth = g_renderHeight = 1024;
     g_renderExtentQueried = false;
+    g_viewFovs = {};
+    g_viewFovsValid = false;
 #if defined(__ANDROID__)
     g_vulkan.shutdown();
     g_vulkanRequirementsQueried = false;
@@ -94,6 +96,7 @@ XrResult XRAPI_CALL xrEnumerateInstanceExtensionProperties_impl(
         "XR_FB_display_refresh_rate",
         "XR_EXT_hand_tracking",
         "XR_EXT_hand_tracking_data_source",
+        "XR_EPIC_view_configuration_fov",
 #if defined(__ANDROID__) || defined(AXRB_INPUT_FIXTURE)
         "XR_KHR_convert_timespec_time",
 #endif
@@ -426,6 +429,28 @@ XrResult XRAPI_CALL xrEnumerateViewConfigurationViews_impl(
             views[i].maxImageRectHeight = g_renderHeight;
             views[i].recommendedSwapchainSampleCount = 1;
             views[i].maxSwapchainSampleCount = 1;
+            const auto& sourceFov = g_viewFovsValid
+                ? g_viewFovs[i]
+                : axrb::protocol::ViewFov{
+                    -kProjectionHalfFovRadians,
+                    kProjectionHalfFovRadians,
+                    kProjectionHalfFovRadians,
+                    -kProjectionHalfFovRadians};
+            const XrFovf fov{
+                sourceFov.angle_left,
+                sourceFov.angle_right,
+                sourceFov.angle_up,
+                sourceFov.angle_down};
+            struct OutputHeader { XrStructureType type; void* next; };
+            for (auto* next = static_cast<OutputHeader*>(views[i].next);
+                 next;
+                 next = static_cast<OutputHeader*>(next->next)) {
+                if (next->type == XR_TYPE_VIEW_CONFIGURATION_VIEW_FOV_EPIC) {
+                    auto* viewFov = reinterpret_cast<XrViewConfigurationViewFovEPIC*>(next);
+                    viewFov->recommendedFov = fov;
+                    viewFov->maxMutableFov = fov;
+                }
+            }
         }
     }
     return XR_SUCCESS;

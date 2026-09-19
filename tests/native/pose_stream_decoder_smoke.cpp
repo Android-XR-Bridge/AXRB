@@ -21,6 +21,9 @@ int main()
         frames[i].render_width = 2880; frames[i].render_height = 3200;
         frames[i].local_origin = {0.4f, 1.6f, -0.2f, 0, 0, 0, 1};
         frames[i].local_origin_flags = frames[i].hmd_flags = 15;
+        frames[i].view_fov[0] = {-1.05f, 0.85f, 1.0f, -0.9f};
+        frames[i].view_fov[1] = {-0.8f, 1.1f, 0.95f, -1.0f};
+        frames[i].view_fov_valid = 1;
         frames[i].hmd.x = static_cast<float>(i + 10);
         frames[i].aim[0].x = static_cast<float>(i + 20);
         frames[i].aim[1].qx = 0.5f;
@@ -40,6 +43,7 @@ int main()
             latest.sequence != 3 || latest.hmd.x != 12.0f || latest.display_period_ns != 13'888'889 ||
             latest.render_width != 2880 || latest.render_height != 3200 ||
             latest.local_origin.y != 1.6f || latest.local_origin_flags != 15 || latest.hmd_flags != 15 ||
+            !has_valid_view_fovs(latest) || latest.view_fov[1].angle_right != 1.1f ||
             latest.aim[0].x != 22.0f || latest.aim[1].qx != 0.5f ||
             latest.hands[1].source != 2 || latest.hands[1].joints[25].flags != 15 ||
             latest.hands[1].joints[25].radius != 0.007f || latest.hands[1].joints[25].pose.z != 0.3f ||
@@ -67,16 +71,26 @@ int main()
     legacy.version = 2;
     if (!decoder.append(&legacy, 160, latest) || latest.version != 2 || latest.controllers[1].active != 1 ||
         latest.aim_active[1] != 0 || !decoder.append(&frames[2], sizeof(PoseFrame), latest) ||
-        latest.version != 5 || latest.aim[0].x != 22.0f) return EXIT_FAILURE;
+        latest.version != 6 || latest.aim[0].x != 22.0f) return EXIT_FAILURE;
     decoder.reset();
     legacy.version = 3;
     if (!decoder.append(&legacy, 2360, latest) || latest.version != 3 || latest.render_width || latest.render_height ||
         latest.display_period_ns != 13'888'889 || !decoder.append(&frames[2], sizeof(PoseFrame), latest) ||
-        latest.render_width != 2880 || latest.version != 5) return EXIT_FAILURE;
+        latest.render_width != 2880 || latest.version != 6) return EXIT_FAILURE;
     decoder.reset(); legacy.version = 4;
     if (!decoder.append(&legacy, 2368, latest) || latest.version != 4 || latest.local_origin_flags || latest.hmd_flags ||
         latest.local_origin.y != 0 || !decoder.append(&frames[2], sizeof(PoseFrame), latest) ||
-        latest.version != 5 || latest.local_origin.y != 1.6f) return EXIT_FAILURE;
+        latest.version != 6 || latest.local_origin.y != 1.6f) return EXIT_FAILURE;
+    // A legacy record following v6 must not retain the preceding optical metadata.
+    legacy.version = 5;
+    if (!decoder.append(&legacy, 2408, latest) || latest.version != 5 ||
+        has_valid_view_fovs(latest) || latest.view_fov_valid ||
+        latest.local_origin.y != 1.6f ||
+        !decoder.append(&frames[2], sizeof(PoseFrame), latest) ||
+        !has_valid_view_fovs(latest)) return EXIT_FAILURE;
+    auto invalidFov = frames[0];
+    invalidFov.view_fov[0].angle_right = invalidFov.view_fov[0].angle_left;
+    if (has_valid_view_fovs(invalidFov)) return EXIT_FAILURE;
     if (valid_render_extent(0, 3200) || valid_render_extent(8193, 3200) ||
         !valid_render_extent(2880, 3200)) return EXIT_FAILURE;
     return EXIT_SUCCESS;

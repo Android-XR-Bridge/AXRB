@@ -1,11 +1,12 @@
 #pragma once
 
 #include <cstdint>
+#include <cmath>
 
 namespace axrb::protocol {
 
 constexpr uint32_t kPoseFrameMagic = 0x42525841; // AXRB, little-endian.
-constexpr uint16_t kPoseFrameVersion = 5;
+constexpr uint16_t kPoseFrameVersion = 6;
 constexpr uint32_t kMaxEyeDimension = 8192;
 constexpr uint16_t kPoseFrameType = 1;
 
@@ -42,6 +43,10 @@ struct HandSkeleton {
     HandJoint joints[26];
 };
 
+struct ViewFov {
+    float angle_left = 0, angle_right = 0, angle_up = 0, angle_down = 0;
+};
+
 struct PoseFrame {
     uint32_t magic = kPoseFrameMagic;
     uint16_t version = kPoseFrameVersion;
@@ -67,7 +72,24 @@ struct PoseFrame {
     uint32_t local_origin_flags = 0;
     uint32_t hmd_flags = 0;
     uint32_t reserved_v5 = 0;
+    ViewFov view_fov[2]; // v6: actual host per-eye optical FOV, in radians.
+    uint32_t view_fov_valid = 0;
+    uint32_t reserved_v6 = 0;
 };
+
+inline bool valid_view_fov(const ViewFov& fov) {
+    constexpr float halfPi = 1.5707963f;
+    return std::isfinite(fov.angle_left) && std::isfinite(fov.angle_right) &&
+        std::isfinite(fov.angle_up) && std::isfinite(fov.angle_down) &&
+        fov.angle_left < fov.angle_right && fov.angle_down < fov.angle_up &&
+        fov.angle_left > -halfPi && fov.angle_right < halfPi &&
+        fov.angle_down > -halfPi && fov.angle_up < halfPi;
+}
+
+inline bool has_valid_view_fovs(const PoseFrame& frame) {
+    return frame.version >= 6 && frame.view_fov_valid == 1 &&
+        valid_view_fov(frame.view_fov[0]) && valid_view_fov(frame.view_fov[1]);
+}
 
 inline bool valid_render_extent(uint32_t width, uint32_t height) {
     return width && height && width <= kMaxEyeDimension && height <= kMaxEyeDimension;
@@ -82,6 +104,7 @@ inline uint32_t display_period_or_default(const PoseFrame& frame) {
 
 static_assert(sizeof(Pose) == 28);
 static_assert(sizeof(ControllerInput) == 24);
-static_assert(sizeof(PoseFrame) == 2408);
+static_assert(sizeof(ViewFov) == 16);
+static_assert(sizeof(PoseFrame) == 2448);
 
 } // namespace axrb::protocol

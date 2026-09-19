@@ -55,6 +55,27 @@ int main()
         return EXIT_FAILURE;
     }
 
+    using EnumerateExtensions =
+        XrResult(XRAPI_PTR*)(const char*, uint32_t, uint32_t*, XrExtensionProperties*);
+    auto enumerateExtensions = get<EnumerateExtensions>(
+        runtimeRequest.getInstanceProcAddr, nullptr, "xrEnumerateInstanceExtensionProperties");
+    uint32_t extensionCount = 0;
+    if (!enumerateExtensions ||
+        enumerateExtensions(nullptr, 0, &extensionCount, nullptr) != XR_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+    std::vector<XrExtensionProperties> extensions(extensionCount);
+    for (auto& extension : extensions) extension.type = XR_TYPE_EXTENSION_PROPERTIES;
+    if (enumerateExtensions(nullptr, extensionCount, &extensionCount, extensions.data()) != XR_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+    bool supportsEpicViewFov = false;
+    for (const auto& extension : extensions) {
+        supportsEpicViewFov |=
+            std::strcmp(extension.extensionName, "XR_EPIC_view_configuration_fov") == 0;
+    }
+    if (!supportsEpicViewFov) return EXIT_FAILURE;
+
     using CreateInstance = XrResult(XRAPI_PTR*)(const XrInstanceCreateInfo*, XrInstance*);
     auto xrCreateInstance = get<CreateInstance>(runtimeRequest.getInstanceProcAddr, nullptr, "xrCreateInstance");
     if (xrCreateInstance == nullptr) {
@@ -64,6 +85,9 @@ int main()
     XrInstanceCreateInfo instanceCreateInfo{};
     instanceCreateInfo.type = XR_TYPE_INSTANCE_CREATE_INFO;
     instanceCreateInfo.applicationInfo.apiVersion = XR_MAKE_VERSION(1, 0, 0);
+    const char* enabledExtensions[] = {"XR_EPIC_view_configuration_fov"};
+    instanceCreateInfo.enabledExtensionCount = 1;
+    instanceCreateInfo.enabledExtensionNames = enabledExtensions;
 
     XrInstance instance = nullptr;
     if (xrCreateInstance(&instanceCreateInfo, &instance) != XR_SUCCESS || instance == nullptr) {
@@ -178,10 +202,18 @@ int main()
     axrb_input_fixture().render_width = 2880;
     axrb_input_fixture().render_height = 3200;
     axrb_input_fixture().local_origin_flags = axrb_input_fixture().hmd_flags = 15;
+    axrb_input_fixture().view_fov[0] = {-0.72f, 0.91f, 0.83f, -0.61f};
+    axrb_input_fixture().view_fov[1] = {-0.88f, 0.69f, 0.77f, -0.66f};
+    axrb_input_fixture().view_fov_valid = 1;
 #endif
     using EnumerateViews = XrResult(XRAPI_PTR*)(XrInstance, XrSystemId, XrViewConfigurationType, uint32_t, uint32_t*, XrViewConfigurationView*);
     auto enumerateViews = get<EnumerateViews>(runtimeRequest.getInstanceProcAddr, instance, "xrEnumerateViewConfigurationViews");
+    XrViewConfigurationViewFovEPIC configFovs[2]{
+        {XR_TYPE_VIEW_CONFIGURATION_VIEW_FOV_EPIC},
+        {XR_TYPE_VIEW_CONFIGURATION_VIEW_FOV_EPIC}};
     XrViewConfigurationView configs[2]{{XR_TYPE_VIEW_CONFIGURATION_VIEW}, {XR_TYPE_VIEW_CONFIGURATION_VIEW}};
+    configs[0].next = &configFovs[0];
+    configs[1].next = &configFovs[1];
     uint32_t configCount = 0;
     if (!enumerateViews || enumerateViews(instance, systemId, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 2, &configCount, configs) != XR_SUCCESS || configCount != 2) return EXIT_FAILURE;
     for (const auto& config : configs) {
@@ -189,6 +221,23 @@ int main()
         if (config.recommendedImageRectWidth != 2880 || config.recommendedImageRectHeight != 3200) return EXIT_FAILURE;
 #else
         if (config.recommendedImageRectWidth != 1024 || config.recommendedImageRectHeight != 1024) return EXIT_FAILURE;
+#endif
+        const size_t eye = static_cast<size_t>(&config - configs);
+#if defined(AXRB_INPUT_FIXTURE)
+        const auto& expected = axrb_input_fixture().view_fov[eye];
+        if (configFovs[eye].recommendedFov.angleLeft != expected.angle_left ||
+            configFovs[eye].recommendedFov.angleRight != expected.angle_right ||
+            configFovs[eye].recommendedFov.angleUp != expected.angle_up ||
+            configFovs[eye].recommendedFov.angleDown != expected.angle_down ||
+            std::memcmp(&configFovs[eye].recommendedFov, &configFovs[eye].maxMutableFov,
+                        sizeof(XrFovf)) != 0) return EXIT_FAILURE;
+#else
+        if (configFovs[eye].recommendedFov.angleLeft != -0.95f ||
+            configFovs[eye].recommendedFov.angleRight != 0.95f ||
+            configFovs[eye].recommendedFov.angleUp != 0.95f ||
+            configFovs[eye].recommendedFov.angleDown != -0.95f ||
+            std::memcmp(&configFovs[eye].recommendedFov, &configFovs[eye].maxMutableFov,
+                        sizeof(XrFovf)) != 0) return EXIT_FAILURE;
 #endif
     }
     systemProperties.type = XR_TYPE_SYSTEM_PROPERTIES;
@@ -569,6 +618,33 @@ int main()
 #else
     if (viewState.viewStateFlags != 0) return EXIT_FAILURE; // No real host pose yet.
 #endif
+#if defined(AXRB_INPUT_FIXTURE)
+    for (size_t eye = 0; eye < 2; ++eye) {
+        const auto& expected = axrb_input_fixture().view_fov[eye];
+        if (views[eye].fov.angleLeft != expected.angle_left ||
+            views[eye].fov.angleRight != expected.angle_right ||
+            views[eye].fov.angleUp != expected.angle_up ||
+            views[eye].fov.angleDown != expected.angle_down) return EXIT_FAILURE;
+    }
+    // A decoded pre-v6 frame may leave bytes in the newer struct tail. Its
+    // version gate must prevent xrLocateViews from exposing those bytes.
+    auto& oldFrame = axrb_input_fixture();
+    oldFrame.version = 5;
+    if (xrLocateViews(session, &locateInfo, &viewState, 2, &locatedViewCount, views) != XR_SUCCESS)
+        return EXIT_FAILURE;
+    for (const auto& view : views) {
+        if (view.fov.angleLeft != -0.95f || view.fov.angleRight != 0.95f ||
+            view.fov.angleUp != 0.95f || view.fov.angleDown != -0.95f) return EXIT_FAILURE;
+    }
+    oldFrame.version = axrb::protocol::kPoseFrameVersion;
+    if (xrLocateViews(session, &locateInfo, &viewState, 2, &locatedViewCount, views) != XR_SUCCESS)
+        return EXIT_FAILURE;
+#else
+    for (const auto& view : views) {
+        if (view.fov.angleLeft != -0.95f || view.fov.angleRight != 0.95f ||
+            view.fov.angleUp != 0.95f || view.fov.angleDown != -0.95f) return EXIT_FAILURE;
+    }
+#endif
 
     XrFrameBeginInfo beginInfo{};
     beginInfo.type = XR_TYPE_FRAME_BEGIN_INFO;
@@ -859,5 +935,69 @@ int main()
         return EXIT_FAILURE;
     }
 
-    return require_success(xrEndSession(session));
+    if (xrEndSession(session) != XR_SUCCESS) return EXIT_FAILURE;
+#if defined(AXRB_INPUT_FIXTURE)
+    // A recreated instance must not expose the previous host's optical metadata
+    // when its new source only supplies the legacy pose prefix.
+    using DestroyInstance = XrResult(XRAPI_PTR*)(XrInstance);
+    auto destroyInstance = get<DestroyInstance>(runtimeRequest.getInstanceProcAddr, instance, "xrDestroyInstance");
+    auto destroySession = get<EndSession>(runtimeRequest.getInstanceProcAddr, instance, "xrDestroySession");
+    if (!destroyInstance || !destroySession || destroySession(session) != XR_SUCCESS ||
+        destroyInstance(instance) != XR_SUCCESS) return EXIT_FAILURE;
+    auto& lateFovFrame = axrb_input_fixture();
+    lateFovFrame.version = 5;
+    lateFovFrame.render_width = 2880;
+    lateFovFrame.render_height = 3200;
+    if (xrCreateInstance(&instanceCreateInfo, &instance) != XR_SUCCESS ||
+        enumerateViews(instance, systemId, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
+            2, &configCount, configs) != XR_SUCCESS ||
+        xrCreateSession(instance, &sessionCreateInfo, &session) != XR_SUCCESS ||
+        xrCreateReferenceSpace(session, &spaceCreateInfo, &space) != XR_SUCCESS) return EXIT_FAILURE;
+    for (size_t eye = 0; eye < 2; ++eye) {
+        if (configs[eye].recommendedImageRectWidth != 2880 ||
+            configs[eye].maxImageRectWidth != 2880 ||
+            configs[eye].recommendedImageRectHeight != 3200 ||
+            configs[eye].maxImageRectHeight != 3200 ||
+            configFovs[eye].recommendedFov.angleLeft != -0.95f ||
+            configFovs[eye].recommendedFov.angleRight != 0.95f ||
+            configFovs[eye].recommendedFov.angleUp != 0.95f ||
+            configFovs[eye].recommendedFov.angleDown != -0.95f ||
+            std::memcmp(&configFovs[eye].recommendedFov, &configFovs[eye].maxMutableFov,
+                        sizeof(XrFovf)) != 0) return EXIT_FAILURE;
+    }
+    locateInfo.space = space;
+    if (xrLocateViews(session, &locateInfo, &viewState, 2, &locatedViewCount, views) != XR_SUCCESS)
+        return EXIT_FAILURE;
+    for (size_t eye = 0; eye < 2; ++eye) {
+        if (std::memcmp(&configFovs[eye].recommendedFov, &views[eye].fov, sizeof(XrFovf)) != 0)
+            return EXIT_FAILURE;
+    }
+
+    // FOV can arrive after the first bounded view query. Public enumeration
+    // must recover it without changing the extent already chosen for swapchains.
+    lateFovFrame.version = axrb::protocol::kPoseFrameVersion;
+    lateFovFrame.render_width = 2048;
+    lateFovFrame.render_height = 2048;
+    lateFovFrame.view_fov[0] = {-0.67f, 0.94f, 0.86f, -0.58f};
+    lateFovFrame.view_fov[1] = {-0.91f, 0.72f, 0.79f, -0.64f};
+    lateFovFrame.view_fov_valid = 1;
+    if (enumerateViews(instance, systemId, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
+            2, &configCount, configs) != XR_SUCCESS) return EXIT_FAILURE;
+    for (size_t eye = 0; eye < 2; ++eye) {
+        const auto& expected = lateFovFrame.view_fov[eye];
+        if (configs[eye].recommendedImageRectWidth != 2880 ||
+            configs[eye].maxImageRectWidth != 2880 ||
+            configs[eye].recommendedImageRectHeight != 3200 ||
+            configs[eye].maxImageRectHeight != 3200 ||
+            configFovs[eye].recommendedFov.angleLeft != expected.angle_left ||
+            configFovs[eye].recommendedFov.angleRight != expected.angle_right ||
+            configFovs[eye].recommendedFov.angleUp != expected.angle_up ||
+            configFovs[eye].recommendedFov.angleDown != expected.angle_down ||
+            std::memcmp(&configFovs[eye].recommendedFov, &configFovs[eye].maxMutableFov,
+                        sizeof(XrFovf)) != 0) return EXIT_FAILURE;
+    }
+    if (destroySession(session) != XR_SUCCESS || destroyInstance(instance) != XR_SUCCESS)
+        return EXIT_FAILURE;
+#endif
+    return EXIT_SUCCESS;
 }

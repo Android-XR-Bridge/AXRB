@@ -408,6 +408,14 @@ struct XrFovf {
     float angleUp;
     float angleDown;
 };
+constexpr XrStructureType XR_TYPE_VIEW_CONFIGURATION_VIEW_FOV_EPIC =
+    static_cast<XrStructureType>(1000059000);
+struct XrViewConfigurationViewFovEPIC {
+    XrStructureType type;
+    const void* next;
+    XrFovf recommendedFov;
+    XrFovf maxMutableFov;
+};
 
 struct XrViewLocateInfo {
     XrStructureType type;

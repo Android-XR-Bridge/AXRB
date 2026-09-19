@@ -137,6 +137,8 @@ extern uint64_t g_imageFrameSequence;
 extern XrTime g_nextFrameStart;
 extern uint32_t g_renderWidth, g_renderHeight;
 extern bool g_renderExtentQueried;
+extern std::array<axrb::protocol::ViewFov, 2> g_viewFovs;
+extern bool g_viewFovsValid;
 extern axrb::protocol::PoseFrame g_lastViewPoseFrame;
 #if defined(__ANDROID__)
 XrResult XRAPI_CALL xrCreateSwapchainAndroidSurfaceKHR_impl(XrSession session, const XrSwapchainCreateInfo* info, XrSwapchain* swapchain, jobject* surface);

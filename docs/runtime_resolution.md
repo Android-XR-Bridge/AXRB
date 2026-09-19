@@ -14,12 +14,18 @@ unchanged, so increasing resolution does not change angular scale.
 
 ## Startup and compatibility
 
-- Pose protocol v4 appends width/height to the existing v3 record (2368 bytes).
-  The decoder and Java broker still accept v1/v2/v3 records. Upgrade the host and
-  Android runtime together: older guests cannot decode v4 host records.
-- Android waits up to two seconds for the initial host recommendation during view
-  enumeration, then retains it for that instance. A missing/legacy host uses the
-  previous 1024-square default.
+- Pose protocol v6 carries the host's actual per-eye optical FOV as well as the
+  render extent, display period and tracking origin (2448 bytes). The decoder
+  and Java broker still accept v1–v5 records. Upgrade the host and Android runtime
+  together: older guests cannot decode v6 host records.
+- Android waits up to two seconds for the initial host extent and valid FOV
+  during view enumeration. The selected extent remains fixed for that instance;
+  a host without an extent recommendation uses the previous 1024-square default.
+- `XR_EPIC_view_configuration_fov` exposes each eye's optical recommendation.
+  Until valid metadata arrives, it returns the existing symmetric ±0.95-radian
+  fallback. Later enumeration can recover the real FOV without blocking or
+  resizing the selected extent. Rendering uses the current per-eye FOV from
+  `xrLocateViews`; startup recommendations are not rendering projections.
 - Stereo transfer uses equal-sized array slices. If a runtime recommends unequal
   eye sizes, both slices use the larger width and height.
 - Supported transported eye dimensions are up to 8192 in either direction. A host

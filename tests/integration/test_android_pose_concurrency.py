@@ -29,12 +29,12 @@ with socket.socket() as server:
             connection.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
             try:
                 for sequence in range(1,20000):
-                    frame=bytearray(2408)
-                    struct.pack_into('<IHHQQ',frame,0,0x42525841,5,1,sequence,sequence*1000000)
+                    frame=bytearray(2448)
+                    struct.pack_into('<IHHQQ',frame,0,0x42525841,6,1,sequence,sequence*1000000)
                     struct.pack_into('<7f',frame,24,float(sequence%1024),-float(sequence%1024),0,0,0,0,1)
                     # Exercise header splits and partial records, not just
                     # conveniently aligned TCP writes.
-                    split=(sequence*137)%2407+1
+                    split=(sequence*137)%(len(frame)-1)+1
                     connection.sendall(frame[:split])
                     time.sleep(.0001)
                     connection.sendall(frame[split:])

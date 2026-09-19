@@ -42,9 +42,9 @@ public final class RuntimeBrokerProvider extends ContentProvider {
     }
     private static final String TAG = "AXRB.PoseBroker";
     private static final int BRIDGE_PORT = 38490;
-    private static final int POSE_FRAME_BYTES = 2408;
+    private static final int POSE_FRAME_BYTES = 2448;
     private static final int POSE_MAGIC = 0x42525841;
-    private static final short POSE_VERSION = 5;
+    private static final short POSE_VERSION = 6;
     private static final short POSE_TYPE = 1;
 
     private static final String[] ACTIVE_RUNTIME_COLUMNS = {
@@ -251,7 +251,7 @@ public final class RuntimeBrokerProvider extends ContentProvider {
                     closeSocketLocked();
                     return;
                 }
-                input.readFully(frame, 8, (version == 1 ? 112 : version == 2 ? 160 : version == 3 ? 2360 : version == 4 ? 2368 : POSE_FRAME_BYTES) - 8);
+                input.readFully(frame, 8, (version == 1 ? 112 : version == 2 ? 160 : version == 3 ? 2360 : version == 4 ? 2368 : version == 5 ? 2408 : POSE_FRAME_BYTES) - 8);
 
                 sequence = readLongLE(frame, 8);
                 monotonicTimeNs = readLongLE(frame, 16);

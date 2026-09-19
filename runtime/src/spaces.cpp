@@ -208,10 +208,16 @@ XrResult XRAPI_CALL xrLocateViews_impl(
         eyeOffset.position.x = i == 0 ? -kEyeHalfIpdMeters : kEyeHalfIpdMeters;
         const XrPosef eyeWorld = multiply_pose(hmdWorld, eyeOffset);
         views[i].pose = multiply_pose(inverse_pose(baseWorld), eyeWorld);
-        views[i].fov.angleLeft = -kProjectionHalfFovRadians;
-        views[i].fov.angleRight = kProjectionHalfFovRadians;
-        views[i].fov.angleUp = kProjectionHalfFovRadians;
-        views[i].fov.angleDown = -kProjectionHalfFovRadians;
+        if (axrb::protocol::has_valid_view_fovs(poseFrame)) {
+            const auto& fov = poseFrame.view_fov[i];
+            views[i].fov = {fov.angle_left, fov.angle_right, fov.angle_up, fov.angle_down};
+        } else {
+            views[i].fov = {
+                -kProjectionHalfFovRadians,
+                kProjectionHalfFovRadians,
+                kProjectionHalfFovRadians,
+                -kProjectionHalfFovRadians};
+        }
     }
     return XR_SUCCESS;
 }
