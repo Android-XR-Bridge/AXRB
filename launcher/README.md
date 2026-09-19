@@ -107,6 +107,8 @@ Source components are in `ui/`, with shared shadcn components in `ui/components/
   a patched game still depends on ovrport; copying files alone cannot guarantee it.
 - **Local games:** Import an APK (including already-patched APKs) and optional
   expansion files. Originals are referenced in place, not deleted or modified.
+  Import recognizes standard launcher entries and enabled, exported `MAIN`
+  activities or aliases marked `INFO` or Oculus `VR`, even without a phone launcher entry.
 - **Patch:** Optionally configure the ovrport **CLI** `.exe` or `.jar` in Settings
   (the JAR requires Java), then save Settings. Patching writes a separate
   `axrb-patched/<input-name>-axrb.apk`; installation remains a separate explicit
