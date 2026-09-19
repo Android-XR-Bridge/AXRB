@@ -120,7 +120,7 @@ export class Runtime {
     child.stderr.on('data', b => { tail = (tail + b).slice(-4000); });
     let finished = false;
     const end = (code, error) => { if (finished) return; finished = true; this.child = null; this.game = null; this.fpsHudEvent = null; onExit(code, error || tail); };
-    child.on('error', e => end(1, e.message)); child.on('exit', code => end(code)); child.unref();
+    child.on('error', e => end(1, e.message)); child.on('exit', code => end(code));
   }
   async setFpsHud(enabled) {
     if (typeof enabled !== 'boolean') throw new Error('Invalid FPS HUD setting.');

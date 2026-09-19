@@ -40,7 +40,7 @@ test('the bundle carries the useful logs, redacted, and never the game library',
   await fs.mkdir(path.join(root, 'logs/emulator'), { recursive: true });
   await fs.mkdir(path.join(root, 'logs/game'), { recursive: true });
   await fs.writeFile(path.join(root, 'logs/game/host.err'), 'AXRB OpenXR: failed to load openxr_loader.dll\r\n');
-  await fs.writeFile(path.join(root, 'logs/emulator/emulator.stdout.log'), `boot from ${identity.home}\\avd\n`);
+  await fs.writeFile(path.join(root, 'logs/emulator/emulator.stdout.log'), `boot from ${os.homedir()}\\avd\n`);
   const bundle = await collectDiagnostics({
     dataHome: root, version: '0.1.3',
     settings: { avd: 'axrb-managed-api36', port: 5584, sdk: 'C:\\Users\\flori\\AppData\\Local\\AXRB Runtime\\sdk', managedDirectory: 'C:\\Users\\flori\\AppData\\Local\\AXRB Runtime' },
@@ -51,7 +51,8 @@ test('the bundle carries the useful logs, redacted, and never the game library',
   assert.match(bundle, /adb=offline/, 'the setup transcript is included');
   assert.match(bundle, /AMD Radeon RX 6600/);
   assert.match(bundle, /axrb-managed-api36/);
-  assert.doesNotMatch(bundle, /flori/i, 'nothing identifying may reach the bundle');
+  assert.doesNotMatch(bundle, new RegExp(os.userInfo().username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'),
+    'nothing identifying may reach the bundle');
   assert.doesNotMatch(bundle, /"sdk"|downloadDir|ovrportCli/, 'local paths stay out of the settings summary');
   assert.match(bundle, /guest-vulkan\.json ---\n\(unavailable/, 'missing logs are reported, not fatal');
   assert.doesNotMatch(bundle, /\r/, 'line endings are normalised for the paste view');
