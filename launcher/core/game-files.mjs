@@ -107,12 +107,25 @@ export async function installFiles(game, adb, update = () => {}, signal) {
   const available = disk.trim().split(/\r?\n/).at(-1)?.trim().split(/\s+/)[3];
   if (!/^\d+$/.test(available || '')) throw new Error('Could not check Android free space.');
   if (Number(available) * 1024 < bytes + 1024 ** 3) throw new Error(`Android needs at least ${(bytes / 1024 ** 3 + 1).toFixed(1)} GB free for this installation. Free space and retry.`);
+  const rootAdb = assets.length && (await adb(['shell', 'id', '-u'], { signal })).trim() === '0';
   signal?.throwIfAborted(); update('Installing APK');
   await adb([splits.length ? 'install-multiple' : 'install', '--no-incremental', '--force-queryable', '-r', ...apkPaths], { timeout: 30 * 60 * 1000, signal });
+  let uid;
+  if (rootAdb) {
+    uid = (await adb(['shell', `stat -c %u ${shellQuote(`/data/user/0/${game.package}`)}`], { signal })).trim();
+    if (!/^\d+$/.test(uid) || Number(uid) < 10000) throw new Error('Cannot determine app UID for asset ownership.');
+  }
   for (const file of assets) {
     signal?.throwIfAborted(); update(`Copying ${file.name}`);
     await adb(['shell', `mkdir -p ${shellQuote(path.posix.dirname(file.remote))}`], { signal });
     await adb(['push', file.path, file.remote], { timeout: 60 * 60 * 1000, signal, onOutput: text => update(`Copying ${file.name}: ${text.trim().slice(-120)}`) });
+    if (rootAdb) {
+      // Root ADB leaves nested directories inaccessible to the app. Change only
+      // this file and its ancestors through the package directory, never siblings.
+      const parts = file.remote.split('/'), targets = [];
+      while (parts.length >= 5) { targets.push(shellQuote(parts.join('/'))); parts.pop(); }
+      await adb(['shell', `chown ${uid} ${targets.join(' ')}`], { signal });
+    }
   }
   await adb(['shell', 'sync'], { signal });
 }
