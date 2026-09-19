@@ -7,6 +7,8 @@ import { activeStatuses, call } from './common';
 export function Settings({ state, run, pending, notify }) {
   const [draft, setDraft] = useState({ ...state.settings });
   const [dirty, setDirty] = useState(false);
+  const [report, setReport] = useState(null);
+  const [storage, setStorage] = useState(state.settings.storageGB ?? 32);
   const edit = (key, value) => { setDraft(d => ({ ...d, [key]: value })); setDirty(true); };
   const browse = key => run(`choose-${key}`, async () => {
     const value = await call(key === 'ovrportCli' ? 'chooseCli' : 'chooseFolder');
@@ -33,6 +35,19 @@ export function Settings({ state, run, pending, notify }) {
       <div className="mt-5 space-y-5">{!state.settings.managedDirectory && <>{field('sdk', 'Android SDK', { required: true })}{field('avd', 'Virtual device', { required: true, pattern: '[a-zA-Z0-9_-]+' })}</>}
         <div className="grid grid-cols-2 gap-4">{field('port', 'Port', { type: 'number', min: 5554, max: 5682, step: 2, required: true })}{field('memoryMB', 'Memory (MB)', { type: 'number', min: 2048, max: 16384, step: 1024, required: true })}</div>
         <div className="space-y-2">
+          <label htmlFor="storageGB">Android storage (GB)</label>
+          <div className="flex gap-2">
+            <Input id="storageGB" name="storageGB" type="number" min="8" max="256" step="8"
+              value={storage} onChange={e => setStorage(Number(e.target.value))} />
+            <Button type="button" variant="outline" disabled={pending.has('storage') || storage === (state.settings.storageGB ?? 32)}
+              onClick={() => run('storage', async () => {
+                const result = await call('storage', Number(storage));
+                notify(result.changed ? `Android storage set to ${result.storageGB} GB. It grows on the next Android start.` : 'Android storage is already that size.');
+              })}>Resize</Button>
+          </div>
+          <p className="text-xs text-muted-foreground">Storage can only grow, and only while Android is stopped. The space is claimed as Android fills it, not up front.</p>
+        </div>
+        <div className="space-y-2">
           <div className="flex items-center justify-between"><label htmlFor="cpuCores">vCPUs</label><output htmlFor="cpuCores">{draft.cpuCores ?? 4}</output></div>
           <input id="cpuCores" name="cpuCores" type="range" min="2" max="6" step="1" value={draft.cpuCores ?? 4} onChange={e => edit('cpuCores', Number(e.target.value))} className="w-full accent-primary" aria-describedby="cpu-restart" />
           <p id="cpu-restart" className="text-xs text-muted-foreground">Applies after restarting Android.</p>
@@ -44,6 +59,31 @@ export function Settings({ state, run, pending, notify }) {
       <input id="fps-hud" type="checkbox" role="switch" checked={state.settings.fpsHud === true} disabled={pending.has('fpsHud')}
         className="size-4 accent-primary" onChange={e => { const enabled = e.target.checked; run('fpsHud', () => call('fpsHud', enabled)); }} />
     </label>
+    <div className="space-y-3 border-t pt-5">
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <div>Diagnostics</div>
+          <p className="text-xs text-muted-foreground">Emulator and OpenXR host logs, for bug reports. Your Windows user name and PC name are removed first. Uploads go to a public paste service and expire after 30 days.</p>
+        </div>
+        <div className="flex shrink-0 gap-2">
+          <Button type="button" variant="outline" disabled={pending.has('diagnostics')}
+            onClick={() => run('diagnostics', async () => setReport({ ...await call('diagnostics', { upload: false }), url: '' }))}>Preview</Button>
+          <Button type="button" variant="outline" disabled={pending.has('diagnostics')}
+            onClick={() => run('diagnostics', async () => {
+              const result = await call('diagnostics', { upload: true });
+              setReport(result);
+              try { await navigator.clipboard.writeText(result.url); notify('Log link copied'); } catch { notify('Log uploaded'); }
+            })}>Upload &amp; copy link</Button>
+        </div>
+      </div>
+      {field('diagnosticsEndpoint', 'Upload endpoint', { placeholder: 'Optional https:// URL — blank uses the public paste service' })}
+      {report?.url && <p className="text-sm break-all">Share this link: <a href={report.url} target="_blank" rel="noreferrer" className="underline">{report.url}</a></p>}
+      {report && !report.url && <>
+        <p className="text-xs text-muted-foreground">Nothing has been uploaded. Review the bundle, then use Upload.</p>
+        <textarea readOnly value={report.bundle} rows={14} aria-label="Diagnostics bundle"
+          className="w-full rounded-md border bg-secondary/40 p-3 font-mono text-xs" />
+      </>}
+    </div>
     <Button type="submit" disabled={!dirty || state.busy || Boolean(state.running) || pending.has('settings') || state.jobs.some(j => activeStatuses.includes(j.status))}>Save</Button>
   </form>;
 }

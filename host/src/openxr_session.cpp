@@ -177,6 +177,7 @@ bool OpenXrSession::initialize(const std::string& gameName)
     }
 
     if (!load_instance_functions()) {
+        std::fprintf(stderr, "AXRB OpenXR: the runtime is missing required OpenXR 1.0 entry points\n");
         return false;
     }
 
@@ -191,11 +192,25 @@ bool OpenXrSession::initialize(const std::string& gameName)
 #if defined(_WIN32)
     PFN_xrGetSystemProperties systemProperties = nullptr;
     XrSystemProperties properties{XR_TYPE_SYSTEM_PROPERTIES};
-    if (!load_func("xrGetSystemProperties", &systemProperties) ||
-        systemProperties(instance_, systemId_, &properties) != XR_SUCCESS || !properties.graphicsProperties.maxLayerCount) return false;
+    // Report which stage refused: an empty host.err tells a user nothing, and
+    // these three are the failures a launcher log cannot otherwise explain.
+    if (!load_func("xrGetSystemProperties", &systemProperties)) {
+        std::fprintf(stderr, "AXRB OpenXR: the runtime does not provide xrGetSystemProperties\n");
+        return false;
+    }
+    result = systemProperties(instance_, systemId_, &properties);
+    if (result != XR_SUCCESS) {
+        std::fprintf(stderr, "AXRB OpenXR: xrGetSystemProperties failed: %s (%d)\n", xr_result_name(result), result);
+        return false;
+    }
+    if (!properties.graphicsProperties.maxLayerCount) {
+        std::fprintf(stderr, "AXRB OpenXR: the runtime reports no composition layers\n");
+        return false;
+    }
     nativeLayerLimit_ = properties.graphicsProperties.maxLayerCount;
     std::fprintf(stderr, "AXRB compositor: native layer limit=%u; excess layers composed on GPU\n", nativeLayerLimit_);
     if (!create_d3d11_device()) {
+        std::fprintf(stderr, "AXRB OpenXR: could not create the Direct3D 11 device the runtime requires\n");
         return false;
     }
     XrGraphicsBindingD3D11KHR graphicsBinding{XR_TYPE_GRAPHICS_BINDING_D3D11_KHR};

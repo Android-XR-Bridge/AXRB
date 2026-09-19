@@ -7,10 +7,11 @@ import { MetaAuth, QuestStore, appId } from './core/meta.mjs';
 import { downloadFile, safeName, checkSpace } from './core/download.mjs';
 import { State } from './core/state.mjs';
 import { Runtime, openWindowsFeatures, run } from './core/runtime.mjs';
-import { Setup } from './core/setup.mjs';
+import { Setup, avdDirectory, parseStorageGB, planStorageChange, withStorageGB } from './core/setup.mjs';
 import { loadLibraryArtwork } from './core/artwork.mjs';
 import { Quest } from './core/quest.mjs';
 import { importGameZip } from './core/game-files.mjs';
+import { collectDiagnostics, uploadDiagnostics } from './core/diagnostics.mjs';
 
 // Keep the packaged app in Electron GUI mode even when launched from a shell
 // that uses ELECTRON_RUN_AS_NODE for other tooling.
@@ -333,7 +334,7 @@ handler('fpsHud', async enabled => {
   await persist();
 });
 handler('settings', async values => {
-  const allowed = ['sdk', 'avd', 'port', 'memoryMB', 'cpuCores', 'downloadDir', 'ovrportCli'];
+  const allowed = ['sdk', 'avd', 'port', 'memoryMB', 'cpuCores', 'downloadDir', 'ovrportCli', 'diagnosticsEndpoint'];
   if (!values || typeof values !== 'object') throw new Error('Invalid settings.');
   if (busy || controllers.size || runtime.child) throw new Error('Finish current tasks before changing runtime settings.');
   const settings = { ...state.data.settings };
@@ -343,12 +344,49 @@ handler('settings', async values => {
     !Number.isInteger(settings.memoryMB) || settings.memoryMB < 2048 || settings.memoryMB > 16384) throw new Error('Check the Android AVD, even-numbered port, and memory settings.');
   if (!Number.isInteger(settings.cpuCores) || settings.cpuCores < 2 || settings.cpuCores > 6) throw new Error('Choose between 2 and 6 vCPUs.');
   for (const key of ['sdk', 'downloadDir']) if (typeof settings[key] !== 'string' || !path.isAbsolute(settings[key])) throw new Error('Select absolute Windows paths.');
+  // Empty keeps the default paste service; anything else must be a self-hosted
+  // HTTPS endpoint, so logs cannot be redirected to a plaintext collector.
+  if (settings.diagnosticsEndpoint) {
+    let endpoint; try { endpoint = new URL(settings.diagnosticsEndpoint); } catch { throw new Error('The diagnostics endpoint must be a full https:// URL.'); }
+    if (endpoint.protocol !== 'https:') throw new Error('The diagnostics endpoint must use https://.');
+  }
   state.data.settings = settings; runtime.settings = settings; await persist();
+});
+// Resizing rewrites the AVD's disk geometry, so Android has to be stopped and
+// its quick-boot snapshot discarded; the emulator then grows the partition on
+// the next cold boot.
+handler('storage', async storageGB => {
+  if (runtime.child) throw new Error('Close the running game before changing Android storage.');
+  if (await runtime.online()) throw new Error('Stop Android before changing its storage size.');
+  const directory = avdDirectory(runtime.settings), configFile = path.join(directory, 'config.ini');
+  let configText;
+  try { configText = await fs.readFile(configFile, 'utf8'); }
+  catch { throw new Error('That virtual device has no configuration yet. Finish runtime setup first.'); }
+  const currentGB = parseStorageGB(configText);
+  if (!planStorageChange(currentGB, storageGB)) return { storageGB, previousGB: currentGB, changed: false };
+  await fs.writeFile(configFile, withStorageGB(configText, storageGB));
+  await fs.rm(path.join(directory, 'snapshots/default_boot'), { recursive: true, force: true });
+  const settings = { ...state.data.settings, storageGB };
+  state.data.settings = settings; runtime.settings = settings;
+  if (setup) setup.status.storageGB = storageGB;
+  await persist();
+  return { storageGB, previousGB: currentGB, changed: true };
 });
 handler('chooseFolder', async () => { const choice = await dialog.showOpenDialog(window, { properties: ['openDirectory', 'createDirectory'] }); return choice.canceled ? null : choice.filePaths[0]; });
 handler('chooseCli', async () => { const choice = await dialog.showOpenDialog(window, { properties: ['openFile'], filters: [{ name: 'ovrport CLI', extensions: ['exe', 'jar'] }] }); return choice.canceled ? null : choice.filePaths[0]; });
 handler('openFolder', async id => { const game = getGame(id); const target = game.apk ? path.dirname(game.apk) : state.data.settings.downloadDir; await fs.mkdir(target, { recursive: true }); const error = await shell.openPath(target); if (error) throw new Error(error); });
 handler('openStore', async id => shell.openExternal(id ? `https://www.meta.com/experiences/${appId(id)}/` : 'https://www.meta.com/experiences/'));
+// Uploading publishes the logs, so this only ever runs from an explicit click,
+// and the bundle is offered for review before it leaves the machine.
+handler('diagnostics', async ({ upload = false } = {}) => {
+  const bundle = await collectDiagnostics({
+    dataHome: process.env.AXRB_DATA_HOME || path.join(root, 'out'),
+    version: app.getVersion(), settings: state.data.settings,
+    setupLogs: setup?.status.logs ?? [], hardware: setup?.status.hardware ?? null,
+  });
+  if (!upload) return { bundle };
+  return { bundle, url: await uploadDiagnostics(bundle, { endpoint: state.data.settings.diagnosticsEndpoint || undefined }) };
+});
 const uiErrors = [];
 if (smoke) window.webContents.on('console-message', details => { if (details.level === 'error') uiErrors.push(details.message); });
 await window.loadFile(uiPath);

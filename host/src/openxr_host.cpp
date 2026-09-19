@@ -245,7 +245,11 @@ int OpenXrHost::run(int argc, char** argv)
         auto imageFrame = std::make_shared<HostImageFrame>();
         auto poseSource = std::make_shared<OpenXrSession>(imageFrame.get());
         const std::string gameName = argc >= 5 ? argv[4] : "Android game";
-        if (!poseSource->initialize(gameName) || !poseSource->open_mirror(gameName)) {
+        if (!poseSource->initialize(gameName)) {
+            return 1;
+        }
+        if (!poseSource->open_mirror(gameName)) {
+            std::fprintf(stderr, "AXRB OpenXR: could not open the desktop mirror window\n");
             return 1;
         }
         std::thread imageThread([imageFrame, poseSource] {

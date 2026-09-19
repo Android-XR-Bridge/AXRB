@@ -68,7 +68,10 @@ class AdapterTests(unittest.TestCase):
 
     def test_ambiguous_software_and_mismatched_adapters(self):
         guest, host = self.fixtures()
-        for adapters in ([], [host, host], [{**host, 'flags': 2}], [{**host, 'device_id': 999}]):
+        # Duplicate entries for one PCI id are covered in AdapterMatchingTests:
+        # identical VRAM is accepted, a disagreement is still ambiguous.
+        for adapters in ([], [{**host, 'flags': 2}], [{**host, 'device_id': 999}],
+                         [host, {**host, 'dedicated_video_bytes': 4096 * 1024**2}]):
             with self.assertRaises(ValueError):
                 policy.memory_budget([guest], adapters)
         guest['properties']['deviceType'] = 4
@@ -104,3 +107,52 @@ class AdapterTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class AdapterMatchingTests(unittest.TestCase):
+    GUEST = [{'properties': {'vendorID': 0x1002, 'deviceID': 0x73ff, 'deviceType': 2,
+                             'deviceName': 'AMD Radeon RX 6600'},
+              'memory': {'memoryHeaps': [{'size': 8 * 1024 ** 3, 'flags': 1}]}}]
+
+    @staticmethod
+    def adapter(name, vendor, device, mib, flags=0):
+        return {'name': name, 'vendor_id': vendor, 'device_id': device, 'flags': flags,
+                'dedicated_video_bytes': mib * 1024 * 1024}
+
+    def test_discrete_gpu_is_matched_next_to_integrated_graphics(self):
+        adapters = [self.adapter('AMD Radeon RX 6600', 0x1002, 0x73ff, 8192),
+                    self.adapter('AMD Radeon(TM) Graphics', 0x1002, 0x13c0, 485),
+                    self.adapter('Microsoft Basic Render Driver', 0x1414, 0x008c, 0, flags=2)]
+        capacity, pool, guest_heap = policy.memory_budget(self.GUEST, adapters)
+        self.assertEqual(capacity, 8192)
+        self.assertEqual(pool, policy.pool_mib(8192))
+        self.assertEqual(guest_heap, 8192)
+
+    def test_duplicate_entries_for_one_model_are_not_treated_as_ambiguous(self):
+        # The same PCI id twice is the same hardware, so the budget is unchanged.
+        adapters = [self.adapter('AMD Radeon RX 6600', 0x1002, 0x73ff, 8192),
+                    self.adapter('AMD Radeon RX 6600', 0x1002, 0x73ff, 8192)]
+        capacity, _, _ = policy.memory_budget(self.GUEST, adapters)
+        self.assertEqual(capacity, 8192)
+
+    def test_conflicting_vram_for_one_id_still_skips(self):
+        adapters = [self.adapter('AMD Radeon RX 6600', 0x1002, 0x73ff, 8192),
+                    self.adapter('AMD Radeon RX 6600', 0x1002, 0x73ff, 4096)]
+        with self.assertRaises(ValueError):
+            policy.memory_budget(self.GUEST, adapters)
+
+    def test_no_match_names_the_guest_gpu_and_every_candidate(self):
+        adapters = [self.adapter('AMD Radeon(TM) Graphics', 0x1002, 0x13c0, 485),
+                    self.adapter('Microsoft Basic Render Driver', 0x1414, 0x008c, 0, flags=2)]
+        with self.assertRaises(ValueError) as caught:
+            policy.memory_budget(self.GUEST, adapters)
+        message = str(caught.exception)
+        self.assertIn('AMD Radeon RX 6600', message)
+        self.assertIn('0x73ff', message, 'the unmatched guest id must be reported')
+        self.assertIn('0x13c0', message, 'the adapters that were considered must be listed')
+        self.assertNotIn('Basic Render Driver', message, 'software adapters are not candidates')
+
+    def test_software_adapters_never_satisfy_the_match(self):
+        adapters = [self.adapter('Soft RX 6600', 0x1002, 0x73ff, 8192, flags=2)]
+        with self.assertRaises(ValueError):
+            policy.memory_budget(self.GUEST, adapters)

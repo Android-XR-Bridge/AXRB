@@ -148,7 +148,16 @@ try {
         $bridgeProcess = Start-Process -FilePath $HostExe -ArgumentList @('--serve-openxr', '38490', '0', $titleArgument) -WindowStyle Hidden -PassThru -RedirectStandardOutput "$logs\host.log" -RedirectStandardError "$logs\host.err"
     } finally { $env:AXRB_CLOSE_EVENT = $previousCloseEvent; $env:AXRB_FPS_HUD_EVENT = $previousFpsHudEvent }
     Start-Sleep -Milliseconds 800
-    if ($bridgeProcess.HasExited) { throw 'Host failed to start. See out/logs/game/host.err.' }
+    if ($bridgeProcess.HasExited) {
+        # The old message pointed at a relative path that does not exist in an
+        # installed build, and withheld the one line that explains the failure.
+        $reason = ''
+        if (Test-Path -LiteralPath "$logs\host.err") {
+            $reason = ([string]((Get-Content -LiteralPath "$logs\host.err" -Tail 6 -ErrorAction SilentlyContinue) -join ' ')).Trim()
+        }
+        if (!$reason) { $reason = 'The host wrote no diagnostics; SteamVR or another OpenXR runtime with a connected headset is required.' }
+        throw "Host failed to start: $reason Full log: $logs\host.err"
+    }
     if ($steamIdentity) {
         $identityResult = & python "$PSScriptRoot\steamvr_app_identity.py" --manifest $steamManifest --package $Package --pid $bridgeProcess.Id
         if ($LASTEXITCODE -eq 0) { Write-Output "SteamVR identity: $identityResult" }

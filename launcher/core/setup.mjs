@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { downloadFile, checkSpace } from './download.mjs';
@@ -40,6 +41,37 @@ export function avdConfig(image, settings) {
   }).map(([key, value]) => `${key}=${value}`).join('\n') + '\n';
 }
 
+export const STORAGE_MIN_GB = 8, STORAGE_MAX_GB = 256;
+export function avdDirectory(settings) {
+  // Managed installs keep their AVDs beside the runtime; a developer SDK uses
+  // Android's default location.
+  const home = process.env.ANDROID_AVD_HOME || path.join(os.homedir(), '.android', 'avd');
+  return path.join(home, `${settings.avd}.avd`);
+}
+export function parseStorageGB(configText) {
+  const match = /^disk\.dataPartition\.size\s*=\s*(\d+(?:\.\d+)?)\s*([kmgt])?/im.exec(String(configText ?? ''));
+  if (!match) return null;
+  const scale = { k: 1 / 1024 ** 2, m: 1 / 1024, g: 1, t: 1024 }[(match[2] || 'g').toLowerCase()];
+  return Number(match[1]) * scale;
+}
+export function withStorageGB(configText, storageGB) {
+  const text = String(configText ?? ''), line = `disk.dataPartition.size=${storageGB}G`;
+  return /^disk\.dataPartition\.size\s*=.*$/im.test(text)
+    ? text.replace(/^disk\.dataPartition\.size\s*=.*$/im, line)
+    : `${text.replace(/\n*$/, '\n')}${line}\n`;
+}
+// The emulator grows a data partition on its own (it ships resize2fs), but
+// nothing shrinks one: ext4 cannot give back space the guest already holds, so
+// a smaller disk would mean erasing Android and every installed game.
+export function planStorageChange(currentGB, requestedGB) {
+  if (!Number.isInteger(requestedGB) || requestedGB < STORAGE_MIN_GB || requestedGB > STORAGE_MAX_GB) {
+    throw new Error(`Choose ${STORAGE_MIN_GB}–${STORAGE_MAX_GB} GB of Android storage.`);
+  }
+  if (currentGB !== null && requestedGB < currentGB) {
+    throw new Error(`Android storage is ${currentGB} GB and can only grow. Making it smaller would erase Android and your installed games.`);
+  }
+  return currentGB === null || requestedGB > currentGB;
+}
 export class Setup {
   constructor({ root, directory, runtime, components, save, changed, debug = false }) {
     Object.assign(this, { root, directory, runtime, components, save, changed, debug });

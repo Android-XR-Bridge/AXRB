@@ -28,6 +28,14 @@ def integer(value):
     return int(value, 0) if isinstance(value, str) else int(value)
 
 
+def describe_adapters(adapters):
+    return ', '.join(
+        '{} [{:#06x}:{:#06x}, {} MiB]'.format(a.get('name', '?'), integer(a['vendor_id']),
+                                              integer(a['device_id']),
+                                              integer(a['dedicated_video_bytes']) // (1024 * 1024))
+        for a in adapters) or 'none'
+
+
 def memory_budget(devices, adapters):
     if len(devices) != 1:
         raise ValueError('Requires one guest hardware Vulkan device')
@@ -36,12 +44,20 @@ def memory_budget(devices, adapters):
     vendor, device_id = integer(props['vendorID']), integer(props['deviceID'])
     if vendor not in (0x1002, 0x10de) or integer(props['deviceType']) not in (1, 2):
         raise ValueError('Requires AMD or NVIDIA hardware Vulkan')
-    matches = [a for a in adapters if not integer(a['flags']) & 3
-               and integer(a['vendor_id']) == vendor and integer(a['device_id']) == device_id]
-    if len(matches) != 1:
-        raise ValueError('Cannot uniquely match guest GPU to a Windows adapter')
+    usable = [a for a in adapters if not integer(a['flags']) & 3]
+    matches = [a for a in usable
+               if integer(a['vendor_id']) == vendor and integer(a['device_id']) == device_id]
     # Shared system memory is not dedicated VRAM, especially on integrated GPUs.
-    capacity = integer(matches[0]['dedicated_video_bytes']) // (1024 * 1024)
+    # Several entries for one PCI id describe the same model, so they report the
+    # same VRAM and either budgets identically; that is disambiguation, not a
+    # guess. A genuine disagreement still skips.
+    capacities = {integer(a['dedicated_video_bytes']) for a in matches}
+    if len(capacities) != 1:
+        guest = '{} [{:#06x}:{:#06x}]'.format(props.get('deviceName', '?'), vendor, device_id)
+        raise ValueError(
+            'Cannot uniquely match guest GPU to a Windows adapter. Guest reports {}; Windows offers {}'.format(
+                guest, describe_adapters(matches if matches else usable)))
+    capacity = capacities.pop() // (1024 * 1024)
     pool = pool_mib(capacity)
     if pool < 1024:
         raise ValueError('Insufficient dedicated VRAM for this policy')
