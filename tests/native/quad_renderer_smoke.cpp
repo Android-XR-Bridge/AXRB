@@ -56,6 +56,19 @@ int main() {
         projection,0,view,target.Get(),1,64,64));
     CHECK(pixel(0,32,32)[0]==255 && pixel(0,32,32)[3]==255);
     CHECK(pixel(1,32,32)[2]==255 && pixel(1,32,32)[3]==255);
+    // One shared image is a legal stereo projection source. Both render cameras
+    // must sample its sole slice, including the right-eye output.
+    D3D11_TEXTURE2D_DESC monoDesc{}; source->GetDesc(&monoDesc); monoDesc.ArraySize=1;
+    D3D11_SUBRESOURCE_DATA monoData{red.data(),64*4,0};
+    ComPtr<ID3D11Texture2D> mono;
+    CHECK(SUCCEEDED(device->CreateTexture2D(&monoDesc,&monoData,&mono)));
+    for (unsigned eye=0;eye<2;++eye) {
+        context->UpdateSubresource(target.Get(),eye,nullptr,blue.data(),64*4,0);
+        CHECK(renderer.render_projection(device.Get(),context.Get(),mono.Get(),eye,{64,64},desc.Format,
+            projection,6,view,target.Get(),eye,64,64));
+        const auto blended=pixel(eye,32,32);
+        CHECK(blended[0]>=127 && blended[0]<=129 && blended[2]>=126 && blended[2]<=128);
+    }
     // Two projection draws compose in application order.
     std::vector<uint32_t> transparent(64*64);
     context->UpdateSubresource(target.Get(),0,nullptr,transparent.data(),64*4,0);

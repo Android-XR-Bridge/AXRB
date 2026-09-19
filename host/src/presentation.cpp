@@ -587,7 +587,16 @@ bool OpenXrSession::fill_projection_texture(ID3D11Texture2D* texture, uint32_t i
         box.back = 1;
         d3dContext_.get()->UpdateSubresource(texture, layer, &box, pixels.data(), stride, stride * projectionHeight_);
     }
-    return false;
+    // Procedural test pixels still need a render-camera descriptor, just like
+    // an untagged legacy frame. Reuse the ordinary native submission path.
+    auto& composition = uploadedCompositionByImage_[imageIndex];
+    composition.resize(1);
+    composition[0] = {};
+    composition[0].extent = {
+        static_cast<int32_t>(projectionWidth_), static_cast<int32_t>(projectionHeight_)};
+    uploadedExtentByImage_[imageIndex] = composition[0].extent;
+    splashUploaded_[imageIndex] = false;
+    return true;
 }
 #endif
 
@@ -627,8 +636,6 @@ bool OpenXrSession::upload_android_frame(ID3D11Texture2D* texture, uint32_t imag
             uploadedMixedTimes_[imageIndex] != header.monotonic_time_ns ||
             (!flattened && panelSequences_[panelImageIndex_] != header.sequence) ||
             viewTransformChanged) {
-            std::vector<UploadedCompositionPart> nextParts;
-            if (!flattened) nextParts.reserve(activeMixedCount);
             bool queued = true;
             uint32_t panelSlice = 0;
             if (!flattened) {
@@ -644,13 +651,6 @@ bool OpenXrSession::upload_android_frame(ID3D11Texture2D* texture, uint32_t imag
                             d3dContext_.get(), destination, imageArrayIndex, sliceCount)) {
                         queued = false;
                     }
-                    nextParts.push_back({
-                        part.projection,
-                        {static_cast<int32_t>(part.header.width),
-                         static_cast<int32_t>(part.header.height)},
-                        imageArrayIndex,
-                        panel,
-                    });
                     if (panel) panelSlice += sliceCount;
                     if (!queued) break;
                 }
@@ -672,6 +672,8 @@ bool OpenXrSession::upload_android_frame(ID3D11Texture2D* texture, uint32_t imag
             }
 
             // Publish descriptors only after every texture slice is complete.
+            auto& nextParts = uploadedCompositionByImage_[imageIndex];
+            nextParts.resize(flattened ? 1 : activeMixedCount);
             if (flattened) {
                 UploadedCompositionPart output{};
                 output.projection.view_count = 2;
@@ -696,8 +698,20 @@ bool OpenXrSession::upload_android_frame(ID3D11Texture2D* texture, uint32_t imag
                     : XrExtent2Di{static_cast<int32_t>(projectionWidth_),
                         static_cast<int32_t>(projectionHeight_)};
                 nextParts.assign(1, output);
+            } else {
+                panelSlice = 0;
+                for (uint32_t i = 0; i < activeMixedCount; ++i) {
+                    const auto& part = frame.gpu->parts[i];
+                    nextParts[i] = {
+                        part.projection,
+                        {static_cast<int32_t>(part.header.width),
+                         static_cast<int32_t>(part.header.height)},
+                        i ? panelSlice : 0,
+                        i != 0,
+                    };
+                    if (i) panelSlice += part.projection.view_count == 2 ? 2u : 1u;
+                }
             }
-            uploadedCompositionByImage_[imageIndex] = std::move(nextParts);
             if (needsTransform) {
                 uploadedOverflowWorldFromView_[imageIndex] = *overflowWorldFromView;
                 uploadedOverflowWorldFromViewValid_[imageIndex] = true;

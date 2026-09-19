@@ -165,15 +165,15 @@ bool QuadRenderer::render_projection(
             !initialize_common(device) ||
             FAILED(device->CreateVertexShader(vs->GetBufferPointer(),vs->GetBufferSize(),nullptr,&projectionVertex_))) return false;
     }
+    D3D11_TEXTURE2D_DESC desc{}; source->GetDesc(&desc);
     D3D11_SHADER_RESOURCE_VIEW_DESC srv{}; srv.Format=format; srv.ViewDimension=D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
-    srv.Texture2DArray.MipLevels=1; srv.Texture2DArray.FirstArraySlice=slice; srv.Texture2DArray.ArraySize=1;
+    srv.Texture2DArray.MipLevels=1; srv.Texture2DArray.FirstArraySlice=desc.ArraySize==1 ? 0 : slice; srv.Texture2DArray.ArraySize=1;
     ComPtr<ID3D11ShaderResourceView> input;
     if (FAILED(device->CreateShaderResourceView(source,&srv,&input))) return false;
     D3D11_RENDER_TARGET_VIEW_DESC rtv{}; rtv.Format=format; rtv.ViewDimension=D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
     rtv.Texture2DArray.FirstArraySlice=eye; rtv.Texture2DArray.ArraySize=1;
     ComPtr<ID3D11RenderTargetView> output;
     if (FAILED(device->CreateRenderTargetView(target,&rtv,&output))) return false;
-    D3D11_TEXTURE2D_DESC desc{}; source->GetDesc(&desc);
     const auto& sourcePose=sourceView.pose;
     const auto& targetPose=targetView.pose;
     const float alphaMode=(layerFlags&2u) ? ((layerFlags&4u) ? 2.f : 1.f) : 0.f;
