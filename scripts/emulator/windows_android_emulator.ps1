@@ -122,8 +122,19 @@ switch ($Action) {
     Start {
         Require-Path $adb 'ADB executable'
         Require-Path $emulator 'Android emulator executable'
-        if ($env:ANDROID_AVD_HOME) { Require-Path (Join-Path $env:ANDROID_AVD_HOME "$Avd.avd\config.ini") 'managed AVD configuration' }
         $systemImage = Join-Path $Sdk "system-images\android-$ApiLevel\google_apis\x86_64\system.img"
+        if ($env:ANDROID_AVD_HOME) {
+            $avdConfig = Join-Path $env:ANDROID_AVD_HOME "$Avd.avd\config.ini"
+            Require-Path $avdConfig 'managed AVD configuration'
+            # Managed AVDs select their own image; game launches need not repeat its API level.
+            [string]$configText = Get-Content -LiteralPath $avdConfig -Raw
+            if ($configText -notmatch '(?m)^image\.sysdir\.1\s*=(.+)$') {
+                throw "Android startup diagnostic: image.sysdir.1 is missing from $avdConfig"
+            }
+            $imageDirectory = $Matches[1].Trim()
+            if (![IO.Path]::IsPathRooted($imageDirectory)) { $imageDirectory = Join-Path $Sdk $imageDirectory }
+            $systemImage = Join-Path $imageDirectory 'system.img'
+        }
         Require-Path $systemImage 'Android system image'
         Run $emulator @('-accel-check')
         $adbPort = $Port + 1
