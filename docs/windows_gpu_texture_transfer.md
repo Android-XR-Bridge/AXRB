@@ -61,11 +61,13 @@ loader rejects a relative path.
    while Android produces the next frame. The desktop mirror uses the same GPU
    image.
 
-An absent/rejected host export or failed acknowledgment disables GPU export for
-that Android session and falls back to AXRI v2 pixels. After uncertain completion,
-the guest never reuses the shared texture pair. The layer retains allocations
-until Vulkan device teardown. Resolution/format changes that do not match the
-exported pair also fall back rather than corrupting a frame.
+For a single-layer frame, an absent/rejected host export or failed acknowledgment
+disables GPU export for that Android session and falls back to AXRI v2 pixels.
+After uncertain completion, the guest never reuses the shared texture pair.
+The layer retains allocations until Vulkan device teardown. Resolution/format
+changes that do not match the exported pair also fall back rather than corrupting
+a frame. Mixed-layer frames require shared-GPU transport; they fail rather than
+silently dropping layers into a single-frame CPU fallback.
 
 ## Projection reference spaces
 
@@ -84,13 +86,14 @@ than silently treating their coordinates as world-space; update the Android
 runtime and Windows host together. Both pixel and shared-GPU transport preserve
 the tag. The capture tool reports it separately as `view_space`.
 
-Native mixed composition keeps a head-locked projection scene in `VIEW` and
-existing world-space quad/equirect overlays in their world space. When the
-runtime's layer limit requires software flattening, AXRB transforms private
-copies of overlay poses into the scene's camera space at predicted display
-time. Cached scene frames are recomposited when that transform changes, so
-world overlays do not become accidentally attached to the headset. Flattened
-layers cannot retain independent late reprojection.
+Native mixed composition keeps each projection in its own `VIEW` or world space,
+with independent stereo render cameras, and keeps quad/equirect layers in world
+space. When the runtime's layer limit requires GPU flattening, AXRB transforms
+private copies of layer poses into the output camera space at predicted display
+time. A batch mixing `VIEW` and world coordinates is recomposited when that
+transform changes, regardless of which kind comes first. All-`VIEW` projection
+stacks do not depend on valid world tracking. Flattened layers cannot retain
+independent late reprojection.
 
 Native spatial and wire-transport regressions cover head-motion invariance,
 offset reference spaces and strict flag validation. A local D3D11 pixel smoke
@@ -117,3 +120,41 @@ preparation and Vulkan readback against asymmetric, off-center cropped images,
 including shared images and separate array layers. It verifies decoded pixel
 orientation through the CPU transport representation; this scenario does not
 exercise shared-GPU export or a live headset.
+
+## Ordered projection stacks
+
+Atomic GPU batches preserve application order across any combination of stereo
+projection, quad and equirect layers. Projection parts are legal at every batch
+index, including multiple consecutive projections and a projection after a quad.
+Every part is validated before export, and a complete batch receives one
+acknowledgment after all host GPU copies finish.
+
+Native presentation retains each projection's FOV, eye poses, reference space,
+blend flags and pixel extent. Projection destinations occupy two adjacent array
+slices; quad/equirect destinations occupy one. A projection whose eyes share the
+same source image may use one shared GPU texture while retaining two independent
+render cameras and two output eyes.
+
+Overflow composition samples projections by camera-ray orientation and FOV.
+Without depth metadata it cannot reconstruct positional reprojection, so it does
+not place the images on an arbitrary-depth quad. Out-of-FOV samples leave the
+underlying layers untouched; opaque, premultiplied and unpremultiplied layers
+retain their ordered blending semantics. The first projection defines output
+cameras and extent when it is the first layer; otherwise the output uses the
+current host stereo cameras. This flattened target still has the field-of-view
+and independent-reprojection limitations described above.
+
+Wire layouts and version numbers are unchanged. Older hosts reject projection
+parts after index zero; deploy the Android runtime and Windows host together.
+CPU mixed-layer transport remains unsupported.
+
+Validation includes native runtime and TCP acknowledgment regressions, real D3D11
+pixel tests for stereo and mono sources, camera rotation, FOV coverage and alpha,
+and the Android Vulkan batch probe's dynamic layer counts and rejection handling.
+A local host smoke exercised ordered native submissions, interleaved mono/stereo
+slices, equirect fallback, mixed-space overflow cache invalidation, empty frames
+and procedural test imagery using real D3D11 textures and test OpenXR swapchains.
+Live-headset presentation remains unverified. The Climb 2 now exports its three
+projection layers successfully in the controlled startup probe, but subsequently
+terminates with `Oculus platform failed to initialize`; this rendering support
+does not establish full game compatibility.

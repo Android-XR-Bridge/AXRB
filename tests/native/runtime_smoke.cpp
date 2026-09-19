@@ -770,6 +770,24 @@ int main()
         quads[i].subImage = projectionViews[0].subImage;
     }
     projectionViews[1].subImage = projectionViews[0].subImage;
+    // Projections retain their own cameras and may appear after any layer type.
+    XrCompositionLayerProjection overlay = projection;
+    overlay.layerFlags = 6; // Source alpha with unpremultiplied color.
+    std::array<XrCompositionLayerProjectionView, 2> overlayViews{projectionViews[0], projectionViews[1]};
+    overlayViews[0].fov = {-0.5f, 0.6f, 0.4f, -0.3f};
+    overlayViews[1].fov = {-0.6f, 0.5f, 0.3f, -0.4f};
+    overlay.views = overlayViews.data();
+    const void* projectionStack[] = {&projection, &overlay, &overlay};
+    endInfo.layerCount = 3; endInfo.layers = projectionStack;
+    if (xrEndFrame(session, &endInfo) != XR_SUCCESS) return EXIT_FAILURE;
+    overlayViews[1].subImage.imageArrayIndex = 99;
+    if (xrEndFrame(session, &endInfo) != XR_ERROR_SWAPCHAIN_RECT_INVALID) return EXIT_FAILURE;
+    overlayViews[1].subImage.imageArrayIndex = 0;
+    const void* panelThenProjection[] = {&quads[0], &overlay};
+    endInfo.layerCount = 2; endInfo.layers = panelThenProjection;
+    if (xrEndFrame(session, &endInfo) != XR_SUCCESS) return EXIT_FAILURE;
+    panelThenProjection[1] = nullptr;
+    if (xrEndFrame(session, &endInfo) != XR_ERROR_LAYER_INVALID) return EXIT_FAILURE;
     const void* mixed[] = {&projection, &quads[0], &quads[1]};
     endInfo.layerCount = 3; endInfo.layers = mixed;
     if (xrEndFrame(session, &endInfo) != XR_SUCCESS) return EXIT_FAILURE;
@@ -804,6 +822,9 @@ int main()
     sphere.radius = -1;
     if (xrEndFrame(session, &endInfo) != XR_ERROR_LAYER_INVALID) return EXIT_FAILURE;
     sphere.radius = 0;
+    const void* interleaved[] = {&quads[0], &overlay, &sphere, &projection};
+    endInfo.layerCount = 4; endInfo.layers = interleaved;
+    if (xrEndFrame(session, &endInfo) != XR_SUCCESS) return EXIT_FAILURE;
     const void* sceneWithSphere[] = {&projection, &sphere, &quads[0]};
     endInfo.layerCount = 3; endInfo.layers = sceneWithSphere;
     if (xrEndFrame(session, &endInfo) != XR_SUCCESS) return EXIT_FAILURE;

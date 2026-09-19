@@ -48,9 +48,11 @@ static bool batch_test(axrb::runtime::VulkanBackend& backend, const axrb::runtim
             h.payload_size = sizeof(WindowsGpuFrame); p.gpu = exports[i];
             p.projection.view_count = kQuadCompositionBit | 1;
             p.projection.quads[0] = {{0,0,-2,0,0,0,1},2,1,0,7};
-            if (host && i == 0 && iteration != 0 && iteration != 3) {
+            if (iteration == 5 || (host && i == 0 && iteration != 0 && iteration != 3)) {
                 h.version = kMixedProjectionGpuFrameVersion;
                 p.projection = {}; p.projection.view_count = 2;
+                p.projection.layer_flags = i ? 6u : 0u;
+                if (i == 2) p.projection.layer_flags |= kProjectionViewSpaceBit;
                 for (auto& view : p.projection.views) {
                     view.pose.qw = 1; view.angle_left = view.angle_down = -.78539816f;
                     view.angle_right = view.angle_up = .78539816f;

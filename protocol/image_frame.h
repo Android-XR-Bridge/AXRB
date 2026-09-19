@@ -29,7 +29,7 @@ inline bool mixed_gpu_version(uint16_t version) { return version == 6 || version
 inline bool valid_mixed_part(uint16_t version, uint32_t part) {
     const uint32_t count = part >> 16, index = part & 0xffff;
     return count >= 2 && count <= kMaxWireCompositionLayers && index < count &&
-        (version == kMixedQuadGpuFrameVersion || version == kMixedEquirectGpuFrameVersion || (index == 0 && version == kMixedProjectionGpuFrameVersion));
+        mixed_gpu_version(version);
 }
 constexpr uint16_t kImageFrameTypeRgba8 = 2;
 constexpr uint32_t kImageFrameFormatRgba8 = 1;

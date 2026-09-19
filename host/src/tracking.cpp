@@ -137,36 +137,19 @@ axrb::protocol::PoseFrame OpenXrSession::make_frame(uint64_t sequence)
     publish_pose(frame);
 
     if (beganFrame) {
-        std::array<XrCompositionLayerProjectionView, 2> projectionViews{};
-        XrCompositionLayerProjection projectionLayer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
-        std::vector<XrCompositionLayerQuad> quadLayers;
-        std::vector<XrCompositionLayerEquirect2KHR> sphereLayers;
-        std::vector<const XrCompositionLayerBaseHeader*> layers;
         XrCompositionLayerQuad fpsHud{XR_TYPE_COMPOSITION_LAYER_QUAD};
-        bool mixedProjection = false;
-        uint32_t layerCount = 0;
 #if defined(_WIN32)
+        auto& layers = nativeSubmission_.layers;
+        layers.clear();
         if (projectionSwapchain_ != XR_NULL_HANDLE &&
-            update_projection_layer(locateTime, projectionViews, projectionLayer, quadLayers, sphereLayers, layerCount, mixedProjection)) {
-            if (layerCount) {
-                layers.resize(layerCount + (mixedProjection ? 1 : 0));
-                const uint32_t offset = mixedProjection ? 1 : 0;
-                if (mixedProjection) layers[0] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&projectionLayer);
-                for (uint32_t i = 0; i < layerCount; ++i)
-                    layers[offset + i] = sphereLayers[i].type == XR_TYPE_COMPOSITION_LAYER_EQUIRECT2_KHR
-                        ? (equirectEnabled_ ? reinterpret_cast<const XrCompositionLayerBaseHeader*>(&sphereLayers[i])
-                            : reinterpret_cast<const XrCompositionLayerBaseHeader*>(&equirectTargets_[sphereFallbackIndices_[i]].layer))
-                        : reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quadLayers[i]);
-                layerCount += offset;
-            } else {
-                layers.resize(1);
-                layers[0] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&projectionLayer);
-                layerCount = 1;
-            }
-        }
-        if (shouldRender && update_fps_hud(fpsHud, layerCount))
-            { layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&fpsHud)); ++layerCount; }
+            !update_projection_layers(locateTime, nativeSubmission_))
+            layers.clear();
+        if (shouldRender && update_fps_hud(fpsHud, static_cast<uint32_t>(layers.size())))
+            layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&fpsHud));
+#else
+        const std::vector<const XrCompositionLayerBaseHeader*> layers;
 #endif
+        const uint32_t layerCount = static_cast<uint32_t>(layers.size());
 
         XrFrameEndInfo endInfo{XR_TYPE_FRAME_END_INFO};
         endInfo.displayTime = frameDisplayTime;

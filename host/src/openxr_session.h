@@ -263,13 +263,15 @@ private:
     bool create_projection_swapchain();
     bool acquire_panel_swapchain(const HostImageSnapshot& frame);
 
-    bool update_projection_layer(
-        XrTime displayTime,
-        std::array<XrCompositionLayerProjectionView, 2>& projectionViews,
-        XrCompositionLayerProjection& projectionLayer,
-        std::vector<XrCompositionLayerQuad>& quadLayers,
-        std::vector<XrCompositionLayerEquirect2KHR>& sphereLayers,
-        uint32_t& quadCount, bool& mixedProjection);
+    struct NativeLayerSubmission {
+        std::vector<std::array<XrCompositionLayerProjectionView, 2>> projectionViews;
+        std::vector<XrCompositionLayerProjection> projections;
+        std::vector<XrCompositionLayerQuad> quads;
+        std::vector<XrCompositionLayerEquirect2KHR> spheres;
+        std::vector<const XrCompositionLayerBaseHeader*> layers;
+    };
+
+    bool update_projection_layers(XrTime displayTime, NativeLayerSubmission& submission);
 
     bool render_equirect(uint32_t slot, XrTime time, ID3D11Texture2D* source,
         const XrCompositionLayerEquirect2KHR& layer, const axrb::protocol::ImageEquirect& metadata);
@@ -384,9 +386,13 @@ private:
     std::shared_ptr<GpuFrameBatch> pendingGpuFrame_;
     uint32_t pendingMixedCount_ = 0, pendingMixedIndex_ = 0;
     uint64_t pendingMixedSequence_ = 0;
-    std::vector<std::vector<axrb::protocol::ImageProjection>> uploadedMixedQuads_;
-    std::vector<std::vector<XrExtent2Di>> uploadedMixedExtents_;
-    std::vector<uint32_t> uploadedMixedCounts_;
+    struct UploadedCompositionPart {
+        axrb::protocol::ImageProjection projection{};
+        XrExtent2Di extent{};
+        uint32_t imageArrayIndex = 0;
+        bool panel = false;
+    };
+    std::vector<std::vector<UploadedCompositionPart>> uploadedCompositionByImage_;
     std::vector<uint64_t> uploadedMixedTimes_;
     ComPtr<ID3D11Device> receiveDevice_;
     ComPtr<ID3D11DeviceContext> receiveContext_;
@@ -400,7 +406,6 @@ private:
     std::vector<XrSwapchainImageD3D11KHR> projectionImages_;
     std::vector<uint64_t> uploadedAndroidSequenceByImage_;
     std::vector<uint64_t> uploadedGpuSessionByImage_;
-    std::vector<axrb::protocol::ImageProjection> uploadedProjectionByImage_;
     std::vector<XrExtent2Di> uploadedExtentByImage_;
     std::vector<XrPosef> uploadedOverflowWorldFromView_;
     std::vector<bool> uploadedOverflowWorldFromViewValid_;
@@ -418,10 +423,10 @@ private:
     bool panelAcquired_ = false;
     std::vector<XrSwapchainImageD3D11KHR> panelImages_;
     std::vector<uint64_t> panelSequences_;
-    std::vector<uint32_t> sphereFallbackIndices_;
     axrb::host::EquirectRenderer equirectRenderer_;
     axrb::host::QuadRenderer quadRenderer_;
     uint32_t nativeLayerLimit_ = 1;
+    NativeLayerSubmission nativeSubmission_;
     std::array<XrView, 2> overflowViews_{};
     bool compose_overflow(ID3D11Texture2D*, const HostImageSnapshot&, const XrPosef* worldFromView);
     void trim_composition_resources(uint32_t spheres, bool panels);

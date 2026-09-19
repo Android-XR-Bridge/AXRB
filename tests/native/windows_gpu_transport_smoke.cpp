@@ -96,10 +96,18 @@ int run_batch_case(unsigned short port, bool consumed, bool duplicateSession = f
         view.angle_left = view.angle_down = -0.9f;
         view.angle_right = view.angle_up = 0.9f;
     }
+    // Later stereo projections share the batch with mono panels, in app order.
+    for (uint32_t index : {1u, 3u}) {
+        parts[index].header.version = kMixedProjectionGpuFrameVersion;
+        parts[index].projection = parts[0].projection;
+        parts[index].projection.layer_flags = index == 1 ? 6u : kProjectionViewSpaceBit | 6u;
+        parts[index].projection.views[0].angle_left = -0.5f;
+        parts[index].projection.views[1].angle_right = 0.6f;
+    }
     const ImageProjection outerProjection = parts[0].projection;
     if (duplicateSession) parts[4].gpu.session = parts[0].gpu.session;
     if (wrongSequence) parts[3].header.sequence++;
-    if (unknownProjectionBit) parts[0].projection.layer_flags |= 1u << 4;
+    if (unknownProjectionBit) parts[3].projection.layer_flags |= 1u << 4;
     auto header = parts[0].header;
     header.version = kGpuBatchFrameVersion; header.reserved = 5; header.sequence = 104;
     header.payload_size = parts.size() * sizeof(GpuBatchPart);
@@ -145,9 +153,10 @@ int main() {
     WSADATA data{}; if (WSAStartup(MAKEWORD(2,2), &data)) return 1;
     int result = run_case(38495, true) | run_case(38496, false) | run_case(38497, true, true) | run_case(38498, true, false, 3u << 16) | run_case(38499, true, true, (16u << 16) | 15);
     result |= run_case(38500, true, false, 0, true) | run_case(38501, true, false, (5u << 16) | 2, true) |
-              run_case(38507, true, false, 0, false, true);
+              run_case(38507, true, false, 0, false, true) |
+              run_case(38509, true, false, (3u << 16) | 2, false, true);
     using namespace axrb::protocol;
-    if (valid_mixed_part(6, (3u << 16) | 1) || valid_mixed_part(7, (3u << 16) | 3) || !valid_mixed_part(6, 17u << 16)) result = 1;
+    if (valid_mixed_part(6, (3u << 16) | 3) || valid_mixed_part(7, (3u << 16) | 3) || !valid_mixed_part(6, 17u << 16)) result = 1;
     axrb::protocol::ImageProjection invalid{};
     invalid.view_count = axrb::protocol::kQuadCompositionBit | 3;
     if (axrb::protocol::valid_quads(invalid)) result = 1;

@@ -536,13 +536,16 @@ XrResult submit_projection_frame(const XrFrameEndInfo& info, uint32_t batchPart,
 #endif
         return XR_SUCCESS;
     }
-    // Mixed scene/panel frames are transferred as an atomic GPU batch. Validate
+    // Ordered composition layers are transferred as an atomic GPU batch. Validate
     // every member before publishing any part; preserve application layer order.
     if (!batchPart && info.layerCount >= 2 && info.layerCount <= axrb::protocol::kMaxWireCompositionLayers && info.layers && info.layers[0] &&
-        (info.layerCount > 2 || static_cast<const XrCompositionLayerBaseHeader*>(info.layers[0])->type == XR_TYPE_COMPOSITION_LAYER_EQUIRECT2_KHR || (info.layers[1] && static_cast<const XrCompositionLayerBaseHeader*>(info.layers[1])->type == XR_TYPE_COMPOSITION_LAYER_EQUIRECT2_KHR) || static_cast<const XrCompositionLayerBaseHeader*>(info.layers[0])->type == XR_TYPE_COMPOSITION_LAYER_PROJECTION)) {
+        (info.layerCount > 2 ||
+         static_cast<const XrCompositionLayerBaseHeader*>(info.layers[0])->type != XR_TYPE_COMPOSITION_LAYER_QUAD ||
+         !info.layers[1] ||
+         static_cast<const XrCompositionLayerBaseHeader*>(info.layers[1])->type != XR_TYPE_COMPOSITION_LAYER_QUAD)) {
         std::vector<PreparedGpuLayer> preparedLayers(info.layerCount);
         for (uint32_t i = 0; i < info.layerCount; ++i) {
-            if (!info.layers[i] || (static_cast<const XrCompositionLayerBaseHeader*>(info.layers[i])->type != XR_TYPE_COMPOSITION_LAYER_QUAD && static_cast<const XrCompositionLayerBaseHeader*>(info.layers[i])->type != XR_TYPE_COMPOSITION_LAYER_EQUIRECT2_KHR && (i || static_cast<const XrCompositionLayerBaseHeader*>(info.layers[i])->type != XR_TYPE_COMPOSITION_LAYER_PROJECTION)))
+            if (!info.layers[i] || (static_cast<const XrCompositionLayerBaseHeader*>(info.layers[i])->type != XR_TYPE_COMPOSITION_LAYER_QUAD && static_cast<const XrCompositionLayerBaseHeader*>(info.layers[i])->type != XR_TYPE_COMPOSITION_LAYER_EQUIRECT2_KHR && static_cast<const XrCompositionLayerBaseHeader*>(info.layers[i])->type != XR_TYPE_COMPOSITION_LAYER_PROJECTION))
                 return invalid("mixed layer type");
             auto part = info; part.layerCount = 1; part.layers = &info.layers[i];
             const auto result = submit_projection_frame(part, (info.layerCount << 16) | i, true, &preparedLayers[i]);
