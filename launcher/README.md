@@ -99,7 +99,7 @@ Source components are in `ui/`, with shared shadcn components in `ui/components/
   with original filenames. Transfers can be cancelled/retried, incomplete files
   stay `.part`, resume requires an ETag, and completed files receive a local
   SHA-256 for verification before installation. The download folder is selectable.
-- **Game actions (â‹¯):** Versions, add-ons, patching, content imports and installation
+- **Game actions (⋯):** Versions, add-ons, patching, content imports and installation
   updates are in the game's menu. Runtime settings are collapsed under Settings.
 - **Add-ons:** Ownership must be returned by Meta before a separate DLC download
   is enabled. Some DLC is only an entitlement to content inside the base game,
@@ -116,7 +116,10 @@ Source components are in `ui/`, with shared shadcn components in `ui/components/
   patching. General patching does not guarantee every game's compatibility with AXRB.
 - **Install:** Uses `adb install -r`, preserving app data. Signature conflicts
   report an error; the launcher does not uninstall the existing app. Assets are
-  pushed into `/sdcard/Android/obb/<package>/`. After downloading more content,
+  copied into their package-specific `Android/obb` or `Android/data` destinations.
+  With root ADB, copied files and their parent directories up to the package
+  directory are assigned to the installed app; unrelated files, storage groups
+  and permission modes are left unchanged. After downloading more content,
   use **Update installation** to copy it into Android.
 - **Play:** Calls `scripts/run/run_windows_game.ps1`, preserving automatic OpenXR eye
   resolution, SteamVR name/icon, GPU texture sharing, and the save-aware shutdown.

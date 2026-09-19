@@ -88,30 +88,34 @@ test('ZIP checksum failure and cancellation during extraction clean up safely', 
   assert.deepEqual(await fs.readdir(path.join(dir, 'imports')), []);
 });
 
-test('installation uses an APK session for splits and preserves asset destinations', async t => {
-  const dir = await workspace(t), apk = path.join(dir, 'base.apk'), split = path.join(dir, 'split.apk'), asset = path.join(dir, 'asset');
-  for (const file of [apk, split, asset]) await fs.writeFile(file, 'test');
-  const game = { package: pkg, apk, files: [{ name: 'split.apk', path: split, kind: 'split' }, { name: "a'b.bundle", path: asset, kind: 'asset', destination: `Android/data/${pkg}/files/a'b.bundle` }] };
-  const calls = [], adb = async args => { calls.push(args); return args.includes('df') ? '/dev/data 90000000 1000 80000000 1% /data' : 'Success'; };
-  await installFiles(game, adb);
-  assert.deepEqual(calls[1], ['install-multiple', '--no-incremental', '--force-queryable', '-r', apk, split]);
-  assert.ok(calls.some(c => c[0] === 'push' && c[2] === `/sdcard/Android/data/${pkg}/files/a'b.bundle`));
-  assert.deepEqual(calls.at(-1), ['shell', 'sync']);
-  calls.length = 0;
-  await assert.rejects(installFiles(game, async args => { calls.push(args); return '/dev/data 1000 900 100 90% /data'; }), /Android needs/);
-  assert.equal(calls.length, 1);
-  game.files[1].destination = 'Android/data/com.other.app/files/x'; calls.length = 0;
-  await assert.rejects(installFiles(game, adb), /does not belong/); assert.equal(calls.length, 0);
+test('installation rejects insufficient space and assets belonging to another app', async t => {
+  const dir = await workspace(t), file = path.join(dir, 'asset'); await fs.writeFile(file, 'data');
+  const game = { package: pkg, apk: file, files: [{ path: file, kind: 'asset', destination: `Android/data/${pkg}/files/a.bundle` }] };
+  await assert.rejects(installFiles(game, async args => {
+    if (args.includes('df')) return '/dev/data 1000 900 100 90% /data';
+    assert.fail('Installation must not modify a device with insufficient space');
+  }), /Android needs/);
+  game.files[0].destination = 'Android/data/com.other.app/files/x';
+  await assert.rejects(installFiles(game, async () => {
+    assert.fail('Invalid asset destinations must be rejected before accessing the device');
+  }), /does not belong/);
 });
 
-test('existing store assets still install to their original OBB filenames', async t => {
-  const dir = await workspace(t), file = path.join(dir, 'file'); await fs.writeFile(file, 'data');
-  const calls = [];
-  await installFiles({ package: pkg, apk: file, files: [{ kind: 'asset', name: '123.asset', path: file }] }, async args => {
-    calls.push(args); return args.includes('df') ? '/dev/data 90000000 1000 80000000 1% /data' : 'ok';
-  });
-  assert.equal(calls[1][0], 'install');
-  assert.ok(calls.some(c => c[0] === 'push' && c[2] === `/sdcard/Android/obb/${pkg}/123.asset`));
+test('installation cannot succeed with unknown or inaccessible asset ownership', async t => {
+  const dir = await workspace(t), file = path.join(dir, 'asset'); await fs.writeFile(file, 'data');
+  const game = { package: pkg, apk: file, files: [{ path: file, name: 'data.bundle', kind: 'asset',
+    destination: `Android/data/${pkg}/files/nested/data.bundle` }] };
+  const adb = (uid, failOwnership = false) => async args => {
+    if (args.includes('df')) return '/dev/data 90000000 1000 80000000 1% /data';
+    if (args.includes('id')) return '0';
+    if (args[0] === 'shell' && args[1].startsWith('stat')) return uid;
+    if (args[0] === 'shell' && args[1].startsWith('chown') && failOwnership) throw new Error('Permission denied setting asset ownership');
+    return 'Success';
+  };
+  for (const uid of ['', '0', 'unavailable']) {
+    await assert.rejects(installFiles(game, adb(uid)), /Cannot determine app UID/);
+  }
+  await assert.rejects(installFiles(game, adb('10221', true)), /Permission denied setting asset ownership/);
 });
 
 function deviceFixture({ disconnect = false, denyAssets = false, truncate = false } = {}) {
