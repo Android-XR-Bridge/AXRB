@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { Runtime, openWindowsFeatures, windowsFeaturesCommand } from '../core/runtime.mjs';
+import { Runtime, run, openWindowsFeatures, windowsFeaturesCommand } from '../core/runtime.mjs';
 
 test('Windows Features uses shell activation instead of spawning optionalfeatures directly', async () => {
   const args = windowsFeaturesCommand('C:\\Windows');
@@ -71,4 +71,35 @@ try {
   assert.match(result.output, /HUD_OFF/);
   assert.equal(runtime.settings.fpsHud, false);
   await assert.rejects(runtime.setFpsHud('true'), /Invalid/);
+});
+
+test('run resolves when a long-lived grandchild keeps the stdio pipes open', { skip: process.platform !== 'win32', timeout: 20000 }, async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'axrb-pipes-'));
+  let grandchild = 0;
+  // The grandchild holds its redirected log files until it is gone, so stop it
+  // before removing the directory and let Windows release the handles.
+  t.after(async () => {
+    try { process.kill(grandchild); } catch {}
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 30, retryDelay: 100 });
+  });
+  // The Android emulator inherits the launching script's pipes and outlives it,
+  // so 'close' never fires. Settling on that event stalled setup until timeout.
+  const script = path.join(root, 'spawner.ps1');
+  await fs.writeFile(script, [
+    `$out = '${path.join(root, 'child.out')}'`,
+    `$err = '${path.join(root, 'child.err')}'`,
+    "$p = Start-Process powershell.exe -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 60' -WindowStyle Hidden -PassThru -RedirectStandardOutput $out -RedirectStandardError $err",
+    'Write-Output "Ready: $($p.Id)"',
+  ].join('\n'));
+  const started = Date.now();
+  const output = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script], { timeout: 15000 });
+  assert.match(output, /^Ready: \d+/m, 'the script transcript must survive the early settle');
+  assert.ok(Date.now() - started < 10000, 'run must not wait for the grandchild to exit');
+  grandchild = Number(output.match(/^Ready: (\d+)/m)[1]);
+});
+
+test('run still reports a failing exit code and its stderr', { skip: process.platform !== 'win32', timeout: 15000 }, async () => {
+  await assert.rejects(
+    run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '[Console]::Error.WriteLine("boom"); exit 3']),
+    /boom/);
 });
