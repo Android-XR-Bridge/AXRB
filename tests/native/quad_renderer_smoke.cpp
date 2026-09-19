@@ -45,5 +45,44 @@ int main() {
     quad.pose.z=2;
     CHECK(renderer.render(device.Get(),context.Get(),source.Get(),1,{64,64},desc.Format,quad,view,target.Get(),0,64,64));
     CHECK(pixel(0,32,32)[0]==255);
-    std::puts("GPU quad compositor: 40 layers, order, alpha, eye visibility, pose and clipping passed");
+    // Stereo projections select the matching source slice and preserve layer opacity.
+    axrb::protocol::ImageProjectionView projection{};
+    projection.angle_left=projection.angle_down=-.78539816f;
+    projection.angle_right=projection.angle_up=.78539816f;
+    for (unsigned eye=0;eye<2;++eye) context->UpdateSubresource(target.Get(),eye,nullptr,blue.data(),64*4,0);
+    CHECK(renderer.render_projection(device.Get(),context.Get(),source.Get(),0,{64,64},desc.Format,
+        projection,0,view,target.Get(),0,64,64));
+    CHECK(renderer.render_projection(device.Get(),context.Get(),source.Get(),1,{64,64},desc.Format,
+        projection,0,view,target.Get(),1,64,64));
+    CHECK(pixel(0,32,32)[0]==255 && pixel(0,32,32)[3]==255);
+    CHECK(pixel(1,32,32)[2]==255 && pixel(1,32,32)[3]==255);
+    // Two projection draws compose in application order.
+    std::vector<uint32_t> transparent(64*64);
+    context->UpdateSubresource(target.Get(),0,nullptr,transparent.data(),64*4,0);
+    CHECK(renderer.render_projection(device.Get(),context.Get(),source.Get(),1,{64,64},desc.Format,
+        projection,0,view,target.Get(),0,64,64));
+    CHECK(renderer.render_projection(device.Get(),context.Get(),source.Get(),0,{64,64},desc.Format,
+        projection,6,view,target.Get(),0,64,64));
+    center=pixel(0,32,32);
+    CHECK(center[0]>=127 && center[0]<=129 && center[2]>=126 && center[2]<=128 && center[3]==255);
+    // Camera orientation aligns rays without positional parallax; asymmetric FOV maps the
+    // target center into the source's left half and leaves pixels outside coverage intact.
+    std::vector<uint32_t> split(64*64);
+    for (unsigned y=0;y<64;++y) for (unsigned x=0;x<64;++x)
+        split[y*64+x]=x<32 ? 0xff0000ff : 0xff00ff00;
+    context->UpdateSubresource(source.Get(),0,nullptr,split.data(),64*4,0);
+    projection.pose.x=100;
+    XrView aligned=view; aligned.pose.orientation.y=.25881905f; aligned.pose.orientation.w=.96592583f;
+    context->UpdateSubresource(target.Get(),0,nullptr,blue.data(),64*4,0);
+    CHECK(renderer.render_projection(device.Get(),context.Get(),source.Get(),0,{64,64},desc.Format,
+        projection,0,aligned,target.Get(),0,64,64));
+    CHECK(pixel(0,32,32)[0]==255 && pixel(0,32,32)[1]==0);
+    projection.angle_left=-.24497866f; projection.angle_right=.64350111f;
+    projection.pose.qy=.25881905f; projection.pose.qw=.96592583f;
+    context->UpdateSubresource(target.Get(),0,nullptr,blue.data(),64*4,0);
+    CHECK(renderer.render_projection(device.Get(),context.Get(),source.Get(),0,{64,64},desc.Format,
+        projection,0,aligned,target.Get(),0,64,64));
+    CHECK(pixel(0,32,32)[0]==255 && pixel(0,32,32)[1]==0);
+    CHECK(pixel(0,4,32)[2]==255);
+    std::puts("GPU compositor: quads and angular stereo projections preserve order, alpha, FOV coverage and eye slices");
 }

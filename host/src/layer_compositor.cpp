@@ -48,6 +48,40 @@ protocol::Pose relative_to_view(const protocol::Pose& worldPose, const XrPosef& 
         orientation.x, orientation.y, orientation.z, orientation.w,
     };
 }
+
+protocol::Pose relative_to_world(const protocol::Pose& viewPose, const XrPosef& worldFromView)
+{
+    const XrVector3f position = rotate(
+        worldFromView.orientation, {viewPose.x, viewPose.y, viewPose.z});
+    const XrQuaternionf orientation = multiply(
+        worldFromView.orientation, {viewPose.qx, viewPose.qy, viewPose.qz, viewPose.qw});
+    return {
+        worldFromView.position.x + position.x,
+        worldFromView.position.y + position.y,
+        worldFromView.position.z + position.z,
+        orientation.x, orientation.y, orientation.z, orientation.w,
+    };
+}
+
+bool convert_space(protocol::Pose& pose, bool sourceIsView, bool targetIsView,
+                   const XrPosef* worldFromView)
+{
+    if (sourceIsView == targetIsView) return true;
+    if (!worldFromView) return false;
+    pose = targetIsView
+        ? relative_to_view(pose, *worldFromView)
+        : relative_to_world(pose, *worldFromView);
+    return true;
+}
+
+XrView projection_target_view(const protocol::ImageProjectionView& source)
+{
+    XrView view{XR_TYPE_VIEW};
+    view.pose.position = {source.pose.x, source.pose.y, source.pose.z};
+    view.pose.orientation = {source.pose.qx, source.pose.qy, source.pose.qz, source.pose.qw};
+    view.fov = {source.angle_left, source.angle_right, source.angle_up, source.angle_down};
+    return view;
+}
 }
 
 void OpenXrSession::trim_composition_resources(uint32_t spheres, bool panels) {
@@ -64,68 +98,66 @@ void OpenXrSession::trim_composition_resources(uint32_t spheres, bool panels) {
 
 bool OpenXrSession::compose_overflow(
     ID3D11Texture2D* target, const HostImageSnapshot& frame, const XrPosef* worldFromView) {
-    const bool scene = frame.projection.view_count == 2;
-    const UINT width = scene ? frame.header.width : projectionWidth_;
-    const UINT height = scene ? frame.header.height : projectionHeight_;
+    if (!frame.gpu || frame.gpu->count == 0) return false;
+    const auto& first = frame.gpu->parts[0];
+    const bool firstIsProjection = first.projection.view_count == 2;
+    const bool targetIsView = firstIsProjection && first.projection.is_view_space();
+    const UINT width = firstIsProjection ? first.header.width : projectionWidth_;
+    const UINT height = firstIsProjection ? first.header.height : projectionHeight_;
     const auto format = static_cast<DXGI_FORMAT>(projectionFormat_);
-    // Normalize an unpremultiplied scene before blending premultiplied overlays.
-    Microsoft::WRL::ComPtr<ID3D11Texture2D> base;
-    if (scene && (frame.projection.layer_flags & 6u) == 6u) {
-        D3D11_TEXTURE2D_DESC desc{}; target->GetDesc(&desc);
-        desc.MiscFlags = 0; desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-        if (FAILED(d3dDevice_.get()->CreateTexture2D(&desc, nullptr, &base))) return false;
-        d3dContext_.get()->CopyResource(base.Get(), target);
-    }
+    std::array<XrView, 2> targetViews{};
     for (uint32_t eye = 0; eye < 2; ++eye) {
-        const auto& view = overflowViews_[eye];
-        if (!scene || base) {
-            D3D11_RENDER_TARGET_VIEW_DESC desc{}; desc.Format = format;
-            desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
-            desc.Texture2DArray.FirstArraySlice = eye; desc.Texture2DArray.ArraySize = 1;
-            Microsoft::WRL::ComPtr<ID3D11RenderTargetView> output;
-            if (FAILED(d3dDevice_.get()->CreateRenderTargetView(target, &desc, &output))) return false;
-            const float transparent[4]{}; d3dContext_.get()->ClearRenderTargetView(output.Get(), transparent);
+        targetViews[eye] = firstIsProjection
+            ? projection_target_view(first.projection.views[eye])
+            : overflowViews_[eye];
+        D3D11_RENDER_TARGET_VIEW_DESC desc{}; desc.Format = format;
+        desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
+        desc.Texture2DArray.FirstArraySlice = eye; desc.Texture2DArray.ArraySize = 1;
+        Microsoft::WRL::ComPtr<ID3D11RenderTargetView> output;
+        if (FAILED(d3dDevice_.get()->CreateRenderTargetView(target, &desc, &output))) return false;
+        const float transparent[4]{};
+        d3dContext_.get()->ClearRenderTargetView(output.Get(), transparent);
+    }
+    for (uint32_t i = 0; i < frame.gpu->count; ++i) {
+        auto& part = frame.gpu->parts[i];
+        auto* source = part.receiver.render_texture(d3dContext_.get());
+        if (!source) return false;
+        const XrExtent2Di extent{
+            static_cast<int32_t>(part.header.width), static_cast<int32_t>(part.header.height)};
+        auto metadata = part.projection;
+        if (metadata.is_equirect()) {
+            if (!convert_space(metadata.equirect.pose, false, targetIsView, worldFromView))
+                return false;
+        } else if (metadata.view_count != 2) {
+            if (!convert_space(metadata.quads[0].pose, false, targetIsView, worldFromView))
+                return false;
         }
-        if (base) {
-            const float l = std::tan(view.fov.angleLeft), r = std::tan(view.fov.angleRight);
-            const float u = std::tan(view.fov.angleUp), d = std::tan(view.fov.angleDown);
-            protocol::ImageQuad quad{}; quad.pose = to_protocol_pose(view.pose);
-            const auto& q = view.pose.orientation;
-            const float x = (l+r)*.5f, y = (u+d)*.5f, z = -1;
-            const float tx = 2*(q.y*z-q.z*y), ty = 2*(q.z*x-q.x*z), tz = 2*(q.x*y-q.y*x);
-            quad.pose.x += x+q.w*tx+q.y*tz-q.z*ty;
-            quad.pose.y += y+q.w*ty+q.z*tx-q.x*tz;
-            quad.pose.z += z+q.w*tz+q.x*ty-q.y*tx;
-            quad.width = r-l; quad.height = u-d; quad.layer_flags = 6;
-            if (!quadRenderer_.render(d3dDevice_.get(), d3dContext_.get(), base.Get(), eye,
-                {static_cast<int32_t>(width),static_cast<int32_t>(height)}, format, quad, view, target, eye, width, height)) return false;
-        }
-        for (uint32_t i = scene ? 1u : 0u; i < frame.gpu->count; ++i) {
-            auto& part = frame.gpu->parts[i];
-            auto* source = part.receiver.render_texture(d3dContext_.get());
-            if (!source) return false;
-            const uint32_t slice = 0;
-            XrExtent2Di extent{static_cast<int32_t>(part.header.width),static_cast<int32_t>(part.header.height)};
-            // Overlay metadata is world-space. A VIEW projection's pixels and
-            // eye cameras are not, so render a private metadata copy in VIEW.
-            auto metadata = part.projection;
-            if (worldFromView) {
-                if (metadata.is_equirect())
-                    metadata.equirect.pose = relative_to_view(metadata.equirect.pose, *worldFromView);
-                else
-                    metadata.quads[0].pose = relative_to_view(metadata.quads[0].pose, *worldFromView);
+        for (uint32_t eye = 0; eye < 2; ++eye) {
+            const auto& targetView = targetViews[eye];
+            bool rendered = false;
+            if (metadata.view_count == 2) {
+                auto sourceView = metadata.views[eye];
+                if (!convert_space(sourceView.pose, metadata.is_view_space(), targetIsView, worldFromView))
+                    return false;
+                rendered = quadRenderer_.render_projection(
+                    d3dDevice_.get(), d3dContext_.get(), source, eye, extent, format,
+                    sourceView, metadata.layer_flags, targetView, target, eye, width, height);
+            } else if (metadata.is_equirect()) {
+                rendered = equirectRenderer_.render(
+                    d3dDevice_.get(), d3dContext_.get(), source, 0, extent, format,
+                    metadata.equirect, targetView, target, eye, width, height, true);
+            } else {
+                rendered = quadRenderer_.render(
+                    d3dDevice_.get(), d3dContext_.get(), source, 0, extent, format,
+                    metadata.quads[0], targetView, target, eye, width, height);
             }
-            bool rendered = metadata.is_equirect()
-                ? equirectRenderer_.render(d3dDevice_.get(), d3dContext_.get(), source,
-                    slice, extent, format, metadata.equirect, view, target, eye, width, height, true)
-                : quadRenderer_.render(d3dDevice_.get(), d3dContext_.get(), source,
-                    slice, extent, format, metadata.quads[0], view, target, eye, width, height);
             if (!rendered) return false;
         }
     }
     static bool reported = false;
     if (!reported) {
-        std::fprintf(stderr, "AXRB compositor: %u dynamic layers composed into stereo; native limit %u\n", frame.gpu->count, nativeLayerLimit_);
+        std::fprintf(stderr, "AXRB compositor: %u ordered dynamic layers composed into stereo; native limit %u\n",
+                     frame.gpu->count, nativeLayerLimit_);
         reported = true;
     }
     return true;

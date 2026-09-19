@@ -10,10 +10,17 @@ public:
     bool render(ID3D11Device*, ID3D11DeviceContext*, ID3D11Texture2D* source, uint32_t slice,
         XrExtent2Di extent, DXGI_FORMAT format, const protocol::ImageQuad&, const XrView&,
         ID3D11Texture2D* target, uint32_t eye, uint32_t width, uint32_t height);
+    bool render_projection(ID3D11Device*, ID3D11DeviceContext*, ID3D11Texture2D* source, uint32_t slice,
+        XrExtent2Di extent, DXGI_FORMAT format, const protocol::ImageProjectionView&, uint32_t layerFlags,
+        const XrView& targetView, ID3D11Texture2D* target, uint32_t eye, uint32_t width, uint32_t height);
 private:
     Microsoft::WRL::ComPtr<ID3D11VertexShader> vertex_;
     Microsoft::WRL::ComPtr<ID3D11PixelShader> pixel_;
     Microsoft::WRL::ComPtr<ID3D11Buffer> constants_;
+    Microsoft::WRL::ComPtr<ID3D11VertexShader> projectionVertex_;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader> projectionPixel_;
+    Microsoft::WRL::ComPtr<ID3D11Buffer> projectionConstants_;
+    bool initialize_common(ID3D11Device*);
     Microsoft::WRL::ComPtr<ID3D11SamplerState> sampler_;
     Microsoft::WRL::ComPtr<ID3D11RasterizerState> rasterizer_;
     Microsoft::WRL::ComPtr<ID3D11BlendState> blend_;
