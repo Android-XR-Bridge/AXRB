@@ -129,7 +129,7 @@ async function installationFixture(t) {
   t.mock.method(fs, 'statfs', async () => ({ bavail: 1024 ** 3, bsize: 1024 }));
   const current = path.join(root, 'previous', 'AXRB Runtime');
   const avd = path.join(current, 'avd', 'axrb-managed-api36.avd');
-  const config = 'AvdId=axrb-managed-api36\ndisk.dataPartition.size=64G\n';
+  const config = `AvdId=axrb-managed-api36\ndisk.dataPartition.size=64G\nimage.sysdir.1=${path.join(current, 'sdk/system-images/android-36/google_apis/x86_64')}${path.sep}\n`;
   await fs.mkdir(avd, { recursive: true });
   await fs.writeFile(path.join(avd, 'config.ini'), config);
   await fs.writeFile(path.join(avd, 'userdata-qemu.img'), 'saved Android data');
@@ -190,7 +190,7 @@ test('explicit reuse rechecks the disk size and never resizes from stale setting
   await setup.start({ useCurrent: true, directory: ignored, storageGB: 8, accepted: true });
   await setup.task;
   assert.equal(setup.status.phase, 'ready', setup.status.error);
-  assert.equal(await fs.readFile(path.join(avd, 'config.ini'), 'utf8'), config);
+  assert.match(await fs.readFile(path.join(avd, 'config.ini'), 'utf8'), /disk\.dataPartition\.size=96G/);
   assert.equal(await fs.readFile(path.join(avd, 'userdata-qemu.img'), 'utf8'), 'saved Android data');
   assert.equal(setup.status.storageGB, 96);
   assert.deepEqual(setup.status.current, { directory: current, storageGB: 96 });

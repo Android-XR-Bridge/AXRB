@@ -16,6 +16,9 @@ export function SetupScreen({ setup }) {
   const selectedStorageGB = useCurrent ? current.storageGB : storageGB;
   const validStorage = Number.isInteger(selectedStorageGB) && selectedStorageGB >= 8 && selectedStorageGB <= 256;
   const [error, setError] = useState('');
+  const [archives, setArchives] = useState([]);
+  const [selectingArchives, setSelectingArchives] = useState(false);
+  const [starting, setStarting] = useState(false);
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     if (!setup.active || !setup.startedAt) return undefined;
@@ -27,7 +30,34 @@ export function SetupScreen({ setup }) {
   const elapsed = setup.active && setup.startedAt ? Math.max(0, Math.floor((now - setup.startedAt) / 1000)) : 0;
   const elapsedText = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`;
   const labels = { checking: 'Checking your PC', download: 'Downloading', verify: 'Verifying download', extract: 'Extracting', boot: 'Preparing Android' };
-  return <main className="flex min-h-screen items-center justify-center p-10"><section className="w-full max-w-lg space-y-6" aria-label="Runtime setup">
+  const normalizeDirectory = value => String(value || '').replaceAll('/', '\\').replace(/[\\]+$/, '').toLowerCase();
+  const target = useCurrent ? current.directory : `${directory.replace(/[\\/]+$/, '')}\\AXRB Runtime`;
+  const inspected = useCurrent ? setup.currentNeeds ?? setup.needs : setup.needs;
+  const needs = inspected && normalizeDirectory(inspected.directory) === normalizeDirectory(target) ? inspected : null;
+  const missing = needs?.components.filter(component => useCurrent || !archives.some(archive => archive.id === component.id));
+  const downloadBytes = missing?.reduce((bytes, component) => bytes + component.size, 0);
+  const sizeText = bytes => bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GB` : `${Math.ceil(bytes / 1024 ** 2)} MB`;
+  const licenseNeeded = !needs?.licensed || Boolean(needs.components.length);
+  const steps = !needs ? [] : [
+    ...(missing.length ? [`Download ${missing.map(component => component.name).join(', ')} (${sizeText(downloadBytes)})`] : []),
+    ...(!useCurrent && archives.length ? [`Use ${archives.length} verified local setup archive${archives.length === 1 ? '' : 's'}`] : []),
+    ...(needs.avd ? ['Create the Android virtual device configuration'] : []),
+    ...(!needs.android ? ['Create Android storage'] : []),
+    ...(needs.moved ? ['Update the moved virtual device paths and discard its old quick-boot snapshot'] : []),
+    ...(needs.runtime ? ['Install this build’s AXRB runtime app in Android (no download)'] : []),
+  ];
+  const selectArchives = async () => {
+    setSelectingArchives(true);
+    try { const selected = await invoke('chooseSetupArchives'); if (selected) setArchives(selected); }
+    finally { setSelectingArchives(false); }
+  };
+  const start = async () => {
+    setStarting(true);
+    try { await invoke('setupStart', { directory, accepted: licenseNeeded ? accepted : true,
+      storageGB: selectedStorageGB, useCurrent, archives: useCurrent ? [] : archives.map(archive => archive.path) }); }
+    finally { setStarting(false); }
+  };
+  return <main className="flex min-h-screen items-center justify-center p-6"><section className="w-full max-w-4xl space-y-4" aria-label="Runtime setup">
     <h1 className="text-xl font-semibold">AXRB</h1>
     {setup.phase === 'unsupported' ? <>
       <p>This build requires a Windows x64 PC, an AMD or NVIDIA GPU, and at least 12 GB RAM.</p>
@@ -44,7 +74,8 @@ export function SetupScreen({ setup }) {
       {setup.phase === 'boot' && setup.logs?.length > 0 && <pre aria-label="Android startup log" className="max-h-56 overflow-auto rounded-md bg-muted p-3 text-[11px] leading-4 text-muted-foreground whitespace-pre-wrap">{setup.logs.join('\n')}</pre>}
       {setup.active && <Button variant="outline" disabled={setup.cancelling} onClick={() => invoke('setupCancel')}>{setup.cancelling ? 'Stopping setup?' : 'Cancel'}</Button>}
     </> : <>
-      <p>{useCurrent ? 'Set up AXRB using your existing Android disk.' : 'Download Android 16 and the emulator.'}</p>
+      <p>{useCurrent ? 'Set up AXRB using your existing Android disk.' : 'Set up Android 16 and the emulator.'}</p>
+      <div className="grid gap-6 md:grid-cols-2"><div className="space-y-4">
       {current && <div className="space-y-3 rounded-lg border p-4">
         <label className="flex items-start gap-3 text-sm"><input id="use-current-installation" type="checkbox" checked={useCurrent} onChange={e => { setIgnoredCurrent(e.target.checked ? null : current.directory); setError(''); }} aria-describedby="current-installation" className="mt-1" /><span>Use current Android installation</span></label>
         <div id="current-installation" className="space-y-1 text-sm">
@@ -59,13 +90,34 @@ export function SetupScreen({ setup }) {
         <div className="space-y-2"><label htmlFor="runtime-folder" className="text-sm">{current ? 'New install folder' : 'Install folder'}</label><div className="flex gap-2"><Input id="runtime-folder" value={directory} onChange={e => setDirectory(e.target.value)} /><Button variant="outline" onClick={async () => { const value = await invoke('chooseFolder'); if (value) setDirectory(value); }}>Browse</Button></div></div>
         <p className="text-xs text-muted-foreground">Setup creates an AXRB Runtime subfolder.{current && ' The old installation stays untouched; its games and saves are not copied.'}</p>
         <div className="space-y-2"><label htmlFor="android-storage" className="text-sm">Android storage (GB)</label><Input id="android-storage" type="number" min="8" max="256" step="8" value={storageGB} onChange={e => setStorageGB(Number(e.target.value))} /></div>
-        <p className="text-sm text-muted-foreground">2.4 GB download. Allow {Math.ceil(storageGB * 1.2 + 14)} GB free for setup. Android checks this space before creating its disk. Downloaded APKs need additional space.</p>
+        <p className="text-sm text-muted-foreground">{downloadBytes !== undefined ? `${sizeText(downloadBytes)} still to download. ` : 'Only missing components are downloaded. '}Allow {Math.ceil(storageGB * 1.2 + 14)} GB free for setup. Android checks this space before creating its disk. Downloaded game APKs need additional space.</p>
       </>}
-      <p className="text-sm text-muted-foreground">SteamVR or another active OpenXR runtime is required to play.</p>
-      <label className="flex items-start gap-3 text-sm"><input id="setup-license" type="checkbox" checked={accepted} onChange={e => setAccepted(e.target.checked)} className="mt-1" /><span>I accept the <button className="underline" onClick={e => { e.preventDefault(); invoke('setupLicense'); }}>Android SDK license</button>.</span></label>
-      <Button disabled={!accepted || (!useCurrent && !directory) || !validStorage} onClick={() => invoke('setupStart', { directory, accepted, storageGB: selectedStorageGB, useCurrent })}>{['error', 'cancelled'].includes(setup.phase) ? 'Retry setup' : useCurrent ? 'Set up current installation' : 'Download and set up'}</Button>
+      </div><div className="space-y-4">
+        {!useCurrent && <div className="space-y-2" data-setup-archives>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" disabled={selectingArchives || starting} onClick={selectArchives}>{selectingArchives ? 'Checking selected files…' : 'Use downloaded setup files'}</Button>
+            {archives.length > 0 && <Button variant="ghost" disabled={selectingArchives || starting} onClick={() => setArchives([])}>Clear selection</Button>}
+          </div>
+          {archives.length > 0 && <div role="status" className="text-sm">
+            <p>{archives.length} recognized archive{archives.length === 1 ? '' : 's'} selected.</p>
+            <ul className="list-disc pl-5">{archives.map(archive => <li key={archive.id} className="break-words">{archive.name} — {archive.path.split(/[\\/]/).at(-1)}</li>)}</ul>
+          </div>}
+          <p className="text-xs text-muted-foreground">Select any of the four Android setup ZIPs. Files are identified by size and checksum, not filename. Missing components will still be downloaded. Selected originals remain untouched, and this selection is not saved between launches.</p>
+        </div>}
+      {steps.length > 0 && <div className="space-y-2 text-sm" data-setup-needs>
+        <p>Setup needs to complete:</p>
+        <ul className="list-disc space-y-1 pl-5">{steps.map(step => <li key={step}>{step}</li>)}</ul>
+        {useCurrent && needs.android && <p className="text-muted-foreground">Installed games and Android storage are kept. A changed AXRB runtime app does not require downloading Android again.</p>}
+      </div>}
+      </div></div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+      {licenseNeeded
+        ? <label className="flex items-start gap-3 text-sm"><input id="setup-license" type="checkbox" checked={accepted} onChange={e => setAccepted(e.target.checked)} className="mt-1" /><span>I accept the <button className="underline" onClick={e => { e.preventDefault(); invoke('setupLicense'); }}>Android SDK license</button>.</span></label>
+        : <p className="text-xs text-muted-foreground">The Android SDK license was accepted for this runtime, and no SDK components need installing.</p>}
+      <Button data-setup-start disabled={starting || selectingArchives || (licenseNeeded && !accepted) || (!useCurrent && !directory) || !validStorage} onClick={start}>{starting ? 'Checking setup files…' : ['error', 'cancelled'].includes(setup.phase) ? 'Retry setup' : useCurrent ? needs ? 'Finish setup' : 'Set up current installation' : archives.length ? 'Set up Android' : 'Download and set up'}</Button>
       {setup.phase === 'error' && <Button variant="outline" className="ml-3" onClick={() => invoke('setupCheck')}>Check again</Button>}
-      <p className="text-xs text-muted-foreground">ovrport is not included. Import APKs you have patched separately.</p>
+      </div>
+      <p className="text-xs text-muted-foreground">SteamVR or another active OpenXR runtime is required to play. ovrport is not included; import APKs you have patched separately.</p>
     </>}
     {(error || setup.error) && <p role="alert" className="break-words text-sm text-destructive">{error || setup.error}</p>}
   </section></main>;

@@ -9,6 +9,7 @@ import { run, powershellArgs } from './runtime.mjs';
 import { redact } from './diagnostics.mjs';
 
 export const exists = file => fs.access(file).then(() => true, () => false);
+const readJson = async file => { try { return JSON.parse(await fs.readFile(file, 'utf8')); } catch { return null; } };
 export const hardwareRequirementsMet = hardware => Boolean(hardware?.supportedGpu && hardware.x64 && hardware.memoryGB >= 12);
 export const supportedSystem = hardware => Boolean(hardware?.hypervisor && hardwareRequirementsMet(hardware));
 export function setupPhase(hardware, { ready = false, debug = false } = {}) {
@@ -28,6 +29,54 @@ export async function verify(file, component) {
     for await (const chunk of createReadStream(file)) hash.update(chunk);
     return hash.digest('hex') === (component.sha256 || component.sha1);
   } catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+}
+// A copied or renamed folder leaves the AVD pointing at the system image in
+// its old location. Only that line is ever repointed; disk size and every
+// other setting stay untouched.
+function parseImageDirectory(configText) {
+  const match = /^image\.sysdir\.1\s*=\s*(.+?)\s*$/im.exec(String(configText ?? ''));
+  return match ? match[1].replace(/[\\/]+$/, '') : null;
+}
+function withImageDirectory(configText, image) {
+  const text = String(configText ?? ''), line = `image.sysdir.1=${image}${path.sep}`;
+  return /^image\.sysdir\.1\s*=.*$/im.test(text)
+    ? text.replace(/^image\.sysdir\.1\s*=.*$/im, line)
+    : `${text.replace(/\n*$/, '\n')}${line}\n`;
+}
+const pathKey = value => process.platform === 'win32' ? path.resolve(value).toLowerCase() : path.resolve(value);
+const sameDirectory = (a, b) => Boolean(a) && Boolean(b) && pathKey(a) === pathKey(b);
+const systemImageDirectory = sdk => path.join(sdk, 'system-images/android-36/google_apis/x86_64');
+function parseAvdPath(iniText) {
+  const match = /^path\s*=\s*(.+?)\s*$/im.exec(String(iniText ?? ''));
+  return match ? match[1].replace(/[\\/]+$/, '') : null;
+}
+// Match user-picked archives to known components without trusting names.
+// Exact byte size selects candidates, then the pinned checksum confirms the
+// match. Never mutates settings/status and never persists picked paths.
+export async function identifyArchives(paths, components) {
+  const list = components ?? [];
+  if (!Array.isArray(paths)) throw new Error('Choose component archives as a list of files.');
+  if (paths.length > list.length) throw new Error(`Choose at most ${list.length} component archives.`);
+  const seenPaths = new Set(), seenIds = new Set(), identified = [];
+  for (const candidate of paths) {
+    if (typeof candidate !== 'string' || !path.isAbsolute(candidate)) throw new Error(`Choose an absolute archive path: ${String(candidate)}.`);
+    const key = pathKey(await fs.realpath(candidate).catch(error => { if (error.code === 'ENOENT') throw new Error(`Archive not found: ${candidate}.`); throw error; }));
+    if (seenPaths.has(key)) throw new Error(`The same archive was chosen twice: ${candidate}.`);
+    seenPaths.add(key);
+    let stat = null;
+    try { stat = await fs.stat(candidate); }
+    catch (error) { if (error.code === 'ENOENT') throw new Error(`Archive not found: ${candidate}.`); throw error; }
+    if (!stat.isFile()) throw new Error(`Not a file: ${candidate}.`);
+    const sized = list.filter(c => c.size === stat.size);
+    if (!sized.length) throw new Error(`Unknown archive (size matches no component): ${candidate}.`);
+    let matched = null;
+    for (const component of sized) if (await verify(candidate, component)) { matched = component; break; }
+    if (!matched) throw new Error(`Archive failed verification for ${sized.map(c => c.name || c.id).join(', ')}: ${candidate}.`);
+    if (seenIds.has(matched.id)) throw new Error(`Two archives match the same component ${matched.name || matched.id}.`);
+    seenIds.add(matched.id);
+    identified.push({ id: matched.id, name: matched.name, path: candidate });
+  }
+  return identified;
 }
 export function avdConfig(image, settings) {
   return Object.entries({ 'avd.ini.encoding': 'UTF-8', 'AvdId': settings.avd, 'avd.ini.displayname': 'AXRB',
@@ -84,7 +133,7 @@ async function installationAt(directory) {
 }
 
 export class Setup {
-  constructor({ root, directory, runtime, components, save, changed, debug = false, shutdownGraceMs = 180000, onOutput = () => {} }) {
+  constructor({ root, directory, runtime, components = [], save, changed, debug = false, shutdownGraceMs = 180000, onOutput = () => {} }) {
     Object.assign(this, { root, directory, runtime, components, save, changed, debug, shutdownGraceMs, onOutput });
     this.status = { phase: 'checking', directory, current: null, storageGB: runtime.settings?.storageGB ?? 32, completed: 0, total: 0, active: false, startedAt: 0, logs: [], debug };
     this.logPartials = new Map();
@@ -133,13 +182,36 @@ export class Setup {
     process.env.ANDROID_HOME = this.runtime.settings.sdk;
     process.env.ANDROID_SDK_ROOT = this.runtime.settings.sdk;
   }
+  async inspect(directory = this.directory) {
+    const sdk = path.join(directory, 'sdk'), avd = path.join(directory, 'avd', `${managedAvd}.avd`);
+    const components = [];
+    for (const c of this.components) {
+      const destination = path.join(sdk, c.destination);
+      const receipt = await readJson(path.join(destination, '.axrb-component.json'));
+      if (!await exists(path.join(destination, c.probe)) || receipt?.digest !== (c.sha256 || c.sha1)) {
+        components.push({ id: c.id, name: c.name, size: c.size, reason: 'Missing or outdated component' });
+      }
+    }
+    const config = await fs.readFile(path.join(avd, 'config.ini'), 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
+    const ini = await fs.readFile(avd.slice(0, -4) + '.ini', 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
+    const android = await exists(path.join(avd, 'userdata-qemu.img'));
+    const moved = Boolean(config) && (!sameDirectory(parseImageDirectory(config), systemImageDirectory(sdk)) || !sameDirectory(parseAvdPath(ini), avd));
+    const receipt = await readJson(path.join(directory, 'ready.json'));
+    const runtime = !receipt?.runtimeHash || receipt.runtimeHash !== await this.runtimeHash();
+    const licensed = (await readJson(path.join(directory, 'license-acceptance.json')))?.license === 'android-sdk-license';
+    return { directory, components, downloadBytes: components.reduce((sum, c) => sum + c.size, 0),
+      avd: !config, moved, runtime, android, licensed, fresh: !android,
+      ready: !components.length && Boolean(config) && !moved && android && !runtime && licensed };
+  }
   async refreshCurrent() {
     let current = await installationAt(this.directory);
     // A failed fresh install must not hide the previous disk's reuse option.
     if (!current && this.status.current && this.status.current.directory !== this.directory) {
       current = await installationAt(this.status.current.directory);
     }
-    this.update({ current });
+    const needs = await this.inspect();
+    const currentNeeds = current && !sameDirectory(current.directory, this.directory) ? await this.inspect(current.directory) : null;
+    this.update({ current, needs, currentNeeds });
   }
   async check() {
     if (this.status.active) return;
@@ -147,18 +219,14 @@ export class Setup {
     try {
       await this.refreshCurrent();
       const hardware = JSON.parse(await run('powershell.exe', powershellArgs(path.join(this.root, 'scripts/emulator/check_windows.ps1'), {})));
-      const ready = await exists(path.join(this.directory, 'ready.json')) && JSON.parse(await fs.readFile(path.join(this.directory, 'ready.json'), 'utf8')).runtimeHash === await this.runtimeHash() && (await Promise.all(this.components.map(async c => {
-        const destination = path.join(this.runtime.settings.sdk, c.destination);
-        if (!await exists(path.join(destination, c.probe)) || !await exists(path.join(destination, '.axrb-component.json'))) return false;
-        return JSON.parse(await fs.readFile(path.join(destination, '.axrb-component.json'), 'utf8')).digest === (c.sha256 || c.sha1);
-      }))).every(Boolean)
-        && await exists(path.join(this.directory, 'avd', `${this.runtime.settings.avd}.avd/config.ini`));
-      this.update({ hardware, phase: setupPhase(hardware, { ready, debug: this.debug }) });
+      this.update({ hardware, phase: setupPhase(hardware, { ready: this.status.needs.ready, debug: this.debug }) });
     } catch (error) { this.update({ phase: 'error', error: error.message }); }
   }
-  async start({ directory, accepted, storageGB = 32, useCurrent = false }) {
-    if (this.status.active) throw new Error('Setup is already running.');
-    if (accepted !== true) throw new Error('Accept the Android SDK license to download Android.');
+  async start({ directory, accepted, storageGB = 32, useCurrent = false, archives = [] }) {
+    if (this.status.active || this.starting) throw new Error('Setup is already running.');
+    this.starting = true;
+    try {
+    if (accepted !== true && !this.status.needs?.licensed && !this.status.currentNeeds?.licensed) throw new Error('Accept the Android SDK license to set up Android.');
     if (!this.debug && !hardwareRequirementsMet(this.status.hardware)) throw new Error('Resolve the system requirements first.');
     if (!this.status.hardware?.hypervisor) throw new Error('Enable the Windows hypervisor first.');
     // Own a child directory only; never replace user-selected directories themselves.
@@ -180,18 +248,32 @@ export class Setup {
       throw new Error(`An Android installation already exists at ${selected} (${size}). Choose a different folder for a new installation, or select Use current Android installation to keep the current disk.`);
     }
     if (!Number.isInteger(storageGB) || storageGB < STORAGE_MIN_GB || storageGB > STORAGE_MAX_GB) throw new Error('Choose 8–256 GB of Android storage.');
+    const needs = await this.inspect(selected);
+    if (accepted !== true && (!needs.licensed || needs.components.length)) throw new Error('Accept the Android SDK license to set up Android.');
+    const selectedArchives = useCurrent ? [] : await identifyArchives(archives, this.components);
+    const selectedRoot = await fs.realpath(selected).catch(error => { if (error.code === 'ENOENT') return path.resolve(selected); throw error; });
+    for (const archive of selectedArchives) {
+      archive.path = await fs.realpath(archive.path);
+      const relative = path.relative(selectedRoot, archive.path);
+      const inside = !relative || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+      if (inside && !sameDirectory(path.dirname(archive.path), path.join(selectedRoot, 'downloads'))) {
+        throw new Error(`Keep selected archives outside runtime files that setup replaces: ${archive.path}`);
+      }
+    }
+    this.selectedArchives = new Map(selectedArchives.map(archive => [archive.id, archive.path]));
     this.directory = selected;
     // Setup settings are provisional until the selected disk is ready.
     this.runtime.settings = { ...this.runtime.settings, sdk: path.join(this.directory, 'sdk'), avd: managedAvd, storageGB };
     this.environment();
     this.controller = new AbortController();
-    this.update({ phase: 'download', directory: this.directory, storageGB, active: true, startedAt: Date.now(), cancelling: false, error: '', completed: 0, total: 0, logs: [] });
+    this.update({ phase: 'verify', directory: this.directory, needs, storageGB, active: true, startedAt: Date.now(), cancelling: false, error: '', completed: 0, total: 0, logs: [] });
     this.task = this.install().catch(error => this.update({ phase: this.controller.signal.aborted ? 'cancelled' : 'error', error: this.controller.signal.aborted ? '' : error.message }))
       .finally(async () => {
         try { await this.refreshCurrent(); }
         catch (error) { this.update({ phase: 'error', error: error.message }); }
         this.update({ active: false }); this.controller = null;
       });
+    } finally { this.starting = false; }
   }
   cancel() { if (this.controller) { this.update({ cancelling: true }); this.controller.abort(); } }
   async install() {
@@ -211,14 +293,21 @@ export class Setup {
       signal.throwIfAborted();
       if (!c.sha256 && !c.sha1) throw new Error(`${c.name}: missing download checksum.`);
       const destination = path.join(sdk, c.destination), receipt = path.join(destination, '.axrb-component.json');
-      if (await exists(receipt) && await exists(path.join(destination, c.probe))) {
-        const installed = JSON.parse(await fs.readFile(receipt, 'utf8'));
-        if (installed.digest === (c.sha256 || c.sha1)) continue;
-      }
+      if (await exists(path.join(destination, c.probe)) && (await readJson(receipt))?.digest === (c.sha256 || c.sha1)) continue;
       await checkSpace(this.directory, c.id === 'image' ? 9 * 1024 ** 3 : c.size * 4);
-      const archive = path.join(cache, `${c.id}.zip`);
+      const selected = this.selectedArchives?.get(c.id), ownedBySetup = !selected;
+      let archive = selected || path.join(cache, `${c.id}.zip`);
+      if (ownedBySetup) {
+        const protectedPaths = new Set([...(this.selectedArchives?.values() || [])].map(pathKey));
+        let suffix = 0;
+        while ([archive, archive + '.part', archive + '.part.json'].some(file => protectedPaths.has(pathKey(file)))) {
+          archive = path.join(cache, `${c.id}-download-${++suffix}.zip`);
+        }
+      }
       this.update({ phase: 'verify', component: c.name, completed: 0, total: c.size });
-      if (!await verify(archive, c)) {
+      const verified = await verify(archive, c);
+      if (!verified && !ownedBySetup) throw new Error(`Selected ${c.name} archive changed or disappeared: ${archive}`);
+      if (!verified) {
         await fs.rm(archive, { force: true });
         this.update({ phase: 'download' });
         await downloadFile({ ...c, destination: archive, signal, validate: officialDownload, progress: (completed, total) => this.update({ completed, total }) });
@@ -240,12 +329,21 @@ export class Setup {
         await fs.rename(source, destination);
         await fs.writeFile(receipt, JSON.stringify({ digest: c.sha256 || c.sha1 }));
       } finally { await fs.rm(staging, { recursive: true, force: true }); }
-      await fs.rm(archive, { force: true });
+      if (ownedBySetup) await fs.rm(archive, { force: true });
     }
     signal.throwIfAborted();
     const avd = path.join(this.directory, 'avd', `${this.runtime.settings.avd}.avd`);
     await fs.mkdir(avd, { recursive: true });
-    if (!await exists(dataImage) || !await exists(path.join(avd, 'config.ini'))) await fs.writeFile(path.join(avd, 'config.ini'), avdConfig(path.join(sdk, 'system-images/android-36/google_apis/x86_64'), this.runtime.settings));
+    const configFile = path.join(avd, 'config.ini'), image = systemImageDirectory(sdk);
+    if (!await exists(dataImage) || !await exists(configFile)) await fs.writeFile(configFile, avdConfig(image, this.runtime.settings));
+    else {
+      const config = await fs.readFile(configFile, 'utf8');
+      const ini = await fs.readFile(avd.slice(0, -4) + '.ini', 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
+      if (!sameDirectory(parseImageDirectory(config), image) || !sameDirectory(parseAvdPath(ini), avd)) {
+        await fs.writeFile(configFile, withImageDirectory(config, image));
+        await fs.rm(path.join(avd, 'snapshots/default_boot'), { recursive: true, force: true });
+      }
+    }
     await fs.writeFile(avd.slice(0, -4) + '.ini', `avd.ini.encoding=UTF-8\npath=${avd}\ntarget=android-36\n`);
     await fs.mkdir(process.env.ANDROID_USER_HOME, { recursive: true });
     // A user-selected port can belong to another AVD. Never modify or stop it.
