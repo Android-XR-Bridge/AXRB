@@ -5,9 +5,16 @@ import { Input } from '@/components/ui/input';
 import { call } from './common';
 
 export function SetupScreen({ setup }) {
-  const [directory, setDirectory] = useState(setup.directory.replace(/[\\/]AXRB Runtime$/, '').replace(/^([A-Za-z]:)$/, '$1\\'));
+  const current = setup.current;
+  const [newDirectory, setDirectory] = useState(null);
+  // A newly discovered disk defaults to reuse; refreshes must not undo an opt-out.
+  const [ignoredCurrent, setIgnoredCurrent] = useState(null);
+  const useCurrent = Boolean(current) && ignoredCurrent !== current.directory;
+  const directory = newDirectory ?? (current ? '' : setup.directory.replace(/[\\/]AXRB Runtime$/, '').replace(/^([A-Za-z]:)$/, '$1\\'));
   const [accepted, setAccepted] = useState(false);
   const [storageGB, setStorageGB] = useState(setup.storageGB ?? 32);
+  const selectedStorageGB = useCurrent ? current.storageGB : storageGB;
+  const validStorage = Number.isInteger(selectedStorageGB) && selectedStorageGB >= 8 && selectedStorageGB <= 256;
   const [error, setError] = useState('');
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -37,13 +44,26 @@ export function SetupScreen({ setup }) {
       {setup.phase === 'boot' && setup.logs?.length > 0 && <pre aria-label="Android startup log" className="max-h-56 overflow-auto rounded-md bg-muted p-3 text-[11px] leading-4 text-muted-foreground whitespace-pre-wrap">{setup.logs.join('\n')}</pre>}
       {setup.active && <Button variant="outline" disabled={setup.cancelling} onClick={() => invoke('setupCancel')}>{setup.cancelling ? 'Stopping setup?' : 'Cancel'}</Button>}
     </> : <>
-      <p>Download Android 16 and the emulator.</p>
-      <div className="space-y-2"><label htmlFor="runtime-folder" className="text-sm">Install folder</label><div className="flex gap-2"><Input id="runtime-folder" value={directory} onChange={e => setDirectory(e.target.value)} /><Button variant="outline" onClick={async () => { const value = await invoke('chooseFolder'); if (value) setDirectory(value); }}>Browse</Button></div></div>
-      <div className="space-y-2"><label htmlFor="android-storage" className="text-sm">Android storage (GB)</label><Input id="android-storage" type="number" min="8" max="256" step="8" value={storageGB} onChange={e => setStorageGB(Number(e.target.value))} /></div>
-      <p className="text-sm text-muted-foreground">2.4 GB download. Allow {Math.ceil(storageGB * 1.2 + 14)} GB free for setup. Android checks this space before creating its disk. Downloaded APKs need additional space.</p>
+      <p>{useCurrent ? 'Set up AXRB using your existing Android disk.' : 'Download Android 16 and the emulator.'}</p>
+      {current && <div className="space-y-3 rounded-lg border p-4">
+        <label className="flex items-start gap-3 text-sm"><input id="use-current-installation" type="checkbox" checked={useCurrent} onChange={e => { setIgnoredCurrent(e.target.checked ? null : current.directory); setError(''); }} aria-describedby="current-installation" className="mt-1" /><span>Use current Android installation</span></label>
+        <div id="current-installation" className="space-y-1 text-sm">
+          <p className="font-medium">Current installation</p>
+          <p className="break-all text-muted-foreground">{current.directory}</p>
+          <p className="text-muted-foreground">{current.storageGB === null ? 'Android disk size is unknown.' : `${current.storageGB} GB Android storage`}</p>
+        </div>
+      </div>}
+      {useCurrent ? <p className="text-sm text-muted-foreground">{current.storageGB === null
+        ? 'The disk configuration is missing or unreadable. Restore config.ini, or uncheck the box to install in a new folder.'
+        : 'The current disk size, installed games and saves are preserved. Storage can be grown later in Settings.'}</p> : <>
+        <div className="space-y-2"><label htmlFor="runtime-folder" className="text-sm">{current ? 'New install folder' : 'Install folder'}</label><div className="flex gap-2"><Input id="runtime-folder" value={directory} onChange={e => setDirectory(e.target.value)} /><Button variant="outline" onClick={async () => { const value = await invoke('chooseFolder'); if (value) setDirectory(value); }}>Browse</Button></div></div>
+        <p className="text-xs text-muted-foreground">Setup creates an AXRB Runtime subfolder.{current && ' The old installation stays untouched; its games and saves are not copied.'}</p>
+        <div className="space-y-2"><label htmlFor="android-storage" className="text-sm">Android storage (GB)</label><Input id="android-storage" type="number" min="8" max="256" step="8" value={storageGB} onChange={e => setStorageGB(Number(e.target.value))} /></div>
+        <p className="text-sm text-muted-foreground">2.4 GB download. Allow {Math.ceil(storageGB * 1.2 + 14)} GB free for setup. Android checks this space before creating its disk. Downloaded APKs need additional space.</p>
+      </>}
       <p className="text-sm text-muted-foreground">SteamVR or another active OpenXR runtime is required to play.</p>
-      <label className="flex items-start gap-3 text-sm"><input type="checkbox" checked={accepted} onChange={e => setAccepted(e.target.checked)} className="mt-1" /><span>I accept the <button className="underline" onClick={e => { e.preventDefault(); invoke('setupLicense'); }}>Android SDK license</button>.</span></label>
-      <Button disabled={!accepted || !directory || storageGB < 8 || storageGB > 256} onClick={() => invoke('setupStart', { directory, accepted, storageGB })}>{['error', 'cancelled'].includes(setup.phase) ? 'Retry setup' : 'Download and set up'}</Button>
+      <label className="flex items-start gap-3 text-sm"><input id="setup-license" type="checkbox" checked={accepted} onChange={e => setAccepted(e.target.checked)} className="mt-1" /><span>I accept the <button className="underline" onClick={e => { e.preventDefault(); invoke('setupLicense'); }}>Android SDK license</button>.</span></label>
+      <Button disabled={!accepted || (!useCurrent && !directory) || !validStorage} onClick={() => invoke('setupStart', { directory, accepted, storageGB: selectedStorageGB, useCurrent })}>{['error', 'cancelled'].includes(setup.phase) ? 'Retry setup' : useCurrent ? 'Set up current installation' : 'Download and set up'}</Button>
       {setup.phase === 'error' && <Button variant="outline" className="ml-3" onClick={() => invoke('setupCheck')}>Check again</Button>}
       <p className="text-xs text-muted-foreground">ovrport is not included. Import APKs you have patched separately.</p>
     </>}

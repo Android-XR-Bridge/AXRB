@@ -72,10 +72,20 @@ export function planStorageChange(currentGB, requestedGB) {
   }
   return currentGB === null || requestedGB > currentGB;
 }
+const managedAvd = 'axrb-managed-api36';
+async function installationAt(directory) {
+  const avd = path.join(directory, 'avd', `${managedAvd}.avd`);
+  if (!await exists(path.join(avd, 'userdata-qemu.img'))) return null;
+  let config;
+  try { config = await fs.readFile(path.join(avd, 'config.ini'), 'utf8'); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+  return { directory, storageGB: parseStorageGB(config) };
+}
+
 export class Setup {
   constructor({ root, directory, runtime, components, save, changed, debug = false, shutdownGraceMs = 180000 }) {
     Object.assign(this, { root, directory, runtime, components, save, changed, debug, shutdownGraceMs });
-    this.status = { phase: 'checking', directory, storageGB: runtime.settings?.storageGB ?? 32, completed: 0, total: 0, active: false, startedAt: 0, logs: [], debug };
+    this.status = { phase: 'checking', directory, current: null, storageGB: runtime.settings?.storageGB ?? 32, completed: 0, total: 0, active: false, startedAt: 0, logs: [], debug };
   }
   update(value) {
     Object.assign(this.status, value);
@@ -110,10 +120,19 @@ export class Setup {
     process.env.ANDROID_HOME = this.runtime.settings.sdk;
     process.env.ANDROID_SDK_ROOT = this.runtime.settings.sdk;
   }
+  async refreshCurrent() {
+    let current = await installationAt(this.directory);
+    // A failed fresh install must not hide the previous disk's reuse option.
+    if (!current && this.status.current && this.status.current.directory !== this.directory) {
+      current = await installationAt(this.status.current.directory);
+    }
+    this.update({ current });
+  }
   async check() {
     if (this.status.active) return;
     this.update({ phase: 'checking', error: '' });
     try {
+      await this.refreshCurrent();
       const hardware = JSON.parse(await run('powershell.exe', powershellArgs(path.join(this.root, 'scripts/emulator/check_windows.ps1'), {})));
       const ready = await exists(path.join(this.directory, 'ready.json')) && JSON.parse(await fs.readFile(path.join(this.directory, 'ready.json'), 'utf8')).runtimeHash === await this.runtimeHash() && (await Promise.all(this.components.map(async c => {
         const destination = path.join(this.runtime.settings.sdk, c.destination);
@@ -124,26 +143,43 @@ export class Setup {
       this.update({ hardware, phase: setupPhase(hardware, { ready, debug: this.debug }) });
     } catch (error) { this.update({ phase: 'error', error: error.message }); }
   }
-  async start({ directory, accepted, storageGB = 32 }) {
+  async start({ directory, accepted, storageGB = 32, useCurrent = false }) {
     if (this.status.active) throw new Error('Setup is already running.');
     if (accepted !== true) throw new Error('Accept the Android SDK license to download Android.');
     if (!this.debug && !hardwareRequirementsMet(this.status.hardware)) throw new Error('Resolve the system requirements first.');
     if (!this.status.hardware?.hypervisor) throw new Error('Enable the Windows hypervisor first.');
-    if (typeof directory !== 'string' || !path.isAbsolute(directory) || /[\r\n]/.test(directory)) throw new Error('Choose an absolute installation folder.');
-    if (!Number.isInteger(storageGB) || storageGB < 8 || storageGB > 256) throw new Error('Choose 8–256 GB of Android storage.');
-    if (await exists(path.join(this.directory, 'avd', `${this.runtime.settings.avd}.avd/userdata-qemu.img`)) && storageGB !== (this.runtime.settings.storageGB ?? 32)) throw new Error('Setup cannot resize an existing Android disk. Keep its current storage size.');
     // Own a child directory only; never replace user-selected directories themselves.
-    const selected = path.join(directory, 'AXRB Runtime');
-    if (await exists(path.join(this.directory, 'ready.json')) && path.resolve(selected) !== path.resolve(this.directory)) throw new Error('Use the existing runtime folder to update this installation.');
+    let selected;
+    if (useCurrent) {
+      selected = this.status.current?.directory;
+      if (!selected) throw new Error('No current Android installation was found. Choose a new installation folder.');
+    } else {
+      if (typeof directory !== 'string' || !path.isAbsolute(directory) || /[\r\n]/.test(directory)) throw new Error('Choose an absolute installation folder.');
+      selected = path.join(directory, 'AXRB Runtime');
+    }
+    const existing = await installationAt(selected);
+    if (useCurrent) {
+      if (!existing) throw new Error(`The current Android disk is no longer available at ${selected}. Check the drive or choose a new installation folder.`);
+      if (existing.storageGB === null) throw new Error(`Cannot determine the Android disk size at ${selected}. Restore its config.ini or choose a new installation folder. The disk has not been changed.`);
+      storageGB = existing.storageGB;
+    } else if (existing) {
+      const size = existing.storageGB === null ? 'size unknown' : `${existing.storageGB} GB`;
+      throw new Error(`An Android installation already exists at ${selected} (${size}). Choose a different folder for a new installation, or select Use current Android installation to keep the current disk.`);
+    }
+    if (!Number.isInteger(storageGB) || storageGB < STORAGE_MIN_GB || storageGB > STORAGE_MAX_GB) throw new Error('Choose 8–256 GB of Android storage.');
     this.directory = selected;
     this.runtime.settings.sdk = path.join(this.directory, 'sdk');
-    this.runtime.settings.avd = 'axrb-managed-api36';
+    this.runtime.settings.avd = managedAvd;
     this.runtime.settings.storageGB = storageGB;
     this.environment();
     this.controller = new AbortController();
-    this.update({ phase: 'download', directory: this.directory, active: true, startedAt: Date.now(), cancelling: false, error: '', completed: 0, total: 0, logs: [] });
+    this.update({ phase: 'download', directory: this.directory, storageGB, active: true, startedAt: Date.now(), cancelling: false, error: '', completed: 0, total: 0, logs: [] });
     this.task = this.install().catch(error => this.update({ phase: this.controller.signal.aborted ? 'cancelled' : 'error', error: this.controller.signal.aborted ? '' : error.message }))
-      .finally(() => { this.update({ active: false }); this.controller = null; });
+      .finally(async () => {
+        try { await this.refreshCurrent(); }
+        catch (error) { this.update({ phase: 'error', error: error.message }); }
+        this.update({ active: false }); this.controller = null;
+      });
   }
   cancel() { if (this.controller) { this.update({ cancelling: true }); this.controller.abort(); } }
   async install() {

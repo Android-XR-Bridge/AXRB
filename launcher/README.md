@@ -12,6 +12,19 @@ setup checks available space before downloading. Games and ovrport are not bundl
 This build requires Windows x64, an AMD or NVIDIA GPU, at least 12 GB RAM, and an active
 OpenXR runtime such as SteamVR.
 
+Setup checks the remembered runtime folder for an existing Android disk. If one
+is found, **Use current Android installation** is checked and shows its full path
+and configured storage size. Reuse preserves the disk, installed games and saves;
+grow storage later in Settings. If its size cannot be read from `config.ini`,
+restore that configuration before reusing the disk.
+
+Uncheck the box for a new installation, then choose a folder and storage size.
+Setup creates an `AXRB Runtime` subfolder there and checks only that destination;
+an old disk elsewhere does not constrain the new disk size. An occupied destination
+is rejected rather than overwritten. The old installation is left untouched, and
+its games and saves are not copied. The launcher library and login remain in the
+shared Windows user profile; choosing a new runtime folder does not reset them.
+
 ## Build an installer
 
 From a configured Windows development checkout, run

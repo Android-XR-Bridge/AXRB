@@ -7,6 +7,16 @@ import { createHash } from 'node:crypto';
 import { archivePath, extractZip } from '../core/archive.mjs';
 import { Setup, verify, officialDownload, avdConfig, hardwareRequirementsMet, setupPhase, supportedSystem } from '../core/setup.mjs';
 
+function restoreSetupEnvironment(t) {
+  const old = { ...process.env };
+  t.after(() => {
+    for (const name of ['AXRB_DATA_HOME', 'ANDROID_AVD_HOME', 'ANDROID_USER_HOME', 'ANDROID_HOME', 'ANDROID_SDK_ROOT',
+      'ANDROID_ADB_SERVER_PORT', 'ADB_LOCAL_TRANSPORT_MAX_PORT', 'ADB_SERVER_SOCKET']) {
+      if (old[name] === undefined) delete process.env[name]; else process.env[name] = old[name];
+    }
+  });
+}
+
 test('runtime download trust excludes local URLs, credentials and unexpected hosts', () => {
   assert.equal(officialDownload('https://dl.google.com/android/repository/a.zip').hostname, 'dl.google.com');
   for (const value of ['http://dl.google.com/android/repository/a.zip', 'https://dl.google.com.evil.test/android/repository/a.zip', 'https://user@dl.google.com/android/repository/a.zip', 'https://127.0.0.1/a', 'https://dl.google.com/other.zip']) assert.throws(() => officialDownload(value));
@@ -37,14 +47,16 @@ test('setup refuses missing license or virtualization before touching runtime', 
 });
 test('failed boot is retryable and never produces a ready receipt', async t => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'axrb-setup-')); t.after(() => fs.rm(dir, { recursive: true, force: true }));
-  const old = { ...process.env }; t.after(() => { for (const name of ['AXRB_DATA_HOME', 'ANDROID_AVD_HOME', 'ANDROID_USER_HOME', 'ANDROID_HOME', 'ANDROID_SDK_ROOT']) { if (old[name] === undefined) delete process.env[name]; else process.env[name] = old[name]; } });
+  restoreSetupEnvironment(t);
   let killed = false;
   const avd = path.join(dir, 'AXRB Runtime/avd/axrb-managed-api36.avd');
   await fs.mkdir(avd, { recursive: true }); await fs.writeFile(path.join(avd, 'userdata-qemu.img'), 'fixture');
+  await fs.writeFile(path.join(avd, 'config.ini'), 'disk.dataPartition.size=32G\n');
   const runtime = { settings: { cpuCores: 4, memoryMB: 8192 }, online: async () => false, ensure: async () => { throw new Error('boot failed'); }, adb: async args => { if (args[1] === 'kill') killed = true; return 'unrelated-avd\nOK'; } };
   const setup = new Setup({ root: dir, directory: dir, runtime, components: [], save: async () => {}, changed() {} });
   setup.status.hardware = { hypervisor: true, supportedGpu: true, x64: true, memoryGB: 16 };
-  await setup.start({ directory: dir, accepted: true }); await setup.task;
+  setup.status.current = { directory: path.dirname(path.dirname(avd)), storageGB: 32 };
+  await setup.start({ useCurrent: true, accepted: true }); await setup.task;
   assert.equal(setup.status.phase, 'error'); assert.match(setup.status.error, /boot failed/); assert.equal(killed, false);
   await assert.rejects(fs.access(path.join(setup.directory, 'ready.json')));
   assert.equal(setup.status.active, false);
@@ -77,14 +89,14 @@ test('debug setup flag skips hardware requirements but keeps the hypervisor gate
 test('a slow Android shutdown does not discard a completed install', async t => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'axrb-shutdown-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
-  const old = { ...process.env };
-  t.after(() => { for (const name of ['AXRB_DATA_HOME', 'ANDROID_AVD_HOME', 'ANDROID_USER_HOME', 'ANDROID_HOME', 'ANDROID_SDK_ROOT']) { if (old[name] === undefined) delete process.env[name]; else process.env[name] = old[name]; } });
+  restoreSetupEnvironment(t);
   await fs.mkdir(path.join(dir, 'out/android/runtime-arm64-v8a'), { recursive: true });
   await fs.writeFile(path.join(dir, 'out/android/runtime-arm64-v8a/axrb-openxr-runtime-debug.apk'), 'apk');
   const avd = path.join(dir, 'AXRB Runtime/avd/axrb-managed-api36.avd');
   await fs.mkdir(avd, { recursive: true });
   // An existing data image means setup skips the free-space gate, as on a reinstall.
   await fs.writeFile(path.join(avd, 'userdata-qemu.img'), 'fixture');
+  await fs.writeFile(path.join(avd, 'config.ini'), 'disk.dataPartition.size=32G\n');
   // Quick-boot snapshot save outlives the grace period: the lock never clears.
   await fs.mkdir(path.join(avd, 'hardware-qemu.ini.lock'), { recursive: true });
   const runtime = {
@@ -99,10 +111,127 @@ test('a slow Android shutdown does not discard a completed install', async t => 
   };
   const setup = new Setup({ root: dir, directory: dir, runtime, components: [], save: async () => {}, changed() {}, shutdownGraceMs: 400 });
   setup.status.hardware = { hypervisor: true, supportedGpu: true, x64: true, memoryGB: 16 };
-  await setup.start({ directory: dir, accepted: true });
+  setup.status.current = { directory: path.dirname(path.dirname(avd)), storageGB: 32 };
+  await setup.start({ useCurrent: true, accepted: true });
   await setup.task;
   assert.equal(setup.status.phase, 'ready', `setup must complete, got: ${setup.status.error}`);
   await fs.access(path.join(setup.directory, 'ready.json'));
   assert.ok(setup.status.logs.some(l => /still shutting down/i.test(l)), 'the slow shutdown is reported, not hidden');
   assert.ok(await fs.access(path.join(avd, 'hardware-qemu.ini.lock')).then(() => true, () => false), 'the lock is left for the emulator to reclaim');
+});
+
+async function installationFixture(t) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'axrb-destination-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  restoreSetupEnvironment(t);
+  t.mock.method(fs, 'statfs', async () => ({ bavail: 1024 ** 3, bsize: 1024 }));
+  const current = path.join(root, 'previous', 'AXRB Runtime');
+  const avd = path.join(current, 'avd', 'axrb-managed-api36.avd');
+  const config = 'AvdId=axrb-managed-api36\ndisk.dataPartition.size=64G\n';
+  await fs.mkdir(avd, { recursive: true });
+  await fs.writeFile(path.join(avd, 'config.ini'), config);
+  await fs.writeFile(path.join(avd, 'userdata-qemu.img'), 'saved Android data');
+  await fs.writeFile(path.join(current, 'ready.json'), '{"runtimeHash":"previous-runtime"}');
+  await fs.mkdir(path.join(root, 'out/android/runtime-arm64-v8a'), { recursive: true });
+  await fs.writeFile(path.join(root, 'out/android/runtime-arm64-v8a/axrb-openxr-runtime-debug.apk'), 'apk');
+  await fs.mkdir(path.join(root, 'scripts/emulator'), { recursive: true });
+  await fs.writeFile(path.join(root, 'scripts/emulator/check_windows.ps1'),
+    `Write-Output '{"hypervisor":true,"supportedGpu":true,"x64":true,"memoryGB":16}'`);
+  const runtime = {
+    settings: { avd: 'axrb-managed-api36', sdk: path.join(current, 'sdk'), storageGB: 32, cpuCores: 4, memoryMB: 8192 },
+    online: async () => false,
+    ensure: async () => {
+      const image = path.join(process.env.ANDROID_AVD_HOME, 'axrb-managed-api36.avd/userdata-qemu.img');
+      await fs.writeFile(image, 'new Android data', { flag: 'wx' }).catch(error => { if (error.code !== 'EEXIST') throw error; });
+    },
+    adb: async args => args.includes('path') ? 'package:/data/app/base.apk' : 'unrelated-avd\nOK',
+  };
+  const setup = new Setup({ root, directory: current, runtime, components: [], save: async () => {}, changed() {} });
+  await setup.check();
+  assert.equal(setup.status.phase, 'install', setup.status.error);
+  return { root, current, avd, config, setup };
+}
+
+test('a fresh destination is independent of the saved disk and completion receipt', async t => {
+  const { root, current, avd, config, setup } = await installationFixture(t);
+  assert.deepEqual(setup.status.current, { directory: current, storageGB: 64 });
+  const destination = path.join(root, 'brand-new');
+  await setup.start({ directory: destination, storageGB: 8, accepted: true, useCurrent: false });
+  await setup.task;
+  assert.equal(setup.status.phase, 'ready', setup.status.error);
+  const selected = path.join(destination, 'AXRB Runtime');
+  assert.match(await fs.readFile(path.join(selected, 'avd/axrb-managed-api36.avd/config.ini'), 'utf8'), /disk.dataPartition.size=8G/);
+  assert.equal(JSON.parse(await fs.readFile(path.join(selected, 'ready.json'), 'utf8')).runtimeHash, createHash('sha256').update('apk').digest('hex'));
+  assert.equal(await fs.readFile(path.join(avd, 'config.ini'), 'utf8'), config);
+  assert.equal(await fs.readFile(path.join(avd, 'userdata-qemu.img'), 'utf8'), 'saved Android data');
+  assert.equal(await fs.readFile(path.join(current, 'ready.json'), 'utf8'), '{"runtimeHash":"previous-runtime"}');
+  assert.deepEqual(setup.status.current, { directory: selected, storageGB: 8 });
+});
+
+test('explicit reuse rechecks the disk size and never resizes from stale settings', async t => {
+  const { root, current, avd, setup } = await installationFixture(t);
+  // The disk configuration can change after discovery; neither the displayed
+  // size nor the saved profile nor a submitted size may override it.
+  const config = 'AvdId=axrb-managed-api36\ndisk.dataPartition.size=96G\n';
+  await fs.writeFile(path.join(avd, 'config.ini'), config);
+  const ignored = path.join(root, 'must-not-create');
+  await setup.start({ useCurrent: true, directory: ignored, storageGB: 8, accepted: true });
+  await setup.task;
+  assert.equal(setup.status.phase, 'ready', setup.status.error);
+  assert.equal(await fs.readFile(path.join(avd, 'config.ini'), 'utf8'), config);
+  assert.equal(await fs.readFile(path.join(avd, 'userdata-qemu.img'), 'utf8'), 'saved Android data');
+  assert.equal(setup.status.storageGB, 96);
+  assert.deepEqual(setup.status.current, { directory: current, storageGB: 96 });
+  await assert.rejects(fs.access(ignored), { code: 'ENOENT' });
+});
+
+test('new mode refuses an occupied selected folder before modifying either disk', async t => {
+  const { root, current, avd, config, setup } = await installationFixture(t);
+  const destination = path.join(root, 'occupied');
+  const target = path.join(destination, 'AXRB Runtime/avd/axrb-managed-api36.avd');
+  await fs.mkdir(target, { recursive: true });
+  await fs.writeFile(path.join(target, 'userdata-qemu.img'), 'other Android data');
+  await fs.writeFile(path.join(target, 'config.ini'), 'disk.dataPartition.size=8G\n');
+  await assert.rejects(setup.start({ directory: destination, storageGB: 8, accepted: true, useCurrent: false }),
+    error => error.message.includes(path.join(destination, 'AXRB Runtime')) && error.message.includes('8 GB'));
+  assert.equal(await fs.readFile(path.join(target, 'userdata-qemu.img'), 'utf8'), 'other Android data');
+  assert.equal(await fs.readFile(path.join(target, 'config.ini'), 'utf8'), 'disk.dataPartition.size=8G\n');
+  await assert.rejects(fs.access(path.join(destination, 'AXRB Runtime/downloads')), { code: 'ENOENT' });
+  assert.equal(await fs.readFile(path.join(avd, 'config.ini'), 'utf8'), config);
+  assert.equal(await fs.readFile(path.join(current, 'ready.json'), 'utf8'), '{"runtimeHash":"previous-runtime"}');
+});
+
+test('reuse refuses a missing disk or unknown disk size without recreating it', async t => {
+  const { current, avd, setup } = await installationFixture(t);
+  await fs.rm(path.join(avd, 'config.ini'));
+  await setup.check();
+  assert.deepEqual(setup.status.current, { directory: current, storageGB: null });
+  await assert.rejects(setup.start({ useCurrent: true, accepted: true }), /disk size/);
+  await assert.rejects(fs.access(path.join(avd, 'config.ini')), { code: 'ENOENT' });
+  assert.equal(await fs.readFile(path.join(avd, 'userdata-qemu.img'), 'utf8'), 'saved Android data');
+  await fs.writeFile(path.join(avd, 'config.ini'), 'hw.ramSize=8192\n');
+  await assert.rejects(setup.start({ useCurrent: true, accepted: true }), /disk size/);
+  assert.equal(await fs.readFile(path.join(avd, 'config.ini'), 'utf8'), 'hw.ramSize=8192\n');
+  await fs.rm(path.join(avd, 'userdata-qemu.img'));
+  await assert.rejects(setup.start({ useCurrent: true, accepted: true }), /no longer available/);
+  await assert.rejects(fs.access(path.join(current, 'downloads')), { code: 'ENOENT' });
+  await setup.check();
+  assert.equal(setup.status.current, null);
+});
+
+test('a failed fresh install keeps the old disk available for reuse and retry', async t => {
+  const { root, current, avd, config, setup } = await installationFixture(t);
+  t.mock.method(fs, 'statfs', async () => ({ bavail: 0, bsize: 1024 }));
+  await setup.start({ directory: path.join(root, 'no-space'), storageGB: 8, accepted: true, useCurrent: false });
+  await setup.task;
+  assert.equal(setup.status.phase, 'error');
+  assert.match(setup.status.error, /GB free/);
+  assert.deepEqual(setup.status.current, { directory: current, storageGB: 64 });
+  await setup.check();
+  assert.deepEqual(setup.status.current, { directory: current, storageGB: 64 });
+  await setup.start({ useCurrent: true, accepted: true });
+  await setup.task;
+  assert.equal(setup.status.phase, 'ready', setup.status.error);
+  assert.equal(await fs.readFile(path.join(avd, 'config.ini'), 'utf8'), config);
+  assert.equal(await fs.readFile(path.join(avd, 'userdata-qemu.img'), 'utf8'), 'saved Android data');
 });
