@@ -98,7 +98,13 @@ test('library writes serialize and interrupted jobs are recoverable', async t =>
   const reopened=new State(dir);await reopened.load();assert.equal(reopened.data.games[0].name,'Game');assert.equal(reopened.data.jobs[0].status,'interrupted');
 });
 test('PowerShell paths and game names are literal, including quotes and substitutions', () => {
-  const args=powershellArgs('C:\\project\\run.ps1',{GameName:"A 'quote' $(Get-Content secret)",GpuSharing:true});
-  const script=Buffer.from(args.at(-1),'base64').toString('utf16le');assert.ok(script.includes("'A ''quote'' $(Get-Content secret)'"));assert.ok(script.includes('-GpuSharing:$true'));
+  const args=powershellArgs('C:\\project\\run.ps1',{GameName:"A 'quote' $(Get-Content secret)",GpuSharing:true,FpsHud:false});
+  // -File puts each value in its own argv entry, so it reaches the parameter
+  // binder unquoted and unexpanded. A false switch is absent, not "-Flag:$false".
+  assert.deepEqual(args,['-NoProfile','-NonInteractive','-OutputFormat','Text','-ExecutionPolicy','Bypass',
+    '-File','C:\\project\\run.ps1','-GameName',"A 'quote' $(Get-Content secret)",'-GpuSharing']);
+  assert.ok(!args.includes('-EncodedCommand'));
+  assert.throws(()=>powershellArgs('C:\\project\\run.ps1',{GameName:'-Sdk'}),/cannot start with/);
+  assert.throws(()=>powershellArgs('C:\\project\\run.ps1',{'Bad Key':'x'}),/Invalid PowerShell parameter/);
   assert.throws(()=>validPackage('com.game;rm'));assert.equal(validPackage('com.example.game'),'com.example.game');
 });

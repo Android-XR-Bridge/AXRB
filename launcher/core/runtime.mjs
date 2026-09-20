@@ -28,23 +28,31 @@ export function run(executable, args, { timeout = 120000, onOutput = () => {}, s
     child.on('close', code => complete(code));
   });
 }
-const psLiteral = value => `'${String(value).replaceAll("'", "''")}'`;
+// Every PowerShell call runs a script file with -File and passes each value as
+// its own argv entry, which the parameter binder takes literally. That removes
+// the quoting problem this used to solve by building a command string, and it
+// keeps the launcher from spawning base64 command lines that behavioural
+// antivirus engines score as obfuscation. The scripts set the console encoding
+// and reduce a terminating error to its message, which the wrapper once did.
 export function powershellArgs(script, parameters) {
-  const invocation = `$ProgressPreference = 'SilentlyContinue'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); try { & ${psLiteral(script)} ${Object.entries(parameters).map(([key, value]) => {
+  const args = ['-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-ExecutionPolicy', 'Bypass', '-File', script];
+  for (const [key, value] of Object.entries(parameters)) {
     if (!/^[a-zA-Z]+$/.test(key)) throw new Error('Invalid PowerShell parameter.');
-    return typeof value === 'boolean' ? `-${key}:$${value}` : `-${key} ${psLiteral(value)}`;
-  }).join(' ')}; if (-not $?) { exit 1 } } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }`;
-  return ['-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', Buffer.from(invocation, 'utf16le').toString('base64')];
+    // -File has no way to write "-Switch:$false": a switch is bound by presence.
+    if (typeof value === 'boolean') { if (value) args.push(`-${key}`); continue; }
+    const text = String(value);
+    // Separate argv entries stop a value from splitting into further arguments,
+    // but a value that is itself a parameter name still binds as one.
+    if (text.startsWith('-')) throw new Error(`PowerShell parameter ${key} cannot start with "-".`);
+    args.push(`-${key}`, text);
+  }
+  return args;
 }
-export function windowsFeaturesCommand(windowsDir = process.env.WINDIR || 'C:\\Windows') {
-  const executable = path.join(windowsDir, 'System32', 'optionalfeatures.exe');
-  if (!path.isAbsolute(executable) || /[\r\n\x00]/.test(executable)) throw new Error('Windows Features path is invalid.');
-  const literal = executable.replaceAll("'", "''");
-  const script = `$exe = '${literal}'; if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw 'Windows Features is unavailable on this Windows installation.' }; Start-Process -LiteralPath $exe -WindowStyle Normal`;
-  return ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')];
+export function windowsFeaturesCommand(root, windowsDir = process.env.WINDIR || 'C:\\Windows') {
+  return powershellArgs(path.join(root, 'scripts/run/open_windows_features.ps1'), { WindowsDir: windowsDir });
 }
-export async function openWindowsFeatures(execute = run) {
-  return execute('powershell.exe', windowsFeaturesCommand(), { timeout: 15000 });
+export async function openWindowsFeatures(root, execute = run) {
+  return execute('powershell.exe', windowsFeaturesCommand(root), { timeout: 15000 });
 }
 export function validPackage(value) {
   if (!/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+$/.test(value || '')) throw new Error('Invalid Android package name.');
@@ -157,9 +165,8 @@ export class Runtime {
     this.settings.fpsHud = enabled;
   }
   async stop() {
-    if (!this.child) return;
-    const pid = this.child.pid;
-    const script = `$p = Get-CimInstance Win32_Process -Filter "Name='axrb-host-bridge.exe'" | Where-Object ParentProcessId -eq ${Number(pid)}; foreach ($h in $p) { $null = (Get-Process -Id $h.ProcessId).CloseMainWindow() }`;
-    await run('powershell.exe', ['-NoProfile', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')]);
+    const pid = this.child?.pid;
+    if (!pid) return;
+    await run('powershell.exe', powershellArgs(path.join(this.root, 'scripts/run/stop_game.ps1'), { ParentPid: pid }));
   }
 }

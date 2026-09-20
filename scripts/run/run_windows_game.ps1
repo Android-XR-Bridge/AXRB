@@ -18,7 +18,14 @@ param(
     [switch]$PrecomposeProjectionLayers,
     [string]$HostExe
 )
+# The launcher reads this script's output as UTF-8 and reports a failure from
+# its message alone, so progress records stay out of the stream and a
+# terminating error is reduced to its text instead of a full error record. The
+# trap still lets the finally blocks below run before the process exits.
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+trap { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }
 . "$PSScriptRoot/../paths.ps1"
 $env:ANDROID_ADB_SERVER_PORT = '5038'
 $env:ADB_SERVER_SOCKET = $null

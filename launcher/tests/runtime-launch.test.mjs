@@ -6,17 +6,21 @@ import path from 'node:path';
 import { Runtime, run, openWindowsFeatures, windowsFeaturesCommand } from '../core/runtime.mjs';
 
 test('Windows Features uses shell activation instead of spawning optionalfeatures directly', async () => {
-  const args = windowsFeaturesCommand('C:\\Windows');
+  const args = windowsFeaturesCommand('C:\\root', 'C:\\Windows');
   assert.equal(args[0], '-NoProfile');
-  assert.equal(args.at(-2), '-EncodedCommand');
-  const script = Buffer.from(args.at(-1), 'base64').toString('utf16le');
+  assert.ok(!args.includes('-EncodedCommand'));
+  assert.equal(args.at(-4), '-File');
+  assert.match(args.at(-3), /open_windows_features\.ps1$/);
+  assert.deepEqual(args.slice(-2), ['-WindowsDir', 'C:\\Windows']);
+  // The activation itself moved into the script the launcher now runs by path.
+  const script = await fs.readFile(new URL('../../scripts/run/open_windows_features.ps1', import.meta.url), 'utf8');
   assert.match(script, /Start-Process -LiteralPath/);
   assert.match(script, /System32[\\/]optionalfeatures\.exe/i);
   const calls = [];
-  await openWindowsFeatures(async (...received) => { calls.push(received); return 'started'; });
+  await openWindowsFeatures('C:\\root', async (...received) => { calls.push(received); return 'started'; });
   assert.equal(calls.length, 1);
   assert.equal(calls[0][0], 'powershell.exe');
-  assert.equal(calls[0][1].at(-2), '-EncodedCommand');
+  assert.ok(calls[0][1].includes('-File'));
 });
 
 test('Windows game launch actually executes PowerShell and reports its exit', { skip: process.platform !== 'win32', timeout: 15000 }, async t => {
@@ -33,7 +37,7 @@ exit 7
     runtime.launch({ id:'local:com.example.game',package:'com.example.game',activity:'com.example.game/.Main',name:'Test' }, (code, output) => resolve({code,output}));
     t.after(() => runtime.child?.kill());
   });
-  assert.equal(result.code, 1); // PowerShell wrapper normalizes failed script exits.
+  assert.equal(result.code, 7); // -File propagates the script's own exit code.
   assert.match(result.output, /EXECUTED:com.example.game/);
   assert.match(result.output, /CORES:6/);
   assert.equal(runtime.game, null);

@@ -13,7 +13,13 @@ param(
     [switch]$GpuSharing,
     [switch]$ShowWindow
 )
+# See run_windows_game.ps1 for why these are set here rather than by the caller.
+# That script also runs this one with &, so this one deliberately has no trap:
+# trapping here would turn a failed emulator start into a message and let the
+# caller continue as though Android had come up.
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
 . "$PSScriptRoot/../paths.ps1"
 . "$PSScriptRoot/gpu_validation.ps1"
 $env:ANDROID_ADB_SERVER_PORT = '5038'

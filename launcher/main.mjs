@@ -236,7 +236,7 @@ handler('state', () => publicState());
 handler('setupCheck', () => setup?.check());
 handler('setupStart', options => setup?.start(options));
 handler('setupCancel', () => setup?.cancel());
-handler('setupFeatures', () => openWindowsFeatures());
+handler('setupFeatures', () => openWindowsFeatures(root));
 handler('setupLicense', async () => { const error = await shell.openPath(path.join(app.isPackaged ? process.resourcesPath : directory, 'licenses/android-sdk.txt')); if (error) throw new Error(error); });
 handler('login', async () => { await login(); return syncMeta(); });
 handler('logout', async () => { for (const controller of controllers.values()) controller.abort(); token = ''; account = ''; await fs.rm(path.join(state.directory, 'meta-session.bin'), { force: true }); changed(); });

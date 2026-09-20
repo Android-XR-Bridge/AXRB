@@ -1,4 +1,9 @@
+# See run_windows_game.ps1 for why these are set here rather than by the caller.
+# The launcher parses this script's stdout as JSON, so nothing else may reach it.
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+trap { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }
 . "$PSScriptRoot/gpu_validation.ps1"
 $enabled = $false
 $reason = ''
