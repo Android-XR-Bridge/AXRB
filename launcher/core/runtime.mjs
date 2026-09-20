@@ -10,7 +10,7 @@ export function run(executable, args, { timeout = 120000, onOutput = () => {}, s
     if (signal?.aborted) { reject(new Error('Cancelled')); return; }
     const child = spawn(executable, args, { windowsHide: true, shell: false });
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
-    const stdout = { stream: `${child.pid}:stdout` }, stderr = { stream: `${child.pid}:stderr`, level: 'E' };
+    const stdout = { stream: `${child.pid}:stdout` }, stderr = { stream: `${child.pid}:stderr` };
     let output = '', errors = '', settled = false, truncated = false, drain = null;
     const timer = setTimeout(() => { child.kill(); finish(new Error('Operation timed out. Check the Android runtime and try again.')); }, timeout);
     const abort = () => { child.kill(); };
@@ -156,11 +156,24 @@ export class Runtime {
     const stdout = { stream: `${child.pid}:stdout`, tag: 'game launch' }, stderr = { stream: `${child.pid}:stderr`, tag: 'game launch', level: 'E' };
     child.stdout.on('data', text => { tail = (tail + text).slice(-4000); this.onOutput(text, stdout); });
     child.stderr.on('data', text => { tail = (tail + text).slice(-4000); this.onOutput(text, stderr); });
-    child.stdout.once('close', () => this.onOutput('', { ...stdout, end: true }));
-    child.stderr.once('close', () => this.onOutput('', { ...stderr, end: true }));
-    let finished = false;
-    const end = (code, error) => { if (finished) return; finished = true; this.child = null; this.game = null; this.fpsHudEvent = null; onExit(code, error || tail); };
-    child.on('error', e => end(1, e.message)); child.on('exit', code => end(code));
+    let finished = false, drain = null, stdoutEnded = false, stderrEnded = false;
+    const endStdout = () => { if (stdoutEnded) return; stdoutEnded = true; this.onOutput('', { ...stdout, end: true }); };
+    const endStderr = () => { if (stderrEnded) return; stderrEnded = true; this.onOutput('', { ...stderr, end: true }); };
+    child.stdout.once('close', endStdout);
+    child.stderr.once('close', endStderr);
+    const end = (code, error) => {
+      if (finished) return;
+      finished = true; clearTimeout(drain);
+      child.stdout.destroy(); child.stderr.destroy();
+      endStdout(); endStderr();
+      this.child = null; this.game = null; this.fpsHudEvent = null;
+      onExit(code, error || tail);
+    };
+    child.on('error', e => end(1, e.message));
+    // Like run(), drain briefly after exit rather than waiting indefinitely
+    // for an emulator or host descendant to release inherited pipe handles.
+    child.on('exit', code => { if (!finished) drain = setTimeout(() => end(code), 500); });
+    child.on('close', code => end(code));
   }
   async setFpsHud(enabled) {
     if (typeof enabled !== 'boolean') throw new Error('Invalid FPS HUD setting.');

@@ -7,7 +7,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { LiveDiagnostics } from '../core/live-diagnostics.mjs';
 import { collectDiagnostics } from '../core/diagnostics.mjs';
-import { run } from '../core/runtime.mjs';
+import { Runtime, run } from '../core/runtime.mjs';
 import { Setup } from '../core/setup.mjs';
 
 async function temporary(t) {
@@ -185,6 +185,66 @@ test('setup process output redacts split credentials without mixing stderr or lo
   assert.doesNotMatch(transcript + bundle, /process-private-value/);
   assert.match(transcript, /request access_token=\[redacted\] status=ready/);
   assert.match(transcript, /final partial message/);
+});
+
+test('runtime stderr preserves inferred info, warning and fatal severity', async () => {
+  const capture = new LiveDiagnostics({ directory: '.', getConfig: () => ({}) });
+  await run(process.execPath, ['-e', "process.stderr.write('startup complete\\nwarning: using fallback\\nfatal: renderer crashed\\n')"], {
+    onOutput: (text, metadata) => capture.write('launcher', text, { tag: 'runtime', ...metadata }),
+  });
+  assert.deepEqual(capture.snapshot().entries.map(({ level, text }) => ({ level, text })), [
+    { level: 'I', text: 'startup complete' },
+    { level: 'W', text: 'warning: using fallback' },
+    { level: 'F', text: 'fatal: renderer crashed' },
+  ]);
+});
+
+test('game exit publishes final fragments while inherited pipes stay open without flushing another stream', { skip: process.platform !== 'win32', timeout: 15000 }, async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'axrb-game-diagnostics-'));
+  const pidFile = path.join(directory, 'child.pid');
+  let child;
+  t.after(async () => {
+    child?.kill();
+    const pid = Number(await fs.readFile(pidFile, 'utf8').catch(() => '0'));
+    if (pid) { try { process.kill(pid); } catch {} }
+    await fs.rm(directory, { recursive: true, force: true, maxRetries: 30, retryDelay: 100 });
+  });
+  await fs.mkdir(path.join(directory, 'scripts/run'), { recursive: true });
+  const literal = value => `'${value.replaceAll("'", "''")}'`;
+  await fs.writeFile(path.join(directory, 'scripts/run/run_windows_game.ps1'), [
+    'param($Avd, $Port, $Sdk, $MemoryMB, $CpuCores, $Package, $Activity, $GameName, [switch]$FpsHud, $FpsHudEventName)',
+    `$out = ${literal(path.join(directory, 'child.out'))}`,
+    `$err = ${literal(path.join(directory, 'child.err'))}`,
+    "$p = Start-Process powershell.exe -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 60' -WindowStyle Hidden -PassThru -RedirectStandardOutput $out -RedirectStandardError $err",
+    `[IO.File]::WriteAllText(${literal(pidFile)}, [string]$p.Id)`,
+    '[Console]::Out.Write("final stdout fragment")',
+    '[Console]::Error.Write("final stderr fragment")',
+    'exit 7',
+  ].join('\n'));
+  const capture = new LiveDiagnostics({ directory, getConfig: () => ({}) });
+  const otherStream = { tag: 'runtime', stream: 'another-process:stdout' };
+  capture.write('launcher', 'concurrent access_to', otherStream);
+  const runtime = new Runtime(directory, { avd: 'test', port: 5580, sdk: directory, memoryMB: 8192, cpuCores: 4 },
+    (text, metadata) => capture.write('launcher', text, metadata));
+  const result = await new Promise(resolve => {
+    runtime.launch({ id: 'test', package: 'com.example.game', activity: 'com.example.game/.Main', name: 'Test' }, (code, output) => {
+      resolve({ code, output, entriesAtExit: capture.snapshot().entries });
+    });
+    child = runtime.child;
+  });
+  const pid = Number(await fs.readFile(pidFile, 'utf8'));
+  process.kill(pid, 0); // The descendant must still be alive when diagnostics finish.
+  assert.equal(result.code, 7);
+  assert.deepEqual(result.entriesAtExit.map(entry => entry.text).sort(), ['final stderr fragment', 'final stdout fragment']);
+  assert.match(result.output, /final stdout fragment/);
+  assert.match(result.output, /final stderr fragment/);
+  assert.equal(runtime.game, null);
+  capture.write('launcher', 'ken=peer-private-value status=ready\n', otherStream);
+  assert.doesNotMatch(capture.text(), /peer-private-value/);
+  assert.match(capture.text(), /concurrent access_token=\[redacted\] status=ready/);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(capture.snapshot().entries.filter(entry => entry.text === 'final stdout fragment').length, 1);
+  assert.equal(capture.snapshot().entries.filter(entry => entry.text === 'final stderr fragment').length, 1);
 });
 
 test('AVD discovery follows names across machine-specific ports and retires the old stream on changes', async t => {

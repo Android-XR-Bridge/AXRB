@@ -43,6 +43,10 @@ port 5038; it does not assume a fixed AVD name or device serial. Emulator, host
 and launcher output remains available when Android is offline. The timeline
 uses host receipt order and preserves Android timestamps separately.
 
+Game-launch output is drained for up to 500 ms before reporting exit, so
+inherited pipe handles do not hide final messages or stall completion.
+Other active diagnostic streams are not flushed.
+
 Capture continues with the panel closed and retains recent history after a
 game exits or the launcher restarts. Retention is bounded to 5,000 entries and
 approximately 2 MiB, stored in `diagnostics/recent.json` under the launcher
