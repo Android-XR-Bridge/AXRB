@@ -223,7 +223,7 @@ if (!smoke && (app.isPackaged || state.data.settings.managedDirectory || !await 
   Object.assign(runtime.settings, { sdk: path.join(managed, 'sdk'), avd: 'axrb-managed-api36', port: 5584 });
   setup = new Setup({ root, directory: managed, runtime,
     components: JSON.parse(await fs.readFile(path.join(directory, 'core/components.json'), 'utf8')),
-    save: async value => { state.data.settings.managedDirectory = value; await persist(); }, changed, debug });
+    save: async (value, installed) => { state.activateRuntime(value, runtime.settings, installed); await persist(); }, changed, debug });
   setup.environment();
 }
 try { if (safeStorage.isEncryptionAvailable()) token = safeStorage.decryptString(await fs.readFile(path.join(state.directory, 'meta-session.bin'))); } catch {}

@@ -6,6 +6,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { archivePath, extractZip } from '../core/archive.mjs';
 import { Setup, verify, officialDownload, avdConfig, hardwareRequirementsMet, setupPhase, supportedSystem } from '../core/setup.mjs';
+import { State } from '../core/state.mjs';
 
 function restoreSetupEnvironment(t) {
   const old = { ...process.env };
@@ -103,6 +104,7 @@ test('a slow Android shutdown does not discard a completed install', async t => 
     settings: { cpuCores: 4, memoryMB: 8192, avd: 'axrb-managed-api36' },
     online: async () => false,
     ensure: async () => {},
+    installed: async () => new Set(['com.axrb.openxrruntime']),
     adb: async args => {
       if (args[0] === 'emu' && args[1] === 'avd') return 'axrb-managed-api36\nOK';
       if (args.includes('path')) return 'package:/data/app/base.apk';
@@ -138,18 +140,28 @@ async function installationFixture(t) {
   await fs.writeFile(path.join(root, 'scripts/emulator/check_windows.ps1'),
     `Write-Output '{"hypervisor":true,"supportedGpu":true,"x64":true,"memoryGB":16}'`);
   const runtime = {
-    settings: { avd: 'axrb-managed-api36', sdk: path.join(current, 'sdk'), storageGB: 32, cpuCores: 4, memoryMB: 8192 },
+    settings: { managedDirectory: current, avd: 'axrb-managed-api36', sdk: path.join(current, 'sdk'), storageGB: 32, cpuCores: 4, memoryMB: 8192 },
     online: async () => false,
+    installed: async () => new Set(['com.axrb.openxrruntime', ...(runtime.settings.sdk === path.join(current, 'sdk') ? ['com.game.old', 'com.game.available'] : [])]),
     ensure: async () => {
       const image = path.join(process.env.ANDROID_AVD_HOME, 'axrb-managed-api36.avd/userdata-qemu.img');
       await fs.writeFile(image, 'new Android data', { flag: 'wx' }).catch(error => { if (error.code !== 'EEXIST') throw error; });
     },
     adb: async args => args.includes('path') ? 'package:/data/app/base.apk' : 'unrelated-avd\nOK',
   };
-  const setup = new Setup({ root, directory: current, runtime, components: [], save: async () => {}, changed() {} });
+  const state = new State(path.join(root, 'profile')); await state.load();
+  state.data.settings = runtime.settings;
+  state.data.games = [
+    { id: 'old', name: 'Saved game', package: 'com.game.old', installed: true, downloaded: true, owned: true, apk: path.join(root, 'downloads/game.apk') },
+    { id: 'available', name: 'Available game', package: 'com.game.available', installed: false, owned: true },
+    { id: 'removed', name: 'Removed game', package: 'com.game.removed', installed: true, downloaded: true },
+  ];
+  await state.save();
+  const setup = new Setup({ root, directory: current, runtime, components: [],
+    save: async (value, installed) => { state.activateRuntime(value, runtime.settings, installed); await state.save(); }, changed() {} });
   await setup.check();
   assert.equal(setup.status.phase, 'install', setup.status.error);
-  return { root, current, avd, config, setup };
+  return { root, current, avd, config, setup, state };
 }
 
 test('a fresh destination is independent of the saved disk and completion receipt', async t => {
@@ -234,4 +246,79 @@ test('a failed fresh install keeps the old disk available for reuse and retry', 
   assert.equal(setup.status.phase, 'ready', setup.status.error);
   assert.equal(await fs.readFile(path.join(avd, 'config.ini'), 'utf8'), config);
   assert.equal(await fs.readFile(path.join(avd, 'userdata-qemu.img'), 'utf8'), 'saved Android data');
+});
+
+test('failed provisioning preserves the active runtime and library across restart', async t => {
+  const { root, current, setup, state } = await installationFixture(t);
+  const before = structuredClone(state.data);
+  setup.runtime.ensure = async () => {
+    // Other launcher operations may save the profile while setup is running.
+    await state.save();
+    throw new Error('boot failed after provisioning');
+  };
+  const destination = path.join(root, 'failed-new-runtime');
+  await setup.start({ directory: destination, storageGB: 8, accepted: true });
+  await setup.task;
+  assert.equal(setup.status.phase, 'error');
+  assert.match(setup.status.error, /boot failed after provisioning/);
+  await fs.access(path.join(destination, 'AXRB Runtime/license-acceptance.json'));
+  const reopened = new State(state.directory); await reopened.load();
+  assert.deepEqual(reopened.data.settings, before.settings);
+  assert.deepEqual(reopened.data.games, before.games);
+  setup.runtime.settings = reopened.data.settings;
+  const restarted = new Setup({ root, directory: reopened.data.settings.managedDirectory, runtime: setup.runtime,
+    components: [], save: async () => {}, changed() {} });
+  restarted.environment(); await restarted.check();
+  assert.deepEqual(restarted.status.current, { directory: current, storageGB: 64 });
+});
+
+test('cancelling a fresh install does not replace the saved runtime', async t => {
+  const { root, setup, state } = await installationFixture(t);
+  const before = structuredClone(state.data);
+  setup.runtime.ensure = async () => { await state.save(); setup.cancel(); };
+  await setup.start({ directory: path.join(root, 'cancelled-runtime'), storageGB: 8, accepted: true });
+  await setup.task;
+  assert.equal(setup.status.phase, 'cancelled');
+  const reopened = new State(state.directory); await reopened.load();
+  assert.deepEqual(reopened.data.settings, before.settings);
+  assert.deepEqual(reopened.data.games, before.games);
+});
+
+test('activating a fresh disk refreshes installed flags without discarding the library', async t => {
+  const { root, setup, state } = await installationFixture(t);
+  const games = structuredClone(state.data.games);
+  const destination = path.join(root, 'new-library-runtime');
+  await setup.start({ directory: destination, storageGB: 8, accepted: true });
+  await setup.task;
+  assert.equal(setup.status.phase, 'ready', setup.status.error);
+  const reopened = new State(state.directory); await reopened.load();
+  assert.equal(reopened.data.settings.managedDirectory, path.join(destination, 'AXRB Runtime'));
+  assert.equal(reopened.data.settings.sdk, path.join(destination, 'AXRB Runtime/sdk'));
+  assert.equal(reopened.data.settings.storageGB, 8);
+  assert.deepEqual(reopened.data.games, games.map(game => ({ ...game, installed: false })));
+});
+
+test('reusing a disk reconciles the library with the apps actually on that disk', async t => {
+  const { current, setup, state } = await installationFixture(t);
+  const games = structuredClone(state.data.games);
+  await setup.start({ useCurrent: true, accepted: true });
+  await setup.task;
+  assert.equal(setup.status.phase, 'ready', setup.status.error);
+  const reopened = new State(state.directory); await reopened.load();
+  assert.equal(reopened.data.settings.managedDirectory, current);
+  assert.deepEqual(reopened.data.games, games.map(game => ({ ...game, installed: game.id !== 'removed' })));
+});
+
+test('an unavailable installed-app inventory never commits an empty library state', async t => {
+  const { root, setup, state } = await installationFixture(t);
+  const before = structuredClone(state.data);
+  setup.runtime.installed = async () => null;
+  await setup.start({ directory: path.join(root, 'disconnected-runtime'), storageGB: 8, accepted: true });
+  await setup.task;
+  assert.equal(setup.status.phase, 'error');
+  assert.match(setup.status.error, /disconnected/);
+  const reopened = new State(state.directory); await reopened.load();
+  assert.deepEqual(reopened.data.settings, before.settings);
+  assert.deepEqual(reopened.data.games, before.games);
+  await assert.rejects(fs.access(path.join(setup.directory, 'ready.json')), { code: 'ENOENT' });
 });

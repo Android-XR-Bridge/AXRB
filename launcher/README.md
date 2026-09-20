@@ -25,6 +25,11 @@ is rejected rather than overwritten. The old installation is left untouched, and
 its games and saves are not copied. The launcher library and login remain in the
 shared Windows user profile; choosing a new runtime folder does not reset them.
 
+The saved runtime changes only after setup succeeds. Failed or cancelled setup
+keeps the previous runtime selected after a launcher restart. Successful setup
+refreshes installed-game flags from the selected Android disk without removing
+library entries, ownership information or downloaded files.
+
 ## Build an installer
 
 From a configured Windows development checkout, run

@@ -168,9 +168,8 @@ export class Setup {
     }
     if (!Number.isInteger(storageGB) || storageGB < STORAGE_MIN_GB || storageGB > STORAGE_MAX_GB) throw new Error('Choose 8–256 GB of Android storage.');
     this.directory = selected;
-    this.runtime.settings.sdk = path.join(this.directory, 'sdk');
-    this.runtime.settings.avd = managedAvd;
-    this.runtime.settings.storageGB = storageGB;
+    // Setup settings are provisional until the selected disk is ready.
+    this.runtime.settings = { ...this.runtime.settings, sdk: path.join(this.directory, 'sdk'), avd: managedAvd, storageGB };
     this.environment();
     this.controller = new AbortController();
     this.update({ phase: 'download', directory: this.directory, storageGB, active: true, startedAt: Date.now(), cancelling: false, error: '', completed: 0, total: 0, logs: [] });
@@ -195,7 +194,6 @@ export class Setup {
       if (availableGB < requiredGB) throw new Error(`Setup needs ${Math.ceil(requiredGB)} GB free here (${availableGB.toFixed(1)} GB available). Choose another drive or a smaller Android disk.`);
     }
     await fs.writeFile(path.join(this.directory, 'license-acceptance.json'), JSON.stringify({ license: 'android-sdk-license', acceptedAt: new Date().toISOString() }));
-    await this.save(this.directory);
     for (const c of this.components) {
       signal.throwIfAborted();
       if (!c.sha256 && !c.sha1) throw new Error(`${c.name}: missing download checksum.`);
@@ -240,6 +238,7 @@ export class Setup {
     // A user-selected port can belong to another AVD. Never modify or stop it.
     if (await this.runtime.online()) throw new Error('The setup Android port is in use. Close that emulator and retry.');
     this.update({ phase: 'boot', component: 'Starting Android', completed: 0, total: 0, logs: [] });
+    let installed;
     try {
       await this.runtime.ensure({ onOutput: text => this.appendLog(text) });
       this.appendLog('Android boot completed; verifying GPU and ABI.');
@@ -247,6 +246,8 @@ export class Setup {
       this.update({ component: 'Installing AXRB runtime' });
       await this.runtime.adb(['install', '--no-incremental', '--force-queryable', '-r', path.join(this.root, 'out/android/runtime-arm64-v8a/axrb-openxr-runtime-debug.apk')], { timeout: 240000 });
       if (!(await this.runtime.adb(['shell', 'pm', 'path', 'com.axrb.openxrruntime'])).includes('package:')) throw new Error('Android did not register the AXRB runtime. Retry setup.');
+      installed = await this.runtime.installed();
+      if (!installed) throw new Error('Android disconnected before its installed games could be checked. Retry setup.');
       await this.runtime.adb(['shell', 'sync']);
       this.appendLog('AXRB runtime installed and synchronized.');
       signal.throwIfAborted();
@@ -268,6 +269,7 @@ export class Setup {
     }
     signal.throwIfAborted();
     await fs.writeFile(path.join(this.directory, 'ready.json'), JSON.stringify({ version: 1, runtimeHash: await this.runtimeHash(), completedAt: new Date().toISOString() }));
+    await this.save(this.directory, installed);
     this.update({ phase: 'ready', component: '', completed: 0, total: 0 });
   }
 }

@@ -18,6 +18,11 @@ export class State {
     this.writes = this.writes.catch(() => {}).then(write);
     return this.writes;
   }
+  activateRuntime(directory, settings, installed) {
+    this.data.settings = settings;
+    this.data.settings.managedDirectory = directory;
+    for (const game of this.data.games) game.installed = Boolean(game.package && installed.has(game.package));
+  }
   put(game) {
     const existing = this.data.games.find(g => g.id === game.id) || this.data.games.find(g => game.package && g.package === game.package);
     if (game.package) {
