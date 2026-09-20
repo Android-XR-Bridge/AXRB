@@ -40,26 +40,28 @@ export function permissionLabel(name) {
 // granted and `pm grant` refuses them, and a permission the package never
 // declared is accepted in silence without doing anything.
 export function parseRuntimePermissions(dumpsys) {
-  const lines = String(dumpsys ?? '').split(/\r?\n/);
   const found = new Map();
-  for (let index = 0; index < lines.length; index++) {
-    if (!/^\s*runtime permissions:\s*$/.test(lines[index])) continue;
-    for (const line of lines.slice(index + 1)) {
-      const entry = /^\s+([A-Za-z][A-Za-z0-9_.]*):\s*granted=(true|false)/.exec(line);
-      if (!entry) break;
-      // Several users can appear; a permission granted for any of them is live.
-      found.set(entry[1], (found.get(entry[1]) ?? false) || entry[2] === 'true');
-    }
+  let owner = false, runtime = false;
+  for (const line of String(dumpsys ?? '').split(/\r?\n/)) {
+    const user = /^\s*User (\d+):/.exec(line);
+    if (user) { owner = user[1] === '0'; runtime = false; continue; }
+    if (/^\s*runtime permissions:\s*$/.test(line)) { runtime = owner; continue; }
+    if (!runtime) continue;
+    const entry = /^\s+([A-Za-z][A-Za-z0-9_.]*):\s*granted=(true|false)/.exec(line);
+    if (!entry) { runtime = false; continue; }
+    // Match the owner user explicitly targeted by the managed guest's pm calls.
+    found.set(entry[1], entry[2] === 'true');
   }
   return [...found].map(([name, granted]) => ({ name, granted, label: permissionLabel(name) }))
     .sort((a, b) => a.label.localeCompare(b.label));
 }
-// A dialog waiting in the headless guest is the case the user cannot otherwise
-// see. The resumed activity names the package that owns it.
+// This is a device-wide notice, not attribution to the selected game.
+// Permission-management settings in the same package are not grant dialogs.
 export function parsePermissionPrompt(activities) {
   const line = /^.*topResumedActivity=.*$/m.exec(String(activities ?? ''))?.[0] ?? '';
   const match = /\bu\d+\s+([A-Za-z][A-Za-z0-9_.]*)\/(\S+?)[\s}]/.exec(line);
-  if (!match || !/permissioncontroller/i.test(match[1])) return null;
+  if (!match || !/(?:^|\.)permissioncontroller$/i.test(match[1]) ||
+      !/(?:^|\.)GrantPermissionsActivity$/.test(match[2])) return null;
   return { package: match[1], activity: match[2] };
 }
 // `pm grant` reports refusals as a Java stack trace; only its first line says

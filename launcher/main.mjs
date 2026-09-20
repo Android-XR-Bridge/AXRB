@@ -362,8 +362,7 @@ handler('permissions', async id => {
 handler('setPermission', async (id, permission, granted) => {
   const game = getGame(id);
   if (!await runtime.online()) throw new Error('Start Android first: permissions live on the virtual device.');
-  await runtime.setPermission(game.package, permission, granted);
-  return runtime.permissions(game.package);
+  return runtime.setPermission(game.package, permission, granted);
 });
 // Resizing rewrites the AVD's disk geometry, so Android has to be stopped and
 // its quick-boot snapshot discarded; the emulator then grows the partition on

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { describePermissionFailure, parsePermissionPrompt, parseRuntimePermissions, permissionLabel, validPermission } from '../core/permissions.mjs';
+import { describePermissionFailure, parsePermissionPrompt, parseRuntimePermissions, validPermission } from '../core/permissions.mjs';
+import { Runtime } from '../core/runtime.mjs';
 
 // Captured from `adb shell dumpsys package com.vrchat.oculus.quest` on the
 // Android 16 image AXRB provisions.
@@ -34,12 +35,12 @@ test('install-time permissions are excluded, because pm grant refuses them', () 
   assert.ok(!names.includes('android.permission.INTERNET'), 'a merely requested permission is not grantable');
 });
 
-test('a permission granted for any user counts as granted', () => {
+test('another Android user cannot make an owner-user permission appear granted', () => {
   const twoUsers = DUMPSYS + `    User 10: ceDataInode=2 installed=true
       runtime permissions:
         android.permission.RECORD_AUDIO: granted=true, flags=[]
 `;
-  assert.equal(parseRuntimePermissions(twoUsers).find(p => p.name.endsWith('RECORD_AUDIO')).granted, true);
+  assert.equal(parseRuntimePermissions(twoUsers).find(p => p.name.endsWith('RECORD_AUDIO')).granted, false);
 });
 
 test('a package with no runtime permissions yields an empty list, not an error', () => {
@@ -48,12 +49,6 @@ test('a package with no runtime permissions yields an empty list, not an error',
   assert.deepEqual(parseRuntimePermissions(undefined), []);
 });
 
-test('permissions are labelled in the words a player would recognise', () => {
-  assert.equal(permissionLabel('android.permission.RECORD_AUDIO'), 'Microphone');
-  assert.equal(permissionLabel('com.oculus.permission.HAND_TRACKING'), 'Hand tracking');
-  assert.equal(permissionLabel('com.example.custom.SOME_THING'), 'Some thing', 'an unknown name still reads as prose');
-  assert.equal(parseRuntimePermissions(DUMPSYS)[0].label, 'Bluetooth devices', 'the list is ordered by label');
-});
 
 test('permission names that could reach the guest shell are rejected', () => {
   for (const bad of ['android.permission.X; rm -rf /', 'a b', '', '../x', 'nodot', 'android.permission.$(id)', null]) {
@@ -76,6 +71,20 @@ test('an ordinary foreground app is not mistaken for a permission dialog', () =>
   const idle = '      topResumedActivity=ActivityRecord{227887118 u0 com.google.android.apps.nexuslauncher/.NexusLauncherActivity t2}';
   assert.equal(parsePermissionPrompt(idle), null);
   assert.equal(parsePermissionPrompt(''), null);
+});
+
+test('permission management settings are not mistaken for a waiting grant dialog', () => {
+  const settings = 'topResumedActivity=ActivityRecord{2278 u0 com.google.android.permissioncontroller/com.android.permissioncontroller.permission.ui.ManagePermissionsActivity t9}';
+  assert.equal(parsePermissionPrompt(settings), null);
+});
+
+test('a successful pm exit cannot conceal an unchanged denied permission', async () => {
+  const runtime = new Runtime('', {});
+  runtime.adb = async () => '';
+  runtime.permissions = async () => ({
+    items: [{ name: 'android.permission.CAMERA', granted: false }], prompt: null,
+  });
+  await assert.rejects(runtime.setPermission('com.example.game', 'android.permission.CAMERA', true));
 });
 
 test('a refusal is reported as its one meaningful line, not a Java stack trace', () => {

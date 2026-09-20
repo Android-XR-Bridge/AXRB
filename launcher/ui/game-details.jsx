@@ -22,7 +22,13 @@ export function GameDetails({ game, state, local, onClose, run, pending, setPage
     setExtra({ kind, items: result });
     if (kind === 'builds') setBuild(result[0]?.id || '');
   });
-  const setPermission = (name, granted) => operate(async () => setExtra({ kind: 'permissions', ...await call('setPermission', game.id, name, granted) }));
+  const setPermission = async (name, granted) => {
+    try { setExtra({ kind: 'permissions', ...await call('setPermission', game.id, name, granted) }); }
+    catch (error) {
+      try { setExtra({ kind: 'permissions', ...await call('permissions', game.id) }); } catch {}
+      throw error;
+    }
+  };
   return <Dialog open onOpenChange={open => { if (!open) onClose(); }}>
     <DialogContent id="details" aria-describedby={undefined} onCloseAutoFocus={event => { event.preventDefault(); if (returnFocus.current?.isConnected) returnFocus.current.focus(); }} className="max-h-[85vh] gap-0 overflow-y-auto p-0 sm:max-w-[520px]">
       <div className="px-6 pt-6 pr-14"><DialogTitle className="leading-snug">{game.name}</DialogTitle>{game.version && <div className="mt-1 text-xs text-muted-foreground">{game.version}</div>}</div>
@@ -53,20 +59,19 @@ export function GameDetails({ game, state, local, onClose, run, pending, setPage
           : pending.has(`game-${game.id}`) && <div role="status" className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" />Working…</div>}
         {extra?.kind === 'builds' && <div className="flex items-center gap-2 border-t pt-4">{extra.items.length ? <><Select value={build} onValueChange={setBuild}><SelectTrigger className="min-w-0 flex-1" aria-label="Quest build"><SelectValue /></SelectTrigger><SelectContent>{extra.items.map(b => <SelectItem key={b.id} value={b.id}>{b.version || b.code}</SelectItem>)}</SelectContent></Select><Button disabled={busy || Boolean(activeJob)} onClick={download}>Download</Button></> : <span className="text-muted-foreground">No builds available</span>}</div>}
         {extra?.kind === 'permissions' && <div className="border-t pt-4">
-          {extra.prompt && <p role="alert" className="mb-3 rounded-md bg-secondary p-3 text-xs">Android is showing a permission prompt right now. Allow what the game needs here, then relaunch it.</p>}
+          {extra.prompt && <p role="alert" className="mb-3 rounded-md bg-secondary p-3 text-xs">This Android device has a pending permission dialog, which may belong to another app. Relaunch the requesting app after changing its permissions.</p>}
           {extra.items.length ? <>
             <div className="mb-3 flex items-center justify-between gap-3">
-              <p className="text-xs text-muted-foreground">Android asks for these inside the headset. The emulator has no window, so answer them here.</p>
+              <p className="text-xs text-muted-foreground">Manage this game's runtime permissions for Android's main user. Relaunch the game after making changes.</p>
               <Button size="sm" variant="outline" disabled={busy || extra.items.every(p => p.granted)}
                 onClick={() => operate(async () => {
-                  let latest = extra;
-                  for (const item of extra.items.filter(p => !p.granted)) latest = { kind: 'permissions', ...await call('setPermission', game.id, item.name, true) };
-                  setExtra(latest); notify('Permissions allowed');
+                  for (const item of extra.items.filter(p => !p.granted)) await setPermission(item.name, true);
+                  notify('Permissions allowed');
                 })}>Allow all</Button>
             </div>
             {extra.items.map(item => <div key={item.name} className="flex items-center justify-between gap-3 py-2">
               <div className="min-w-0"><div className="text-sm">{item.label}</div><div className="mt-0.5 truncate text-xs text-muted-foreground" title={item.name}>{item.name}</div></div>
-              <Button size="sm" variant={item.granted ? 'ghost' : 'outline'} disabled={busy} onClick={() => setPermission(item.name, !item.granted)}>{item.granted ? 'Allowed' : 'Allow'}</Button>
+              <Button size="sm" variant={item.granted ? 'ghost' : 'outline'} disabled={busy} onClick={() => operate(() => setPermission(item.name, !item.granted))}>{item.granted ? 'Allowed' : 'Allow'}</Button>
             </div>)}
           </> : <p className="text-muted-foreground">This game asks for no permissions.</p>}
         </div>}

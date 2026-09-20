@@ -103,7 +103,7 @@ function Invoke-Adb([string[]]$Arguments, [int]$TimeoutSeconds = 60, [int]$Attem
                 }
                 throw
             }
-            Write-Output "Android startup diagnostic: adb $($Arguments -join ' ') failed ($failure); retry $attempt of $($Attempts - 1)."
+            Write-Host "Android startup diagnostic: adb $($Arguments -join ' ') failed ($failure); retry $attempt of $($Attempts - 1)."
             Start-Sleep -Seconds 3
         }
     }
@@ -325,8 +325,15 @@ switch ($Action) {
                 # word as "adb reports the transport offline": they are different
                 # faults and reading 'offline' for both hid which one occurred.
                 [string]$adbText = ''
-                try { $adbText = ((Invoke-ExternalWithTimeout $adb @('-s', $serial, 'get-state') 10) -join '').Trim() }
-                catch { $adbText = 'unreachable: ' + (($_.Exception.Message -replace '\s+', ' ').Trim()) }
+                $adbOffline = $false
+                try {
+                    $adbText = ((Invoke-ExternalWithTimeout $adb @('-s', $serial, 'get-state') 10) -join '').Trim()
+                    $adbOffline = $adbText -eq 'offline'
+                } catch {
+                    $failure = ($_.Exception.Message -replace '\s+', ' ').Trim()
+                    $adbOffline = $failure -match '\bdevice offline\b'
+                    $adbText = if ($adbOffline) { "offline ($failure)" } else { "unreachable: $failure" }
+                }
                 if (!$adbText) { $adbText = 'no answer' }
                 if ($bootFailure -and $bootText -eq '') { $bootText = "(getprop failed: $bootFailure)" }
                 Write-Output ("Android startup diagnostic: {0}s elapsed; adb={1}; boot={2}; processExited={3}" -f [int]((Get-Date) - $startedAt).TotalSeconds, $adbText, $bootText, $process.HasExited)
@@ -339,7 +346,7 @@ switch ($Action) {
                     if (!$seen) { $seen = 'none' }
                     Write-Output "Android startup diagnostic: expecting $serial; adb currently lists: $seen"
                 }
-                if ($adbText -eq 'offline') {
+                if ($adbOffline) {
                     if (!$adbReconnectAttempted) {
                         Write-Output 'Android startup diagnostic: reconnecting offline ADB transport.'
                         try { Invoke-ExternalWithTimeout $adb @('reconnect', 'offline') 10 | Out-Null } catch { }

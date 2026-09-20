@@ -80,10 +80,15 @@ export class Runtime {
     validPermission(permission);
     if (typeof granted !== 'boolean') throw new Error('Invalid permission state.');
     try {
-      await this.adb(['shell', 'pm', granted ? 'grant' : 'revoke', packageName, permission], { timeout: 20000 });
+      await this.adb(['shell', 'pm', granted ? 'grant' : 'revoke', '--user', '0', packageName, permission], { timeout: 20000 });
     } catch (error) {
       throw new Error(describePermissionFailure(error.message, permission));
     }
+    const result = await this.permissions(packageName);
+    if (result.items.find(item => item.name === permission)?.granted !== granted) {
+      throw new Error(describePermissionFailure('', permission));
+    }
+    return result;
   }
   async inspect(apk, { allowSplit = false } = {}) {
     const data = JSON.parse(await run('python', [path.join(this.root, 'launcher/inspect_apk.py'), '--apk', apk, '--sdk', this.settings.sdk, ...(allowSplit ? ['--allow-split'] : [])]));
