@@ -7,6 +7,8 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { LiveDiagnostics } from '../core/live-diagnostics.mjs';
 import { collectDiagnostics } from '../core/diagnostics.mjs';
+import { run } from '../core/runtime.mjs';
+import { Setup } from '../core/setup.mjs';
 
 async function temporary(t) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'axrb-diagnostics-'));
@@ -45,7 +47,7 @@ function simulatedAdb(devices) {
   return { spawnProcess, streams, children };
 }
 
-test('stream fragments stay private until complete and oversized secrets are discarded', () => {
+test('stream fragments are reassembled and oversized credentials retain surrounding context', () => {
   const capture = new LiveDiagnostics({ directory: '.', getConfig: () => ({}) });
   capture.write('android', '09-21 03:04:05.678  123  456 E AndroidRuntime: access_to');
   assert.deepEqual(capture.snapshot().entries, []);
@@ -54,10 +56,11 @@ test('stream fragments stay private until complete and oversized secrets are dis
   assert.equal(entry.level, 'E'); assert.equal(entry.pid, '123'); assert.equal(entry.tag, 'AndroidRuntime');
   assert.equal(entry.guestTime, '09-21 03:04:05.678');
   assert.doesNotMatch(capture.text(), /secret-value/);
-  capture.write('launcher', `access_token=${'x'.repeat(9000)}`);
-  capture.write('launcher', 'SENSITIVE_REMAINDER\nnext safe event\n');
+  capture.write('launcher', `request started access_token=${'x'.repeat(9000)}`);
+  capture.write('launcher', 'SENSITIVE_REMAINDER status=ready\nnext safe event\n');
   assert.doesNotMatch(capture.text(), /SENSITIVE_REMAINDER|x{20}/);
   assert.match(capture.text(), /next safe event/);
+  assert.match(capture.text(), /request started access_token=\[redacted\] status=ready/);
 });
 
 test('bounded capture keeps newest events with monotonic cursors and reports discarded context', () => {
@@ -100,6 +103,88 @@ test('file capture follows appends and truncation without repeating earlier cont
   await capture.tailFiles(directory); await capture.tailFiles(directory);
   await fs.writeFile(file, 'new\n'); await capture.tailFiles(directory);
   assert.deepEqual(capture.snapshot().entries.filter(entry => entry.source === 'host').map(entry => entry.text), ['first event', 'second event', 'new']);
+});
+
+test('tail windows recover credential prefixes and keep the surrounding log message', async t => {
+  const directory = await temporary(t), logs = path.join(directory, 'logs/game');
+  await fs.mkdir(logs, { recursive: true });
+  const file = path.join(logs, 'host.log');
+  for (const limit of [64 * 1024, 128 * 1024]) {
+    const line = 'request access_token=boundary-private-value status=ready\n';
+    const offset = line.indexOf('boundary-private-value') + 5;
+    await fs.writeFile(file, line + '\n'.repeat(limit - (line.length - offset)));
+    let output;
+    if (limit === 64 * 1024) {
+      const capture = new LiveDiagnostics({ directory, getConfig: () => ({}) });
+      await capture.tailFiles(directory); await capture.tailFiles(directory);
+      output = capture.text();
+    } else output = await collectDiagnostics({ dataHome: directory });
+    assert.doesNotMatch(output, /private-value/);
+    assert.match(output, /request access_token=\[redacted\] status=ready/);
+  }
+});
+
+test('rotating stderr cannot flush an unfinished stdout credential', async t => {
+  const directory = await temporary(t), logs = path.join(directory, 'logs/emulator');
+  await fs.mkdir(logs, { recursive: true });
+  const stdout = path.join(logs, 'emulator.stdout.log'), stderr = path.join(logs, 'emulator.stderr.log');
+  await fs.writeFile(stdout, 'boot request access_to');
+  await fs.writeFile(stderr, 'previous warning\n');
+  const capture = new LiveDiagnostics({ directory, getConfig: () => ({}) });
+  await capture.tailFiles(directory);
+  await fs.writeFile(stderr, 'reset\n');
+  await capture.tailFiles(directory);
+  await fs.appendFile(stdout, 'ken=rotation-private-value status=ready\nuseful unfinished message');
+  await capture.tailFiles(directory);
+  await fs.writeFile(stdout, 'new boot\n');
+  await capture.tailFiles(directory);
+  assert.doesNotMatch(capture.text(), /rotation-private-value/);
+  assert.match(capture.text(), /boot request access_token=\[redacted\] status=ready/);
+  assert.match(capture.text(), /useful unfinished message/);
+  assert.match(capture.text(), /reset/);
+  assert.match(capture.text(), /new boot/);
+});
+
+test('long ordinary lines and unfinished messages are retained rather than omitted', () => {
+  const capture = new LiveDiagnostics({ directory: '.', getConfig: () => ({}) });
+  const message = `driver details ${'frame=ready; '.repeat(1000)}last detail`;
+  capture.write('host', message);
+  capture.flush('host');
+  assert.equal(capture.snapshot().entries.map(entry => entry.text).join(''), message);
+});
+
+test('setup process output redacts split credentials without mixing stderr or losing final fragments', async t => {
+  const directory = await temporary(t);
+  const stdoutSeen = path.join(directory, 'stdout-seen'), stderrSeen = path.join(directory, 'stderr-seen');
+  const capture = new LiveDiagnostics({ directory, getConfig: () => ({}) });
+  const setup = new Setup({ root: directory, directory, runtime: { settings: {} }, changed() {},
+    onOutput: (text, metadata) => capture.write('launcher', text, { tag: 'setup', ...metadata }) });
+  const script = `
+    const fs = require('node:fs/promises');
+    const wait = async file => { while (!(await fs.access(file).then(() => true, () => false))) await new Promise(resolve => setTimeout(resolve, 10)); };
+    (async () => {
+      process.stdout.write('request access_to');
+      await wait(${JSON.stringify(stdoutSeen)});
+      process.stderr.write('stderr warning\\n');
+      await wait(${JSON.stringify(stderrSeen)});
+      process.stdout.write('ken=process-private-value status=ready\\nfinal partial message');
+    })();
+  `;
+  await run(process.execPath, ['-e', script], { timeout: 5000, onOutput: (text, metadata) => {
+    setup.appendLog(text, metadata);
+    if (text.includes('request access_to')) fs.writeFile(stdoutSeen, '').catch(() => {});
+    if (text.includes('stderr warning')) fs.writeFile(stderrSeen, '').catch(() => {});
+  } });
+  await until(() => capture.text().includes('final partial message'));
+  assert.doesNotMatch(capture.text(), /process-private-value/);
+  assert.match(capture.text(), /request access_token=\[redacted\] status=ready/);
+  assert.match(capture.text(), /stderr warning/);
+  assert.match(capture.text(), /final partial message/);
+  const transcript = setup.status.logs.join('\n');
+  const bundle = await collectDiagnostics({ dataHome: directory, setupLogs: setup.status.logs, liveLogs: capture.text() });
+  assert.doesNotMatch(transcript + bundle, /process-private-value/);
+  assert.match(transcript, /request access_token=\[redacted\] status=ready/);
+  assert.match(transcript, /final partial message/);
 });
 
 test('AVD discovery follows names across machine-specific ports and retires the old stream on changes', async t => {

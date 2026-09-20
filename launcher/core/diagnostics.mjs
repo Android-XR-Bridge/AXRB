@@ -27,7 +27,8 @@ export function redact(text, options) {
   value = value.replace(/\b(?:OC|FRL|EA)[A-Za-z0-9_|-]{30,}\b/g, '[redacted]')
     .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, 'Bearer [redacted]')
     .replace(/([?&](?:access_token|token|auth|signature|sig|key|x-amz-[\w-]+|x-goog-[\w-]+)=)[^\s&#"']+/gi, '$1[redacted]')
-    .replace(/((?:"|')?(?:access_token|refresh_token|password|authorization|client_secret)(?:"|')?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}]+)/gi, '$1[redacted]');
+    .replace(/((?:"|')?(?:access_token|refresh_token|password|client_secret)(?:"|')?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}]+)/gi, '$1[redacted]')
+    .replace(/((?:"|')?(?:proxy-)?authorization(?:"|')?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|(?:(?:Basic|Bearer)[ \t]+)?[^\s,;}]+)/gi, '$1[redacted]');
   return value;
 }
 const KILOBYTE = 1024;
@@ -49,14 +50,26 @@ export function condense(text, maxLines = 250) {
   flush();
   return (kept.length > maxLines ? [`[… ${kept.length - maxLines} earlier lines omitted …]`, ...kept.slice(-maxLines)] : kept).join('\n');
 }
+// Recover the first tail line's prefix when it is within one extra window.
+// Keep the fragment if no newline is found: redaction is best effort, not a
+// reason to omit useful output or scan an arbitrarily large file.
+export async function diagnosticTailOffset(handle, size, limit) {
+  const offset = Math.max(0, size - limit);
+  if (!offset) return 0;
+  const length = Math.min(offset, limit), start = offset - length;
+  const buffer = Buffer.allocUnsafe(length);
+  const { bytesRead } = await handle.read(buffer, 0, length, start);
+  return start + buffer.subarray(0, bytesRead).lastIndexOf(10) + 1;
+}
 async function readTail(file, limit = 128 * KILOBYTE) {
   const handle = await fs.open(file, 'r');
   try {
     const { size } = await handle.stat();
-    const length = Math.min(size, limit);
-    const buffer = Buffer.alloc(length);
-    await handle.read(buffer, 0, length, size - length);
-    return (size > length ? `[… ${size - length} earlier bytes omitted …]\n` : '') + buffer.toString('utf8');
+    const offset = await diagnosticTailOffset(handle, size, limit);
+    const length = size - offset;
+    const buffer = Buffer.allocUnsafe(length);
+    const { bytesRead } = await handle.read(buffer, 0, length, offset);
+    return (offset ? `[… ${offset} earlier bytes omitted …]\n` : '') + buffer.subarray(0, bytesRead).toString('utf8');
   } finally { await handle.close(); }
 }
 export function diagnosticSources(dataHome) {

@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { downloadFile, checkSpace } from './download.mjs';
 import { extractZip } from './archive.mjs';
 import { run, powershellArgs } from './runtime.mjs';
+import { redact } from './diagnostics.mjs';
 
 export const exists = file => fs.access(file).then(() => true, () => false);
 export const hardwareRequirementsMet = hardware => Boolean(hardware?.supportedGpu && hardware.x64 && hardware.memoryGB >= 12);
@@ -86,6 +87,7 @@ export class Setup {
   constructor({ root, directory, runtime, components, save, changed, debug = false, shutdownGraceMs = 180000, onOutput = () => {} }) {
     Object.assign(this, { root, directory, runtime, components, save, changed, debug, shutdownGraceMs, onOutput });
     this.status = { phase: 'checking', directory, current: null, storageGB: runtime.settings?.storageGB ?? 32, completed: 0, total: 0, active: false, startedAt: 0, logs: [], debug };
+    this.logPartials = new Map();
   }
   update(value) {
     if (value.phase && value.phase !== this.status.phase) this.onOutput(`Setup: ${value.phase}\n`);
@@ -94,11 +96,19 @@ export class Setup {
     if (Object.keys(value).every(k => ['completed', 'total'].includes(k)) && Date.now() - (this.lastProgress || 0) < 100) return;
     this.lastProgress = Date.now(); this.changed();
   }
-  appendLog(text) {
-    this.onOutput(String(text || ''));
-    const lines = String(text || '').replaceAll('\r', '').split('\n').filter(Boolean);
-    if (!lines.length) return;
-    const logs = [...(this.status.logs || []), ...lines].slice(-120);
+  appendLog(text, metadata) {
+    this.onOutput(String(text || ''), metadata);
+    const stream = metadata?.stream;
+    const lines = ((stream ? this.logPartials.get(stream) || '' : '') + String(text || '')).replaceAll('\r', '').split('\n');
+    if (stream && !metadata.end) {
+      const rest = lines.pop();
+      if (rest.length > 2 * 1024 * 1024) { lines.push(rest); this.logPartials.delete(stream); }
+      else if (rest) this.logPartials.set(stream, rest);
+      else this.logPartials.delete(stream);
+    } else if (stream) this.logPartials.delete(stream);
+    const completed = lines.filter(Boolean).map(line => redact(line));
+    if (!completed.length) return;
+    const logs = [...(this.status.logs || []), ...completed].slice(-120);
     const now = Date.now();
     if (now - (this.lastLogUpdate || 0) < 150 && logs.length < 120) {
       this.status.logs = logs;
@@ -243,7 +253,7 @@ export class Setup {
     this.update({ phase: 'boot', component: 'Starting Android', completed: 0, total: 0, logs: [] });
     let installed;
     try {
-      await this.runtime.ensure({ onOutput: text => this.appendLog(text) });
+      await this.runtime.ensure({ onOutput: (text, metadata) => this.appendLog(text, metadata) });
       this.appendLog('Android boot completed; verifying GPU and ABI.\n');
       signal.throwIfAborted();
       this.update({ component: 'Installing AXRB runtime' });

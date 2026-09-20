@@ -353,7 +353,6 @@ handler('play', async id => { const game = getGame(id); if (busy) throw new Erro
   if (!game.installed) throw new Error('Install the game first.');
   liveDiagnostics.append('launcher', `Launching ${game.package}`, { tag: 'game' });
   runtime.launch(game, async (code, tail) => {
-    liveDiagnostics.flush('launcher');
     liveDiagnostics.append('launcher', `Game process exited (${code ?? 'unknown'}).`, { tag: 'game', level: code ? 'E' : 'I' });
     if (code) {
       const error = message(new Error(tail || `Game launcher exited with code ${code}.`));

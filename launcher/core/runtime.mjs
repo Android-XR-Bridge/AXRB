@@ -10,14 +10,17 @@ export function run(executable, args, { timeout = 120000, onOutput = () => {}, s
     if (signal?.aborted) { reject(new Error('Cancelled')); return; }
     const child = spawn(executable, args, { windowsHide: true, shell: false });
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
+    const stdout = { stream: `${child.pid}:stdout` }, stderr = { stream: `${child.pid}:stderr`, level: 'E' };
     let output = '', errors = '', settled = false, truncated = false, drain = null;
     const timer = setTimeout(() => { child.kill(); finish(new Error('Operation timed out. Check the Android runtime and try again.')); }, timeout);
     const abort = () => { child.kill(); };
     signal?.addEventListener('abort', abort, { once: true });
     function finish(error) { if (settled) return; settled = true; clearTimeout(timer); clearTimeout(drain); signal?.removeEventListener('abort', abort); child.stdout.destroy(); child.stderr.destroy(); error ? reject(error) : resolve(output); }
     function complete(code) { finish(signal?.aborted ? new Error('Cancelled') : requireCompleteOutput && truncated ? new Error('Device file list exceeds the supported size; no incomplete import was saved.') : code === 0 && !(rejectStderr && errors.trim()) ? null : new Error((errors || output || `Process exited with code ${code}`).slice(-3000))); }
-    child.stdout.on('data', b => { const next = output + b.toString(); truncated ||= next.length > 8 * 1024 * 1024; output = next.slice(-8 * 1024 * 1024); onOutput(b.toString()); });
-    child.stderr.on('data', b => { errors = (errors + b.toString()).slice(-16384); onOutput(b.toString()); });
+    child.stdout.on('data', b => { const next = output + b.toString(); truncated ||= next.length > 8 * 1024 * 1024; output = next.slice(-8 * 1024 * 1024); onOutput(b.toString(), stdout); });
+    child.stderr.on('data', b => { errors = (errors + b.toString()).slice(-16384); onOutput(b.toString(), stderr); });
+    child.stdout.once('close', () => onOutput('', { ...stdout, end: true }));
+    child.stderr.once('close', () => onOutput('', { ...stderr, end: true }));
     child.stdout.on('error', () => {}); child.stderr.on('error', () => {});
     child.on('error', e => finish(new Error(`Could not start ${path.basename(executable)}: ${e.code || 'unknown error'}`)));
     // `close` waits for every writer on the stdio pipes to let go. A process we
@@ -150,8 +153,11 @@ export class Runtime {
     this.child = child; this.game = game.id;
     let tail = '';
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
-    child.stdout.on('data', text => { tail = (tail + text).slice(-4000); this.onOutput(text, { tag: 'game launch' }); });
-    child.stderr.on('data', text => { tail = (tail + text).slice(-4000); this.onOutput(text, { tag: 'game launch', level: 'E' }); });
+    const stdout = { stream: `${child.pid}:stdout`, tag: 'game launch' }, stderr = { stream: `${child.pid}:stderr`, tag: 'game launch', level: 'E' };
+    child.stdout.on('data', text => { tail = (tail + text).slice(-4000); this.onOutput(text, stdout); });
+    child.stderr.on('data', text => { tail = (tail + text).slice(-4000); this.onOutput(text, stderr); });
+    child.stdout.once('close', () => this.onOutput('', { ...stdout, end: true }));
+    child.stderr.once('close', () => this.onOutput('', { ...stderr, end: true }));
     let finished = false;
     const end = (code, error) => { if (finished) return; finished = true; this.child = null; this.game = null; this.fpsHudEvent = null; onExit(code, error || tail); };
     child.on('error', e => end(1, e.message)); child.on('exit', code => end(code));

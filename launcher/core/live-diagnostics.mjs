@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
-import { redact, diagnosticSources } from './diagnostics.mjs';
+import { redact, diagnosticSources, diagnosticTailOffset } from './diagnostics.mjs';
 
 export const MAX_DIAGNOSTIC_ENTRIES = 5000;
 const MAX_BYTES = 2 * 1024 * 1024;
@@ -16,8 +16,12 @@ function format(entry) {
   return `${entry.receivedAt} [${entry.source}/${entry.level}]${entry.guestTime ? ` [guest ${entry.guestTime}]` : ''}${entry.pid ? ` pid=${entry.pid}` : ''}${entry.tag ? ` ${entry.tag}:` : ''} ${entry.text}`;
 }
 
-// Capture belongs to the application, not the panel or the running game. All
-// retained data is bounded and redacted before it reaches disk or the renderer.
+function streamKey(source, metadata) {
+  return `${source}:${metadata.stream || ''}:${metadata.tag || ''}:${metadata.level || ''}`;
+}
+
+// Capture belongs to the application, not the panel or the running game.
+// Retained data is bounded and gets best-effort redaction before disk or renderer.
 export class LiveDiagnostics {
   constructor({ directory, getConfig, onUpdate = () => {}, spawnProcess = spawn, maxEntries = MAX_DIAGNOSTIC_ENTRIES, maxBytes = MAX_BYTES }) {
     Object.assign(this, { directory, getConfig, onUpdate, spawnProcess, maxEntries, maxBytes });
@@ -54,47 +58,45 @@ export class LiveDiagnostics {
       if (!raw) continue;
       const match = source === 'android' ? raw.match(logcatLine) : null;
       const level = match?.[3] || metadata.level || (/\b(?:fatal|panic)\b/i.test(raw) ? 'F' : /\b(?:error|failed|exception)\b/i.test(raw) ? 'E' : /\bwarn(?:ing)?\b/i.test(raw) ? 'W' : 'I');
-      const entry = {
-        id: ++this.lastId, receivedAt: metadata.receivedAt || new Date().toISOString(), source,
+      const fields = {
+        receivedAt: metadata.receivedAt || new Date().toISOString(), source,
         level: LEVELS.has(level) ? level : 'I',
-        tag: redact(String(match?.[4]?.trim() || metadata.tag || '').slice(0, 256)),
+        tag: redact(String(match?.[4]?.trim() || metadata.tag || '')).slice(0, 256),
         pid: match?.[2] || (metadata.pid == null ? null : String(metadata.pid).slice(0, 32)),
         guestTime: match?.[1] || (metadata.guestTime == null ? null : String(metadata.guestTime).slice(0, 64)),
-        text: redact((match?.[5] ?? raw).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')).slice(0, MAX_LINE),
       };
-      const bytes = Buffer.byteLength(JSON.stringify(entry));
-      this.entries.push({ entry, bytes }); this.bytes += bytes;
-      while (this.entries.length - this.head > this.maxEntries || this.bytes > this.maxBytes) {
-        this.bytes -= this.entries[this.head++].bytes; this.dropped++;
+      const safe = redact((match?.[5] ?? raw).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, ''));
+      // Redact before splitting so long lines keep their non-secret context.
+      for (let offset = 0; offset < safe.length; offset += MAX_LINE) {
+        const entry = { id: ++this.lastId, ...fields, text: safe.slice(offset, offset + MAX_LINE) };
+        const bytes = Buffer.byteLength(JSON.stringify(entry));
+        this.entries.push({ entry, bytes }); this.bytes += bytes;
+        while (this.entries.length - this.head > this.maxEntries || this.bytes > this.maxBytes) {
+          this.bytes -= this.entries[this.head++].bytes; this.dropped++;
+        }
+        if (this.head > this.maxEntries) { this.entries = this.entries.slice(this.head); this.head = 0; }
+        this.dirty = true;
       }
-      if (this.head > this.maxEntries) { this.entries = this.entries.slice(this.head); this.head = 0; }
-      this.dirty = true;
     }
     this.notify();
   }
   write(source, chunk, metadata = {}) {
-    const key = `${source}:${metadata.tag || ''}:${metadata.level || ''}`;
-    const previous = this.partials.get(key);
-    let text = String(chunk);
-    // A discarded oversized line may contain the remainder of a credential.
-    // Do not emit any of it, including the chunk that finally ends the line.
-    if (previous?.discard) {
-      const newline = text.indexOf('\n');
-      if (newline < 0) return;
-      text = text.slice(newline + 1);
-    } else text = (previous?.text || '') + text;
+    const key = streamKey(source, metadata);
+    const text = (this.partials.get(key)?.text || '') + String(chunk);
     const lines = text.split('\n');
-    const rest = lines.pop();
-    for (const line of lines) {
-      if (line.length > MAX_LINE) this.append(source, '[Oversized diagnostic line omitted]', { ...metadata, level: 'W' });
-      else this.append(source, line, metadata);
-    }
-    if (rest.length > MAX_LINE) this.append(source, '[Oversized diagnostic line omitted]', { ...metadata, level: 'W' });
-    this.partials.set(key, { source, metadata, text: rest.length > MAX_LINE ? '' : rest, discard: rest.length > MAX_LINE, at: Date.now() });
+    let rest = lines.pop();
+    for (const line of lines) this.append(source, line, metadata);
+    // Bound unfinished output without throwing away the whole line. Extremely
+    // long unterminated lines are redacted in chunks on a best-effort basis.
+    if (rest.length > MAX_BYTES) { this.append(source, rest, metadata); rest = ''; }
+    if (rest) this.partials.set(key, { source, metadata, text: rest });
+    else this.partials.delete(key);
+    if (metadata.end) this.flush(source, metadata);
   }
-  flush(source) {
-    for (const [key, partial] of this.partials) if (!source || partial.source === source) {
-      if (partial.text && !partial.discard) this.append(partial.source, partial.text, partial.metadata);
+  flush(source, metadata) {
+    const selected = metadata ? streamKey(source, metadata) : null;
+    for (const [key, partial] of this.partials) if (selected ? key === selected : !source || partial.source === source) {
+      this.append(partial.source, partial.text, partial.metadata);
       this.partials.delete(key);
     }
   }
@@ -126,7 +128,11 @@ export class LiveDiagnostics {
       if (signature !== this.configSignature) {
         this.configSignature = signature; this.generation++;
         for (const child of this.children) child.kill();
-        this.stream = null; this.nextConnect = 0; this.files.clear(); this.flush();
+        this.stream = null; this.nextConnect = 0;
+        for (const cursor of this.files.values()) this.write(cursor.source, cursor.decoder.end(), { tag: cursor.label, end: true });
+        this.files.clear();
+        this.flush('android', { tag: 'logcat' });
+        this.flush('launcher', { tag: 'logcat', level: 'W' });
         this.android.lastReceivedAt = null;
         this.setAndroid('waiting', `Waiting for ${config.avd || 'the configured Android device'}.`, '');
       }
@@ -158,13 +164,14 @@ export class LiveDiagnostics {
         const stat = await handle.stat();
         let cursor = this.files.get(file);
         if (!cursor || cursor.ino !== stat.ino || stat.size < cursor.offset || (stat.size === cursor.offset && stat.mtimeMs !== cursor.mtime)) {
-          if (cursor) this.flush(source);
-          cursor = { offset: Math.max(0, stat.size - READ_BYTES), ino: stat.ino, mtime: stat.mtimeMs, decoder: new StringDecoder('utf8') };
+          if (cursor) this.write(source, cursor.decoder.end(), { tag: label, end: true });
+          cursor = { offset: await diagnosticTailOffset(handle, stat.size, READ_BYTES), ino: stat.ino, mtime: stat.mtimeMs, decoder: new StringDecoder('utf8'), source, label };
           this.files.set(file, cursor);
           if (cursor.offset) this.append(source, `[Reading the last ${READ_BYTES} bytes of ${label}]`, { tag: label, level: 'W' });
         }
         if (stat.size - cursor.offset > 4 * READ_BYTES) {
-          cursor.offset = stat.size - READ_BYTES; cursor.decoder = new StringDecoder('utf8'); this.flush(source);
+          this.write(source, cursor.decoder.end(), { tag: label, end: true });
+          cursor.offset = await diagnosticTailOffset(handle, stat.size, READ_BYTES); cursor.decoder = new StringDecoder('utf8');
           this.append(source, `[Skipped older ${label} output to keep capture responsive]`, { tag: label, level: 'W' });
         }
         const length = Math.min(READ_BYTES, stat.size - cursor.offset);
@@ -267,7 +274,8 @@ export class LiveDiagnostics {
       child.once('error', e => { error = e.message; });
       child.once('close', code => {
         if (!this.active || generation !== this.generation) return;
-        this.flush('android'); this.flush('launcher'); this.stream = null; this.nextConnect = Date.now() + 3000;
+        this.flush('android', { tag: 'logcat' }); this.flush('launcher', { tag: 'logcat', level: 'W' });
+        this.stream = null; this.nextConnect = Date.now() + 3000;
         this.setAndroid(code ? 'error' : 'disconnected', error.trim() || 'Logcat disconnected; waiting to reconnect.');
       });
     } catch (error) {
@@ -299,6 +307,7 @@ export class LiveDiagnostics {
     for (const child of this.children) child.kill();
     await this.connectTask;
     await this.loopTask;
+    for (const cursor of this.files.values()) this.write(cursor.source, cursor.decoder.end(), { tag: cursor.label, end: true });
     this.stream = null; this.flush();
     this.setAndroid('stopped', 'Capture stopped; retained logs remain available.');
     await this.persist();

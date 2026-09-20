@@ -47,9 +47,13 @@ Capture continues with the panel closed and retains recent history after a
 game exits or the launcher restarts. Retention is bounded to 5,000 entries and
 approximately 2 MiB, stored in `diagnostics/recent.json` under the launcher
 profile (`%APPDATA%\AXRB` by default). Older entries are discarded, not archived.
-Known credentials and Windows identity are redacted, but game output can still
-contain personal information. Nothing is uploaded automatically. The existing
-Settings upload action requires a preview and publishes that reviewed report.
+Redaction is best effort: known credentials (including Basic and Bearer auth) and
+Windows identity are masked. Streams are kept separate, and long or unfinished
+messages retain their non-secret context instead of being omitted wholesale.
+Tail reads recover line prefixes within one extra read window; exceptionally
+long or fragmented credentials can still escape recognition. Review reports
+before sharing. Nothing is uploaded automatically. The Settings upload action
+requires a preview and publishes that reviewed report.
 
 ## Build an installer
 

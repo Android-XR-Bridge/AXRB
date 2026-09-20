@@ -34,6 +34,20 @@ test('redaction handles an account name with regex metacharacters', () => {
   assert.match(output, /C:\\Users\\<user>\\logs/);
 });
 
+test('Basic authorization is redacted without hiding ordinary Basic messages', () => {
+  const credential = Buffer.from('demo-user:private-password').toString('base64');
+  const output = redact([
+    `request Authorization: Basic ${credential} status=401`,
+    `{"authorization": "Basic ${credential}", "status": 401}`,
+    `Proxy-Authorization: bAsIc ${credential}`,
+    'Basic graphics support is available',
+  ].join('\n'));
+  assert.doesNotMatch(output, new RegExp(credential));
+  assert.match(output, /request Authorization:.*status=401/);
+  assert.match(output, /"status": 401/);
+  assert.match(output, /Basic graphics support is available/);
+});
+
 test('the bundle carries the useful logs, redacted, and never the game library', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'axrb-diag-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
