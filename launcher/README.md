@@ -101,6 +101,14 @@ Source components are in `ui/`, with shared shadcn components in `ui/components/
   SHA-256 for verification before installation. The download folder is selectable.
 - **Game actions (⋯):** Versions, add-ons, patching, content imports and installation
   updates are in the game's menu. Runtime settings are collapsed under Settings.
+- **Android permissions:** With Android running, open an installed game's menu
+  and choose **Android permissions**. These controls manage runtime permissions
+  for Android's main user (user 0), not install-time permissions or other users.
+  **Allow** grants a permission; **Allowed** revokes it. **Allow all** applies
+  grants in sequence and keeps successful changes if Android refuses a later one.
+  Grant state is re-read from Android; a successful command alone is not treated
+  as success. A pending-dialog notice is device-wide and may belong to another
+  app. Relaunch the requesting app after changing its permissions.
 - **Add-ons:** Ownership must be returned by Meta before a separate DLC download
   is enabled. Some DLC is only an entitlement to content inside the base game,
   with no downloadable file. Entitlement and asset-discovery compatibility inside
