@@ -35,7 +35,7 @@ export async function zipSize(file, directory, { signal, limit = 256 * 1024 ** 3
   });
 }
 
-export async function extractZip(file, directory, { signal, progress = () => {}, limit = 16 * 1024 ** 3 } = {}) {
+export async function extractZip(file, directory, { signal, progress = () => {}, limit = 16 * 1024 ** 3, entries } = {}) {
   await fs.mkdir(directory, { recursive: true });
   const zip = await new Promise((resolve, reject) => yauzl.open(file, { lazyEntries: true }, (err, result) => err ? reject(err) : resolve(result)));
   let total = 0, done = 0, active = false, settled = false;
@@ -49,6 +49,7 @@ export async function extractZip(file, directory, { signal, progress = () => {},
       active = true;
       try {
         signal?.throwIfAborted();
+        if (entries && !entries.includes(entry.fileName)) { active = false; zip.readEntry(); return; }
         const target = archivePath(directory, entry.fileName);
         const mode = entry.externalFileAttributes >>> 16;
         if ((mode & 0xf000) === 0xa000) throw new Error('Archive contains a symbolic link');

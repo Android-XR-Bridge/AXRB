@@ -72,6 +72,20 @@ Distribute the source archive alongside the MIT-licensed launcher installer.
 Code signing uses electron-builder's standard certificate environment variables;
 without a signing certificate, the installer is unsigned.
 
+Release preparation downloads Khronos's official `OpenXR.Loader.1.1.60.nupkg`
+and verifies its pinned SHA-256 before extracting only the Windows x64 desktop
+loader. `openxr_loader.dll` is bundled beside `axrb-host-bridge.exe` and recorded
+in `distribution.json`. The loader uses the system's active OpenXR runtime;
+SteamVR's private loader is neither required nor bundled.
+
+The host tries `AXRB_OPENXR_LOADER` first (a developer/debug override), then an
+absolute path to the DLL beside the host, then ordinary Windows DLL lookup for
+unbundled development builds. A failed override falls through to those defaults.
+Paths support Unicode, and diagnostics report each attempted loader location
+and its Windows error code. If no loader is available, startup stops. A bundled
+loader does not replace the requirement to install and configure an OpenXR
+runtime for the headset.
+
 ## Develop
 
 Requires Windows x64, Visual Studio 2022 Build Tools with **Desktop development

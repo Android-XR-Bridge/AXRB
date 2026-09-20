@@ -54,9 +54,29 @@ not bundled. Download tokens remain in the main process and are not persisted.
 The embedded Python 3.14.3 distribution includes its PSF license as
 `runtime/tools/python/LICENSE.txt`. The clock adapter includes MinHook's BSD
 license in `runtime/licenses/MinHook.txt`. Khronos OpenXR and Vulkan headers are
-used under Apache-2.0 (Copyright 2015?2026 The Khronos Group Inc.); see
+used under Apache-2.0 (Copyright 2015-2026 The Khronos Group Inc.); see
 `licenses/Apache-2.0.txt`. LLVM/libc++ notices for the NDK runtime are included in
 `licenses/LLVM-NDK.txt`.
+
+The Windows x64 desktop `openxr_loader.dll` is redistributed unmodified from
+Khronos Group's `OpenXR.Loader.1.1.60.nupkg`, matching the OpenXR header version.
+Source and release: https://github.com/KhronosGroup/OpenXR-SDK/releases/tag/release-1.1.60
+(source commit https://github.com/KhronosGroup/OpenXR-SDK/tree/64f2b37c8c6da3d83c9b4d11865ba1fb752cb8ec).
+The Khronos loader portions are dual-licensed under `Apache-2.0 OR MIT`;
+AXRB selects Apache-2.0, whose text is included in `licenses/Apache-2.0.txt`.
+Package SHA-256: `93c800cfe3269a19683fe6fef51236c16a164c641a6903eff84c6b2816afe556`.
+Only `native/x64/release/bin/openxr_loader.dll` is included, beside the host
+executable. The loader discovers the system's active OpenXR runtime; no SteamVR
+loader binary is redistributed.
+
+The loader incorporates JsonCpp for manifest parsing, vendored as version 1.9.6
+in the pinned OpenXR source. JsonCpp is available under MIT or public domain;
+AXRB selects MIT for worldwide redistribution. Its complete upstream copyright
+and license terms are included in `licenses/JsonCpp.txt`, copied from
+https://github.com/KhronosGroup/OpenXR-SDK/blob/64f2b37c8c6da3d83c9b4d11865ba1fb752cb8ec/src/external/jsoncpp/LICENSE.
+The incorporated JsonCpp sources additionally carry these notices:
+Copyright 2007-2011 Baptiste Lepilleur and The JsonCpp Authors;
+Copyright (C) 2016 InfoTeCS JSC. All rights reserved.
 
 Google's Android emulator, platform tools, build tools and Google APIs system image
 are downloaded directly from Google after acceptance of the Android SDK license;
