@@ -40,6 +40,7 @@
   ::-webkit-scrollbar { width: 8px; height: 8px; }
   ::-webkit-scrollbar-thumb { background: #3b3b3b; border-radius: 4px; }
 }
+body { padding-bottom: var(--diagnostics-height, 0px); }
 progress { appearance: none; height: 3px; width: 100%; overflow: hidden; border-radius: 2px; }
 progress::-webkit-progress-bar { background: #333; }
 progress::-webkit-progress-value { background: #ddd; }

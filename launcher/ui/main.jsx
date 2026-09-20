@@ -12,6 +12,7 @@ import { Downloads } from './downloads';
 import { GameDetails } from './game-details';
 import { Quest } from './quest';
 import { Toasts } from './toasts';
+import { DebugPanel } from './diagnostics';
 import './style.css';
 
 function App() {
@@ -79,4 +80,4 @@ function App() {
   </>;
 }
 
-createRoot(document.getElementById('root')).render(<App />);
+createRoot(document.getElementById('root')).render(<><App /><DebugPanel /></>);

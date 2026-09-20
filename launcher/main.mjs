@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, safeStorage, session } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, shell, safeStorage, session, clipboard } from 'electron';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +12,7 @@ import { loadLibraryArtwork } from './core/artwork.mjs';
 import { Quest } from './core/quest.mjs';
 import { importGameZip } from './core/game-files.mjs';
 import { collectDiagnostics, uploadDiagnostics } from './core/diagnostics.mjs';
+import { LiveDiagnostics } from './core/live-diagnostics.mjs';
 
 // Keep the packaged app in Electron GUI mode even when launched from a shell
 // that uses ELECTRON_RUN_AS_NODE for other tooling.
@@ -28,6 +29,13 @@ if (!app.requestSingleInstanceLock()) app.quit();
 app.on('second-instance', () => { window?.show(); window?.focus(); });
 let window, authWindow, state, runtime, token = '', account = '', busy = false;
 let setup;
+let liveDiagnostics, reviewedDiagnostics = null;
+let quitting = false;
+app.on('before-quit', event => {
+  if (!liveDiagnostics || quitting) return;
+  event.preventDefault(); quitting = true;
+  liveDiagnostics.stop().finally(() => app.quit());
+});
 const controllers = new Map();
 const searchResults = new Map();
 let artworkTask;
@@ -54,9 +62,18 @@ function store() { if (!token) throw new Error('Sign in to Meta first.'); return
 function handler(name, callback) {
   ipcMain.handle(`axrb:${name}`, async (event, ...args) => {
     if (event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('Untrusted launcher request.');
+    const started = Date.now(), trace = !['state', 'diagnosticsRead', 'diagnostics', 'copyText'].includes(name);
+    if (trace) liveDiagnostics?.append('launcher', `${name} started`, { tag: 'operation' });
     try {
       if (setup && setup.status.phase !== 'ready' && ['play', 'install', 'uninstall', 'import', 'patch', 'settings', 'questDevices', 'questGames', 'questImport', 'importZip'].includes(name)) throw new Error('Complete runtime setup first.');
-      return { ok: true, value: await callback(...args) }; } catch (error) { return { ok: false, error: message(error) }; }
+      const value = await callback(...args);
+      if (trace) liveDiagnostics?.append('launcher', `${name} completed (${Date.now() - started} ms)`, { tag: 'operation' });
+      return { ok: true, value };
+    } catch (error) {
+      const text = message(error);
+      if (trace) liveDiagnostics?.append('launcher', `${name} failed: ${text}`, { level: 'E', tag: 'operation' });
+      return { ok: false, error: text };
+    }
   });
 }
 async function exclusive(callback) { if (busy) throw new Error('Wait for the current install or patch to finish.'); busy = true; changed(); try { return await callback(); } finally { busy = false; changed(); } }
@@ -214,7 +231,7 @@ state.data.settings = { sdk: path.join(process.env.LOCALAPPDATA || '', 'Android/
   memoryMB: 8192, cpuCores: 4, downloadDir: path.join(app.getPath('downloads'), 'AXRB'), ovrportCli: '',
   precomposeProjectionLayers: false,
   guestClock: await exists(path.join(root, 'out/clock/Release/axrb_clock_launcher.exe')) ? 'TscCorrected' : 'Default', ...state.data.settings };
-runtime = new Runtime(root, state.data.settings);
+runtime = new Runtime(root, state.data.settings, (text, metadata) => liveDiagnostics?.write('launcher', text, { tag: 'runtime', ...metadata }));
 if (!smoke && (app.isPackaged || state.data.settings.managedDirectory || !await exists(path.join(state.data.settings.sdk, 'emulator/emulator.exe')))) {
   const managed = state.data.settings.managedDirectory || path.join(process.env.LOCALAPPDATA, 'AXRB Runtime');
   // The setup receipt persists the managed root; derive all runtime paths from
@@ -223,9 +240,16 @@ if (!smoke && (app.isPackaged || state.data.settings.managedDirectory || !await 
   Object.assign(runtime.settings, { sdk: path.join(managed, 'sdk'), avd: 'axrb-managed-api36', port: 5584 });
   setup = new Setup({ root, directory: managed, runtime,
     components: JSON.parse(await fs.readFile(path.join(directory, 'core/components.json'), 'utf8')),
-    save: async (value, installed) => { state.activateRuntime(value, runtime.settings, installed); await persist(); }, changed, debug });
+    save: async (value, installed) => { state.activateRuntime(value, runtime.settings, installed); await persist(); }, changed, debug,
+    onOutput: (text, metadata) => liveDiagnostics?.write('launcher', text, { tag: 'setup', ...metadata }) });
   setup.environment();
 }
+liveDiagnostics = new LiveDiagnostics({
+  directory: path.join(state.directory, 'diagnostics'),
+  getConfig: () => ({ sdk: runtime.settings.sdk, avd: runtime.settings.avd, port: runtime.settings.port, dataHome: process.env.AXRB_DATA_HOME || path.join(root, 'out') }),
+  onUpdate: () => { if (window && !window.isDestroyed()) window.webContents.send('axrb:diagnostics'); },
+});
+await liveDiagnostics.start();
 try { if (safeStorage.isEncryptionAvailable()) token = safeStorage.decryptString(await fs.readFile(path.join(state.directory, 'meta-session.bin'))); } catch {}
 window = new BrowserWindow({ width: 1320, height: 880, minWidth: 920, minHeight: 640, title: 'AXRB', icon: path.join(directory, 'assets/axrb.ico'), backgroundColor: '#141414',
   autoHideMenuBar: true, webPreferences: { preload: path.join(directory, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false } });
@@ -233,6 +257,14 @@ window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 window.webContents.on('will-navigate', event => event.preventDefault());
 window.webContents.session.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
 handler('state', () => publicState());
+handler('diagnosticsRead', (afterId = 0) => {
+  if (!Number.isSafeInteger(afterId) || afterId < 0) throw new Error('Invalid diagnostic cursor.');
+  return liveDiagnostics.snapshot(afterId);
+});
+handler('copyText', text => {
+  if (typeof text !== 'string' || Buffer.byteLength(text, 'utf8') > 4 * 1024 * 1024) throw new Error('Clipboard text is too large.');
+  return clipboard.writeText(text);
+});
 handler('setupCheck', () => setup?.check());
 handler('setupStart', options => setup?.start(options));
 handler('setupCancel', () => setup?.cancel());
@@ -319,7 +351,10 @@ handler('patch', id => exclusive(async () => {
 }));
 handler('play', async id => { const game = getGame(id); if (busy) throw new Error('Wait for installation to finish.');
   if (!game.installed) throw new Error('Install the game first.');
+  liveDiagnostics.append('launcher', `Launching ${game.package}`, { tag: 'game' });
   runtime.launch(game, async (code, tail) => {
+    liveDiagnostics.flush('launcher');
+    liveDiagnostics.append('launcher', `Game process exited (${code ?? 'unknown'}).`, { tag: 'game', level: code ? 'E' : 'I' });
     if (code) {
       const error = message(new Error(tail || `Game launcher exited with code ${code}.`));
       state.data.jobs.unshift({ id: randomUUID(), gameId: id, name: game.name, status: 'failed', stage: 'Launch', error });
@@ -392,14 +427,29 @@ handler('openFolder', async id => { const game = getGame(id); const target = gam
 handler('openStore', async id => shell.openExternal(id ? `https://www.meta.com/experiences/${appId(id)}/` : 'https://www.meta.com/experiences/'));
 // Uploading publishes the logs, so this only ever runs from an explicit click,
 // and the bundle is offered for review before it leaves the machine.
-handler('diagnostics', async ({ upload = false } = {}) => {
+handler('diagnostics', async ({ upload = false, save = false } = {}) => {
+  if (upload) {
+    if (!reviewedDiagnostics) throw new Error('Preview the diagnostics report before uploading it.');
+    const bundle = reviewedDiagnostics;
+    return { bundle, url: await uploadDiagnostics(bundle, { endpoint: state.data.settings.diagnosticsEndpoint || undefined }) };
+  }
   const bundle = await collectDiagnostics({
     dataHome: process.env.AXRB_DATA_HOME || path.join(root, 'out'),
     version: app.getVersion(), settings: state.data.settings,
     setupLogs: setup?.status.logs ?? [], hardware: setup?.status.hardware ?? null,
+    liveLogs: liveDiagnostics.text(),
   });
-  if (!upload) return { bundle };
-  return { bundle, url: await uploadDiagnostics(bundle, { endpoint: state.data.settings.diagnosticsEndpoint || undefined }) };
+  if (save) {
+    const result = await dialog.showSaveDialog(window, {
+      title: 'Save diagnostics report', defaultPath: `AXRB-diagnostics-${new Date().toISOString().replaceAll(':', '-')}.txt`,
+      filters: [{ name: 'Text report', extensions: ['txt'] }],
+    });
+    if (result.canceled || !result.filePath) return { bundle, path: null };
+    await fs.writeFile(result.filePath, bundle, 'utf8');
+    return { bundle, path: result.filePath };
+  }
+  reviewedDiagnostics = bundle;
+  return { bundle };
 });
 const uiErrors = [];
 if (smoke) window.webContents.on('console-message', details => { if (details.level === 'error') uiErrors.push(details.message); });

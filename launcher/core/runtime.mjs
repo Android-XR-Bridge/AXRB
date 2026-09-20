@@ -59,10 +59,10 @@ export function validPackage(value) {
   return value;
 }
 export class Runtime {
-  constructor(root, settings) { this.root = root; this.settings = settings; this.child = null; this.game = null; }
+  constructor(root, settings, onOutput = () => {}) { this.root = root; this.settings = settings; this.onOutput = onOutput; this.child = null; }
   adb(args, options) { return run(path.join(this.settings.sdk, 'platform-tools/adb.exe'), ['-s', `emulator-${this.settings.port}`, ...args], options); }
   async online() { try { return (await this.adb(['get-state'], { timeout: 2500 })).trim() === 'device'; } catch { return false; } }
-  async ensure({ onOutput = () => {} } = {}) {
+  async ensure({ onOutput = this.onOutput } = {}) {
     if (await this.online()) {
       const name = (await this.adb(['emu', 'avd', 'name'])).split(/\r?\n/)[0].trim();
       if (name !== this.settings.avd) throw new Error(`Android port is occupied by ${name}. Select that AVD or stop it first.`);
@@ -149,8 +149,9 @@ export class Runtime {
     const child = spawn('powershell.exe', args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     this.child = child; this.game = game.id;
     let tail = '';
-    child.stdout.on('data', b => { tail = (tail + b).slice(-4000); });
-    child.stderr.on('data', b => { tail = (tail + b).slice(-4000); });
+    child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
+    child.stdout.on('data', text => { tail = (tail + text).slice(-4000); this.onOutput(text, { tag: 'game launch' }); });
+    child.stderr.on('data', text => { tail = (tail + text).slice(-4000); this.onOutput(text, { tag: 'game launch', level: 'E' }); });
     let finished = false;
     const end = (code, error) => { if (finished) return; finished = true; this.child = null; this.game = null; this.fpsHudEvent = null; onExit(code, error || tail); };
     child.on('error', e => end(1, e.message)); child.on('exit', code => end(code));

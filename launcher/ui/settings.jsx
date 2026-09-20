@@ -72,16 +72,16 @@ export function Settings({ state, run, pending, notify }) {
       <div className="flex items-center justify-between gap-4">
         <div>
           <div>Diagnostics</div>
-          <p className="text-xs text-muted-foreground">Emulator and OpenXR host logs, for bug reports. Your Windows user name and PC name are removed first. Uploads go to a public paste service and expire after 30 days.</p>
+          <p className="text-xs text-muted-foreground">Android, emulator, OpenXR host and launcher logs. Preview before sharing: known credentials and Windows identity are redacted, but game output may still contain personal information. Uploads are public and expire after 30 days.</p>
         </div>
         <div className="flex shrink-0 gap-2">
           <Button type="button" variant="outline" disabled={pending.has('diagnostics')}
             onClick={() => run('diagnostics', async () => setReport({ ...await call('diagnostics', { upload: false }), url: '' }))}>Preview</Button>
-          <Button type="button" variant="outline" disabled={pending.has('diagnostics')}
+          <Button type="button" variant="outline" disabled={pending.has('diagnostics') || !report?.bundle || Boolean(report.url)}
             onClick={() => run('diagnostics', async () => {
               const result = await call('diagnostics', { upload: true });
               setReport(result);
-              try { await navigator.clipboard.writeText(result.url); notify('Log link copied'); } catch { notify('Log uploaded'); }
+              try { await call('copyText', result.url); notify('Log link copied'); } catch { notify('Log uploaded'); }
             })}>Upload &amp; copy link</Button>
         </div>
       </div>

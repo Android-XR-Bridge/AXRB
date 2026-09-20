@@ -83,16 +83,19 @@ async function installationAt(directory) {
 }
 
 export class Setup {
-  constructor({ root, directory, runtime, components, save, changed, debug = false, shutdownGraceMs = 180000 }) {
-    Object.assign(this, { root, directory, runtime, components, save, changed, debug, shutdownGraceMs });
+  constructor({ root, directory, runtime, components, save, changed, debug = false, shutdownGraceMs = 180000, onOutput = () => {} }) {
+    Object.assign(this, { root, directory, runtime, components, save, changed, debug, shutdownGraceMs, onOutput });
     this.status = { phase: 'checking', directory, current: null, storageGB: runtime.settings?.storageGB ?? 32, completed: 0, total: 0, active: false, startedAt: 0, logs: [], debug };
   }
   update(value) {
+    if (value.phase && value.phase !== this.status.phase) this.onOutput(`Setup: ${value.phase}\n`);
+    if (value.error && value.error !== this.status.error) this.onOutput(`Setup failed: ${value.error}\n`, { level: 'E' });
     Object.assign(this.status, value);
     if (Object.keys(value).every(k => ['completed', 'total'].includes(k)) && Date.now() - (this.lastProgress || 0) < 100) return;
     this.lastProgress = Date.now(); this.changed();
   }
   appendLog(text) {
+    this.onOutput(String(text || ''));
     const lines = String(text || '').replaceAll('\r', '').split('\n').filter(Boolean);
     if (!lines.length) return;
     const logs = [...(this.status.logs || []), ...lines].slice(-120);
@@ -241,7 +244,7 @@ export class Setup {
     let installed;
     try {
       await this.runtime.ensure({ onOutput: text => this.appendLog(text) });
-      this.appendLog('Android boot completed; verifying GPU and ABI.');
+      this.appendLog('Android boot completed; verifying GPU and ABI.\n');
       signal.throwIfAborted();
       this.update({ component: 'Installing AXRB runtime' });
       await this.runtime.adb(['install', '--no-incremental', '--force-queryable', '-r', path.join(this.root, 'out/android/runtime-arm64-v8a/axrb-openxr-runtime-debug.apk')], { timeout: 240000 });
@@ -249,7 +252,7 @@ export class Setup {
       installed = await this.runtime.installed();
       if (!installed) throw new Error('Android disconnected before its installed games could be checked. Retry setup.');
       await this.runtime.adb(['shell', 'sync']);
-      this.appendLog('AXRB runtime installed and synchronized.');
+      this.appendLog('AXRB runtime installed and synchronized.\n');
       signal.throwIfAborted();
     } finally {
       const name = await this.runtime.adb(['emu', 'avd', 'name']).catch(() => '');
@@ -264,7 +267,7 @@ export class Setup {
         // again. A lock left behind is cleaned up by the next emulator start.
         const deadline = Date.now() + this.shutdownGraceMs;
         while (Date.now() < deadline && await exists(lock)) await new Promise(resolve => setTimeout(resolve, 500));
-        if (await exists(lock)) this.appendLog('Android is still shutting down in the background; setup is complete and you can start it now.');
+        if (await exists(lock)) this.appendLog('Android is still shutting down in the background; setup is complete and you can start it now.\n');
       }
     }
     signal.throwIfAborted();

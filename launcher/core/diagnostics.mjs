@@ -18,11 +18,16 @@ export function redactionPatterns({ user = os.userInfo().username, computer = os
   if (computer) patterns.push([new RegExp(`(^|[^A-Za-z0-9_-])${escape(computer)}(?![A-Za-z0-9_-])`, 'gi'), '$1<computer>']);
   return patterns;
 }
+const defaultRedactionPatterns = redactionPatterns();
 export function redact(text, options) {
   let value = String(text ?? '');
   // Order matters: the full home directory, then the account name inside a
   // Users path, then any standalone mention, then the machine name.
-  for (const [pattern, replacement] of redactionPatterns(options)) value = value.replace(pattern, replacement);
+  for (const [pattern, replacement] of options ? redactionPatterns(options) : defaultRedactionPatterns) value = value.replace(pattern, replacement);
+  value = value.replace(/\b(?:OC|FRL|EA)[A-Za-z0-9_|-]{30,}\b/g, '[redacted]')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, 'Bearer [redacted]')
+    .replace(/([?&](?:access_token|token|auth|signature|sig|key|x-amz-[\w-]+|x-goog-[\w-]+)=)[^\s&#"']+/gi, '$1[redacted]')
+    .replace(/((?:"|')?(?:access_token|refresh_token|password|authorization|client_secret)(?:"|')?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}]+)/gi, '$1[redacted]');
   return value;
 }
 const KILOBYTE = 1024;
@@ -67,13 +72,14 @@ export function diagnosticSources(dataHome) {
 }
 // The library file is deliberately absent: it is megabytes of cover art and a
 // record of everything the user owns, none of which helps diagnose a failure.
-export async function collectDiagnostics({ dataHome, version = '', settings = {}, setupLogs = [], hardware = null, now = () => new Date() } = {}) {
+export async function collectDiagnostics({ dataHome, version = '', settings = {}, setupLogs = [], hardware = null, liveLogs = '', now = () => new Date() } = {}) {
   const sections = [`AXRB diagnostics ${now().toISOString()}`,
     `launcher ${version}; ${process.platform} ${os.release()}; ${os.arch()}; node ${process.versions.node}`];
   if (hardware) sections.push(`hardware ${JSON.stringify(hardware)}`);
   const { managedDirectory, sdk, downloadDir, ovrportCli, ...safeSettings } = settings;
   sections.push(`settings ${JSON.stringify({ ...safeSettings, managed: Boolean(managedDirectory) })}`);
   if (setupLogs.length) sections.push(`--- setup transcript ---\n${setupLogs.join('\n')}`);
+  if (liveLogs) sections.push(`--- live diagnostics (host receipt order) ---\n${liveLogs}`);
   for (const [label, file] of diagnosticSources(dataHome)) {
     try { sections.push(`--- ${label} ---\n${condense(await readTail(file))}`); }
     catch (error) { sections.push(`--- ${label} ---\n(unavailable: ${error.code || error.message})`); }

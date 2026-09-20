@@ -30,6 +30,27 @@ keeps the previous runtime selected after a launcher restart. Successful setup
 refreshes installed-game flags from the selected Android disk without removing
 library entries, ownership information or downloaded files.
 
+## Live diagnostics
+
+Open **Debug** at the bottom of the launcher during setup or gameplay. Resize
+the panel by dragging its top edge, or focus the separator and use the arrow
+keys. Search messages, tags or process IDs, and filter by source or severity.
+**Pause** freezes the display, not capture. **Copy visible** copies matching
+lines; **Save report** writes the full diagnostics bundle to a local text file.
+
+Android capture discovers the configured AVD through the isolated ADB server on
+port 5038; it does not assume a fixed AVD name or device serial. Emulator, host
+and launcher output remains available when Android is offline. The timeline
+uses host receipt order and preserves Android timestamps separately.
+
+Capture continues with the panel closed and retains recent history after a
+game exits or the launcher restarts. Retention is bounded to 5,000 entries and
+approximately 2 MiB, stored in `diagnostics/recent.json` under the launcher
+profile (`%APPDATA%\AXRB` by default). Older entries are discarded, not archived.
+Known credentials and Windows identity are redacted, but game output can still
+contain personal information. Nothing is uploaded automatically. The existing
+Settings upload action requires a preview and publishes that reviewed report.
+
 ## Build an installer
 
 From a configured Windows development checkout, run

@@ -1,5 +1,28 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { clipboard } from 'electron';
+
+// This must exercise the button and OS clipboard together: a renderer-only
+// clipboard call can appear wired correctly but fail under Electron permissions.
+export async function diagnosticsSmoke(window) {
+  const js = code => window.webContents.executeJavaScript(code);
+  const wait = async predicate => {
+    const deadline = Date.now() + 6000;
+    while (!await predicate()) {
+      if (Date.now() > deadline) throw new Error('Diagnostics clipboard action did not complete.');
+      await new Promise(resolve => setTimeout(resolve, 30));
+    }
+  };
+  await wait(() => js(`Boolean(document.querySelector('button[aria-controls="debug-content"]'))`));
+  await js(`document.querySelector('button[aria-controls="debug-content"]').click()`);
+  await wait(() => js(`Boolean(document.querySelector('[data-log-source]'))`));
+  const expected = await js(`document.querySelector('[data-log-source]').lastElementChild.textContent`);
+  await clipboard.writeText('AXRB clipboard regression: waiting for the Copy visible button');
+  await js(`Array.from(document.querySelectorAll('button')).find(button => button.textContent === 'Copy visible').click()`);
+  await wait(async () => (await clipboard.readText()).includes(expected));
+  await js(`document.querySelector('button[aria-controls="debug-content"]').click()`);
+  console.log('AXRB diagnostics smoke passed: visible log copied through the native clipboard.');
+}
 
 // Exercise the production bundle in sandboxed Electron. Uses a separate profile;
 // no authentication, installs, patching, or game launches.
@@ -31,6 +54,7 @@ export async function uiSmoke(window, directory, snapshot, errors) {
   async function capture(name) { await tick(); await fs.writeFile(path.join(directory, `${name}.png`), (await wc.capturePage()).toPNG()); }
 
   await check(`Boolean(document.querySelector('#library-search'))`, 'Library did not load');
+  await diagnosticsSmoke(window);
   await check(`Array.from(document.querySelectorAll('button')).some(b => b.textContent === 'Install ZIP')`, 'ZIP install action missing');
   if (await js(`Boolean(document.querySelector('h1, footer'))`)) throw new Error('Unexpected decorative heading/footer');
   await click('[data-nav="quest"]');
