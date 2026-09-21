@@ -28,7 +28,7 @@ if ($AxrbPortableRoot) {
         throw 'Portable launches must use the managed SDK inside the portable folder.'
     }
     $Sdk = $env:ANDROID_HOME
-    if (!$PSBoundParameters.ContainsKey('Avd')) { $Avd = 'axrb-managed-api36' }
+    if (!$PSBoundParameters.ContainsKey('Avd')) { $Avd = $(if ($AxrbPortableSettings.avd) { $AxrbPortableSettings.avd } else { 'axrb-managed-api36' }) }
     if (!$PSBoundParameters.ContainsKey('Port')) { $Port = $(if ($AxrbPortableSettings.port) { $AxrbPortableSettings.port } else { 5584 }) }
     if (!$PSBoundParameters.ContainsKey('ApiLevel')) { $ApiLevel = 36 }
     if (!$PSBoundParameters.ContainsKey('Abi')) { $Abi = 'arm64-v8a' }

@@ -48,6 +48,29 @@ export function configurePortable(app, root) {
   process.chdir(root);
 }
 
+// Windows prunes its own %TEMP%, but a portable folder has no such janitor, so
+// scratch left by earlier runs would grow on the drive forever. The single
+// instance lock means no other AXRB is using this folder while the sweep runs.
+export async function sweepPortableTemp(root, maxAgeMs = 7 * 24 * 60 * 60 * 1000) {
+  if (!root) return 0;
+  const temporary = path.join(root, 'temp'), cutoff = Date.now() - maxAgeMs;
+  let entries;
+  try { entries = await fs.readdir(portableOutput(root, temporary)); }
+  catch (error) { if (error.code === 'ENOENT') return 0; throw error; }
+  let removed = 0;
+  for (const entry of entries) {
+    const file = path.join(temporary, entry);
+    try {
+      // lstat and rm both act on the link itself, so a junction planted in temp
+      // is unlinked rather than followed out of the portable folder.
+      if ((await fs.lstat(file)).mtimeMs >= cutoff) continue;
+      await fs.rm(file, { recursive: true, force: true });
+      removed += 1;
+    } catch { /* an entry still locked or already gone is retried next launch */ }
+  }
+  return removed;
+}
+
 // External imports are read-only sources, not dependencies left on another drive.
 export async function carryPortableFiles(root, downloadDir, files, signal) {
   if (!root) return files;
@@ -60,9 +83,14 @@ export async function carryPortableFiles(root, downloadDir, files, signal) {
   const directory = await fs.mkdtemp(path.join(downloadDir, 'import-'));
   const copied = new Map();
   try {
-    for (const file of external) {
+    for (const [index, file] of external.entries()) {
       signal?.throwIfAborted();
-      const target = path.join(directory, safeName(path.basename(file)));
+      const name = path.basename(file);
+      // Android resolves expansion files by their exact filename, so an import
+      // keeps it and gets its own subfolder instead of colliding with a sibling.
+      const folder = path.join(directory, String(index));
+      await fs.mkdir(folder);
+      const target = path.join(folder, safeName(name, `Windows cannot store the file name "${name}", so it cannot be copied into the portable folder.`));
       await fs.copyFile(file, target, constants.COPYFILE_EXCL);
       copied.set(file, target);
     }

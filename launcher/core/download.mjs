@@ -4,9 +4,9 @@ import { pipeline } from 'node:stream/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 
-export function safeName(value) {
+export function safeName(value, message = 'Meta returned an unsafe asset filename.') {
   if (typeof value !== 'string' || !value || value.length > 220 || /[<>:"/\\|?*\x00-\x1f]/.test(value) || /[. ]$/.test(value) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(value))
-    throw new Error('Meta returned an unsafe asset filename.');
+    throw new Error(message);
   return value;
 }
 export function allowedDownload(value) {

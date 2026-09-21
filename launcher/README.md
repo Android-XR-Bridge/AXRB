@@ -59,7 +59,8 @@ Extract `AXRB-Portable-<version>.zip` into a writable folder and run `AXRB.exe`.
 Keep the `AXRB.portable` marker beside it. The portable folder contains:
 
 - `data/`: launcher profile, Chromium storage/cache, logs and crash dumps.
-- `temp/`: temporary files, also used by AXRB's child processes.
+- `temp/`: temporary files, also used by AXRB's child processes. Windows never
+  prunes this folder, so AXRB removes entries older than a week at startup.
 - `downloads/`: default game downloads, copied imports and patched APKs.
 - `AXRB Runtime/`: default managed SDK, Android configuration, AVD and saves.
 

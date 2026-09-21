@@ -2,6 +2,11 @@ $AxrbRoot = Split-Path $PSScriptRoot -Parent
 $AxrbOut = Join-Path $AxrbRoot 'out'
 $AxrbAssets = $AxrbOut
 
+# These scripts read their Python helpers' stdout as UTF-8 and AXRB can be
+# extracted to any path, so pin the interpreter instead of letting it fall
+# back to whatever code page the host locale happens to use.
+$env:PYTHONUTF8 = '1'
+
 # SteamVR can invoke a packaged script without starting the Electron launcher.
 # Derive portable homes from the adjacent marker, not the caller's environment.
 $AxrbPortableRoot = $null

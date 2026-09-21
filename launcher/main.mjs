@@ -17,13 +17,17 @@ import { LiveDiagnostics } from './core/live-diagnostics.mjs';
 import { loadCompatibilityProfiles, resolveCompatibility, compatibilityPatchArgs, compatibilityRuntimeOptions } from './core/compatibility.mjs';
 import { Ovrport, selectedPatchArgs } from './core/ovrport.mjs';
 import { MetaSession } from './core/session.mjs';
-import { carryPortableFiles, configurePortable, portableOutput } from './core/portable.mjs';
+import { carryPortableFiles, configurePortable, portableOutput, sweepPortableTemp } from './core/portable.mjs';
 
 // Keep the packaged app in Electron GUI mode even when launched from a shell
 // that uses ELECTRON_RUN_AS_NODE for other tooling.
 delete process.env.ELECTRON_RUN_AS_NODE;
 const directory = path.dirname(fileURLToPath(import.meta.url)), root = app.isPackaged ? path.join(process.resourcesPath, 'runtime') : path.dirname(directory);
 if (app.isPackaged) process.env.PATH = path.join(root, 'tools/python') + path.delimiter + process.env.PATH;
+// Helper scripts report paths and APK labels as JSON on stdout. A host locale
+// such as cp1252 cannot encode every path AXRB may be extracted to, so pin all
+// Python children to UTF-8 instead of inheriting the machine's code page.
+process.env.PYTHONUTF8 = '1';
 const smoke = process.argv.includes('--smoke-test');
 const debug = process.argv.includes('--axrb-debug') || process.argv.includes('--debug') || process.env.AXRB_DEBUG === '1';
 const profile = app.commandLine.getSwitchValue('user-data-dir');
@@ -41,7 +45,11 @@ let liveDiagnostics, reviewedDiagnostics = null;
 let quitting = false;
 let compatibilityProfiles;
 const ovrport = new Ovrport();
+// Quitting must not leave a half-copied portable import behind; aborting lets
+// carryPortableFiles remove its partial directory before the process goes away.
+const shutdown = new AbortController();
 app.on('before-quit', event => {
+  shutdown.abort();
   if (!liveDiagnostics || quitting) return;
   event.preventDefault(); quitting = true;
   liveDiagnostics.stop().finally(() => app.quit());
@@ -284,6 +292,11 @@ liveDiagnostics = new LiveDiagnostics({
   onUpdate: () => { if (window && !window.isDestroyed()) window.webContents.send('axrb:diagnostics'); },
 });
 await liveDiagnostics.start();
+// Reclaiming the drive must never delay or fail startup, and anything a live
+// run is still using is far newer than the cutoff.
+if (portable) void sweepPortableTemp(portable)
+  .then(removed => { if (removed) liveDiagnostics?.write('launcher', `Removed ${removed} stale portable temporary ${removed === 1 ? 'entry' : 'entries'}.\n`, { tag: 'runtime' }); })
+  .catch(error => liveDiagnostics?.write('launcher', `Portable temporary sweep failed: ${message(error)}\n`, { tag: 'runtime' }));
 token = await metaSession.load();
 window = new BrowserWindow({ width: 1320, height: 880, minWidth: 920, minHeight: 640, title: 'AXRB', icon: path.join(directory, 'assets/axrb.ico'), backgroundColor: '#141414',
   autoHideMenuBar: true, webPreferences: { preload: path.join(directory, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false } });
@@ -351,7 +364,12 @@ handler('importAssets', id => exclusive(async () => {
   const result = await dialog.showOpenDialog(window, { title: 'Add expansion files / DLC assets', properties: ['openFile', 'multiSelections'] });
   if (result.canceled) return;
   const files = [];
-  const carried = await carryPortableFiles(portable, state.data.settings.downloadDir, result.filePaths);
+  // Android installs expansion files by name, so two selections sharing one is
+  // a mistake to report rather than an ambiguous pair of library entries.
+  const chosen = result.filePaths.map(file => path.basename(file));
+  const duplicate = chosen.find((name, index) => chosen.indexOf(name) !== index);
+  if (duplicate) throw new Error(`Selected two files named "${duplicate}". Add one of them at a time.`);
+  const carried = await carryPortableFiles(portable, state.data.settings.downloadDir, result.filePaths, shutdown.signal);
   for (const file of carried) files.push({ path: file, name: safeName(path.basename(file)), kind: file.endsWith('.obb') ? 'obb' : 'asset', size: (await fs.stat(file)).size });
   game.files = [...(game.files || []).filter(f => !files.some(n => n.name === f.name)), ...files]; await persist();
 }));
@@ -504,8 +522,7 @@ handler('storage', async storageGB => {
   return { storageGB, previousGB: currentGB, changed: true };
 });
 handler('chooseFolder', async () => {
-  const choice = await dialog.showOpenDialog(window, { defaultPath: portable || undefined,
-    properties: portable ? ['openDirectory'] : ['openDirectory', 'createDirectory'] });
+  const choice = await dialog.showOpenDialog(window, { defaultPath: portable || undefined, properties: ['openDirectory', 'createDirectory'] });
   return choice.canceled ? null : portableOutput(portable, choice.filePaths[0]);
 });
 handler('chooseCli', async () => { const choice = await dialog.showOpenDialog(window, { defaultPath: portable || undefined, properties: ['openFile'], filters: [{ name: 'ovrport CLI', extensions: ['exe', 'jar'] }] }); return choice.canceled ? null : portableOutput(portable, choice.filePaths[0]); });
