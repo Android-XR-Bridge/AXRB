@@ -65,8 +65,11 @@ def build(sdk, directory):
         archive.write(directory / "dex/classes.dex", "classes.dex")
         archive.write(directory / "libmathprobe.so", "lib/arm64-v8a/libmathprobe.so")
     run([bt / "zipalign.exe", "-f", "-p", "4", unsigned, directory / "aligned.apk"])
-    run([bt / "apksigner.bat", "sign", "--ks",
-         ROOT / ".local/keys/runtime.keystore",
+    # Match whichever identity the runtime APK was signed with.
+    keystore = ROOT / "runtime.keystore"
+    if not keystore.is_file():
+        keystore = ROOT / ".local/keys/runtime.keystore"
+    run([bt / "apksigner.bat", "sign", "--ks", keystore,
          "--ks-pass", "pass:android", "--out", directory / "probe.apk", directory / "aligned.apk"])
     run([bt / "apksigner.bat", "verify", directory / "probe.apk"])
 

@@ -46,10 +46,13 @@ $manifest | Set-Content "$build\AndroidManifest.xml" -Encoding UTF8
 Run "$bt\aapt2.exe" @('link', '-I', "$Sdk\platforms\android-34\android.jar", '--manifest', "$build\AndroidManifest.xml", '-o', "$build\sample.apk")
 Run "$Jdk\bin\jar.exe" @('uf', "$build\sample.apk", '-C', "$build\package", 'lib')
 Run "$bt\zipalign.exe" @('-f', '-p', '4', "$build\sample.apk", "$build\aligned.apk")
+# The sample shares the runtime's signing identity so both can sit on one device.
+$keystore = Join-Path $root 'runtime.keystore'
+if (!(Test-Path -LiteralPath $keystore)) { $keystore = Join-Path $root '.local\keys\runtime.keystore' }
 $oldJavaHome = $env:JAVA_HOME
 try {
     $env:JAVA_HOME = $Jdk
-    Run "$bt\apksigner.bat" @('sign', '--ks', "$root\.local\keys\runtime.keystore", '--ks-pass', 'pass:android', '--out', "$build\hello-xr-emulator.apk", "$build\aligned.apk")
+    Run "$bt\apksigner.bat" @('sign', '--ks', $keystore, '--ks-pass', 'pass:android', '--out', "$build\hello-xr-emulator.apk", "$build\aligned.apk")
     Run "$bt\apksigner.bat" @('verify', "$build\hello-xr-emulator.apk")
 } finally { $env:JAVA_HOME = $oldJavaHome }
 Write-Host "Built $build\hello-xr-emulator.apk"

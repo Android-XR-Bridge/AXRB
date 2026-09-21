@@ -63,8 +63,13 @@ jar uf "$BUILD_DIR/unsigned.apk" \
 
 "$ZIPALIGN" -f -p 4 "$BUILD_DIR/unsigned.apk" "$BUILD_DIR/aligned.apk"
 
+# A keystore dropped at the checkout root is the signing identity for every APK
+# this repository builds; clean checkouts fall back to a generated debug key.
+KEYSTORE="$ROOT/runtime.keystore"
+if [[ ! -f "$KEYSTORE" ]]; then
 KEYSTORE="$ROOT/.local/keys/runtime.keystore"
 mkdir -p "$(dirname "$KEYSTORE")"
+fi
 if [[ ! -f "$KEYSTORE" ]]; then
 keytool -genkeypair \
     -keystore "$KEYSTORE" \

@@ -26,7 +26,7 @@ $androidJar = Join-Path $Sdk 'platforms\android-29\android.jar'
 $toolchain = Join-Path $Sdk "ndk\$NdkVersion\build\cmake\android.toolchain.cmake"
 $ninja = Join-Path $Sdk 'cmake\3.22.1\bin\ninja.exe'
 # ABI variants replace the same package and must use the same signing identity.
-$keystore = Join-Path $root '.local\keys\runtime.keystore'
+$keystore = $AxrbKeystore
 function Run([string]$Exe, [string[]]$Arguments) {
     & $Exe @Arguments
     if ($LASTEXITCODE -ne 0) { throw "$Exe failed ($LASTEXITCODE)" }
