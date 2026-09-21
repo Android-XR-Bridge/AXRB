@@ -18,20 +18,22 @@ import { EmulatorWatchdog } from './core/watchdog.mjs';
 import { loadCompatibilityProfiles, resolveCompatibility, compatibilityPatchArgs, compatibilityRuntimeOptions } from './core/compatibility.mjs';
 import { Ovrport, selectedPatchArgs } from './core/ovrport.mjs';
 import { MetaSession } from './core/session.mjs';
+import { carryPortableFiles, configurePortable, portableOutput, sweepPortableTemp } from './core/portable.mjs';
 
 // Keep the packaged app in Electron GUI mode even when launched from a shell
 // that uses ELECTRON_RUN_AS_NODE for other tooling.
 delete process.env.ELECTRON_RUN_AS_NODE;
 const directory = path.dirname(fileURLToPath(import.meta.url)), root = app.isPackaged ? path.join(process.resourcesPath, 'runtime') : path.dirname(directory);
 if (app.isPackaged) process.env.PATH = path.join(root, 'tools/python') + path.delimiter + process.env.PATH;
+// Helper scripts report paths and APK labels as JSON on stdout. A host locale
+// such as cp1252 cannot encode every path AXRB may be extracted to, so pin all
+// Python children to UTF-8 instead of inheriting the machine's code page.
+process.env.PYTHONUTF8 = '1';
 const smoke = process.argv.includes('--smoke-test');
 const debug = process.argv.includes('--axrb-debug') || process.argv.includes('--debug') || process.env.AXRB_DEBUG === '1';
 const profile = app.commandLine.getSwitchValue('user-data-dir');
 const portable = app.isPackaged && existsSync(path.join(path.dirname(process.execPath), 'AXRB.portable')) ? path.dirname(process.execPath) : '';
-if (portable) {
-  app.setPath('userData', path.join(portable, 'data'));
-  app.setPath('sessionData', app.getPath('userData'));
-}
+if (portable) configurePortable(app, portable);
 else if (profile) app.setPath('userData', path.resolve(profile));
 else if (smoke) app.setPath('userData', path.join(root, 'out/launcher/smoke'));
 else app.setPath('userData', path.join(app.getPath('appData'), 'AXRB'));
@@ -45,7 +47,11 @@ let emulatorWatchdog;
 let quitting = false;
 let compatibilityProfiles;
 const ovrport = new Ovrport();
+// Quitting must not leave a half-copied portable import behind; aborting lets
+// carryPortableFiles remove its partial directory before the process goes away.
+const shutdown = new AbortController();
 app.on('before-quit', event => {
+  shutdown.abort();
   if (!liveDiagnostics || quitting) return;
   event.preventDefault(); quitting = true;
   Promise.all([liveDiagnostics.stop(), emulatorWatchdog?.stop()]).finally(() => app.quit());
@@ -81,7 +87,7 @@ function store() { if (!token) throw new Error('Sign in to Meta first.'); return
 async function configuredCli() {
   const cli = state.data.settings.ovrportCli;
   if (!cli || !await exists(cli)) throw new Error('Choose the ovrport CLI executable or JAR in Settings first.');
-  return cli;
+  return portableOutput(portable, cli);
 }
 function handler(name, callback) {
   ipcMain.handle(`axrb:${name}`, async (event, ...args) => {
@@ -173,7 +179,7 @@ async function downloadGame(id, binaryId, dlcId) {
         if (!dlc.files.length) throw new Error('This add-on has no separately downloadable files; it may be included in the base game.');
         plan.files = dlc.files;
       }
-      const target = path.join(state.data.settings.downloadDir, appId(id), appId(plan.binaryId));
+      const target = portableOutput(portable, path.join(state.data.settings.downloadDir, appId(id), appId(plan.binaryId)));
       for (const file of plan.files) safeName(file.name);
       await checkSpace(target, plan.files.reduce((n, f) => n + Number(f.size || 0), 0));
       job.total = plan.files.reduce((n, f) => n + Number(f.size || 0), 0); job.status = 'downloading';
@@ -183,7 +189,7 @@ async function downloadGame(id, binaryId, dlcId) {
       for (const file of plan.files) {
         controller.signal.throwIfAborted();
         job.stage = file.name;
-        const destination = path.join(target, safeName(file.name));
+        const destination = portableOutput(portable, path.join(target, safeName(file.name)));
         const result = await downloadFile({ url: await api.downloadUrl(file), destination, size: Number(file.size || 0), signal: controller.signal,
           progress: (bytes, total) => { job.completed = completed + bytes; if (!job.total) job.currentTotal = total;
             if (Date.now() - lastUpdate > 200) { changed(); lastUpdate = Date.now(); } } });
@@ -224,9 +230,10 @@ async function importTransfer(kind, input) {
       progress: (completed, total) => { job.completed = completed; job.total = total; job.progressUnit = kind === 'zip' ? 'files' : 'bytes'; notify(); } };
     try {
       const inspect = (file, flags) => runtime.inspect(file, flags);
+      portableOutput(portable, state.data.settings.downloadDir);
       const imported = kind === 'quest'
         ? await new Quest(runtime.settings).pullGame(input.serial, input.package, state.data.settings.downloadDir, inspect, options)
-        : kind === 'apk' ? { ...await inspect(input.file), downloaded: true }
+        : kind === 'apk' ? { ...await inspect(input.file), apk: (await carryPortableFiles(portable, state.data.settings.downloadDir, [input.file], controller.signal))[0], downloaded: true }
         : await importGameZip(input.file, state.data.settings.downloadDir, inspect, options);
       controller.signal.throwIfAborted();
       const existing = state.data.games.find(g => g.package === imported.package);
@@ -258,16 +265,18 @@ state.data.settings = { sdk: path.join(process.env.LOCALAPPDATA || '', 'Android/
   memoryMB: 8192, cpuCores: 4, downloadDir: path.join(portable || app.getPath('downloads'), portable ? 'downloads' : 'AXRB'), ovrportCli: '',
   precomposeProjectionLayers: false,
   guestClock: await exists(path.join(root, 'out/clock/Release/axrb_clock_launcher.exe')) ? 'TscCorrected' : 'Default', ...state.data.settings };
+portableOutput(portable, state.data.settings.downloadDir);
 runtime = new Runtime(root, state.data.settings, (text, metadata) => liveDiagnostics?.write('launcher', text, { tag: 'runtime', ...metadata }));
 if (!smoke && (app.isPackaged || pendingRuntime || state.data.settings.managedDirectory || !await exists(path.join(state.data.settings.sdk, 'emulator/emulator.exe')))) {
   const managed = pendingRuntime?.directory || state.data.settings.managedDirectory || path.join(portable || process.env.LOCALAPPDATA, 'AXRB Runtime');
+  portableOutput(portable, managed);
   // The setup receipt persists the managed root; derive all runtime paths from
   // it on every launch so a previous install never falls back to the user's
   // unrelated default SDK, AVD or emulator port.
   Object.assign(runtime.settings, { sdk: path.join(managed, 'sdk'), avd: 'axrb-managed-api36', port: 5584 });
-  setup = new Setup({ root, directory: managed, currentDirectory: state.data.settings.managedDirectory || managed,
+  setup = new Setup({ root, portableRoot: portable, directory: managed, currentDirectory: state.data.settings.managedDirectory || managed,
     resumableDirectory: pendingRuntime?.directory || '', runtime, components,
-    select: value => state.stageRuntime(value),
+    select: value => state.stageRuntime(portableOutput(portable, value)),
     stage: (value, installed) => state.stageRuntime(value, installed),
     save: async (value, installed) => {
       await state.commitRuntime(value, runtime.settings, installed);
@@ -292,6 +301,11 @@ emulatorWatchdog = new EmulatorWatchdog({
   onTransition: state => liveDiagnostics.append('launcher', state.detail, { tag: 'watchdog', level: state.phase === 'unknown' ? 'W' : 'I' }),
 });
 emulatorWatchdog.start();
+// Reclaiming the drive must never delay or fail startup, and anything a live
+// run is still using is far newer than the cutoff.
+if (portable) void sweepPortableTemp(portable)
+  .then(removed => { if (removed) liveDiagnostics?.write('launcher', `Removed ${removed} stale portable temporary ${removed === 1 ? 'entry' : 'entries'}.\n`, { tag: 'runtime' }); })
+  .catch(error => liveDiagnostics?.write('launcher', `Portable temporary sweep failed: ${message(error)}\n`, { tag: 'runtime' }));
 token = await metaSession.load();
 window = new BrowserWindow({ width: 1320, height: 880, minWidth: 920, minHeight: 640, title: 'AXRB', icon: path.join(directory, 'assets/axrb.ico'), backgroundColor: '#141414',
   autoHideMenuBar: true, webPreferences: { preload: path.join(directory, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false } });
@@ -359,7 +373,13 @@ handler('importAssets', id => exclusive(async () => {
   const result = await dialog.showOpenDialog(window, { title: 'Add expansion files / DLC assets', properties: ['openFile', 'multiSelections'] });
   if (result.canceled) return;
   const files = [];
-  for (const file of result.filePaths) files.push({ path: file, name: safeName(path.basename(file)), kind: file.endsWith('.obb') ? 'obb' : 'asset', size: (await fs.stat(file)).size });
+  // Android installs expansion files by name, so two selections sharing one is
+  // a mistake to report rather than an ambiguous pair of library entries.
+  const chosen = result.filePaths.map(file => path.basename(file));
+  const duplicate = chosen.find((name, index) => chosen.indexOf(name) !== index);
+  if (duplicate) throw new Error(`Selected two files named "${duplicate}". Add one of them at a time.`);
+  const carried = await carryPortableFiles(portable, state.data.settings.downloadDir, result.filePaths, shutdown.signal);
+  for (const file of carried) files.push({ path: file, name: safeName(path.basename(file)), kind: file.endsWith('.obb') ? 'obb' : 'asset', size: (await fs.stat(file)).size });
   game.files = [...(game.files || []).filter(f => !files.some(n => n.name === f.name)), ...files]; await persist();
 }));
 handler('install', id => exclusive(async () => {
@@ -415,8 +435,10 @@ handler('patch', (id, selected) => exclusive(async () => {
     if (selected === undefined) return { patches: await ovrport.patches(cli) };
     patchArgs = selectedPatchArgs(await ovrport.patches(cli), selected);
   }
-  const outputDirectory = path.join(path.dirname(input), 'axrb-patched');
-  const output = path.join(outputDirectory, `${path.basename(input, path.extname(input))}-axrb.apk`);
+  const outputDirectory = portableOutput(portable, portable
+    ? path.join(state.data.settings.downloadDir, 'patched', game.package)
+    : path.join(path.dirname(input), 'axrb-patched'));
+  const output = portableOutput(portable, path.join(outputDirectory, `${path.basename(input, path.extname(input))}-axrb.apk`));
   const args = ['patch', `--input=${input}`, `--output=${outputDirectory}`, '--output-name={filename}-axrb.apk', ...patchArgs];
   await ovrport.run(cli, args, { timeout: 20 * 60 * 1000 });
   const metadata = await runtime.inspect(output);
@@ -480,6 +502,8 @@ handler('settings', async values => {
   if (!Number.isInteger(settings.cpuCores) || settings.cpuCores < 2 || settings.cpuCores > 6) throw new Error('Choose between 2 and 6 vCPUs.');
   if (typeof settings.precomposeProjectionLayers !== 'boolean') throw new Error('Choose whether to precompose projection layers.');
   for (const key of ['sdk', 'downloadDir']) if (typeof settings[key] !== 'string' || !path.isAbsolute(settings[key])) throw new Error('Select absolute Windows paths.');
+  portableOutput(portable, settings.downloadDir);
+  if (settings.ovrportCli) portableOutput(portable, settings.ovrportCli);
   // Empty keeps the default paste service; anything else must be a self-hosted
   // HTTPS endpoint, so logs cannot be redirected to a plaintext collector.
   if (settings.diagnosticsEndpoint) {
@@ -520,9 +544,12 @@ handler('storage', async storageGB => {
   await persist();
   return { storageGB, previousGB: currentGB, changed: true };
 });
-handler('chooseFolder', async () => { const choice = await dialog.showOpenDialog(window, { properties: ['openDirectory', 'createDirectory'] }); return choice.canceled ? null : choice.filePaths[0]; });
-handler('chooseCli', async () => { const choice = await dialog.showOpenDialog(window, { properties: ['openFile'], filters: [{ name: 'ovrport CLI', extensions: ['exe', 'jar'] }] }); return choice.canceled ? null : choice.filePaths[0]; });
-handler('openFolder', async id => { const game = getGame(id); const target = game.apk ? path.dirname(game.apk) : state.data.settings.downloadDir; await fs.mkdir(target, { recursive: true }); const error = await shell.openPath(target); if (error) throw new Error(error); });
+handler('chooseFolder', async () => {
+  const choice = await dialog.showOpenDialog(window, { defaultPath: portable || undefined, properties: ['openDirectory', 'createDirectory'] });
+  return choice.canceled ? null : portableOutput(portable, choice.filePaths[0]);
+});
+handler('chooseCli', async () => { const choice = await dialog.showOpenDialog(window, { defaultPath: portable || undefined, properties: ['openFile'], filters: [{ name: 'ovrport CLI', extensions: ['exe', 'jar'] }] }); return choice.canceled ? null : portableOutput(portable, choice.filePaths[0]); });
+handler('openFolder', async id => { const game = getGame(id); const target = portableOutput(portable, game.apk ? path.dirname(game.apk) : state.data.settings.downloadDir); await fs.mkdir(target, { recursive: true }); const error = await shell.openPath(target); if (error) throw new Error(error); });
 handler('openStore', async id => shell.openExternal(id ? `https://www.meta.com/experiences/${appId(id)}/` : 'https://www.meta.com/experiences/'));
 // Uploading publishes the logs, so this only ever runs from an explicit click,
 // and the bundle is offered for review before it leaves the machine.
@@ -540,11 +567,11 @@ handler('diagnostics', async ({ upload = false, save = false } = {}) => {
   });
   if (save) {
     const result = await dialog.showSaveDialog(window, {
-      title: 'Save diagnostics report', defaultPath: `AXRB-diagnostics-${new Date().toISOString().replaceAll(':', '-')}.txt`,
+      title: 'Save diagnostics report', defaultPath: path.join(portable ? path.join(portable, 'data/logs') : '.', `AXRB-diagnostics-${new Date().toISOString().replaceAll(':', '-')}.txt`),
       filters: [{ name: 'Text report', extensions: ['txt'] }],
     });
     if (result.canceled || !result.filePath) return { bundle, path: null };
-    await fs.writeFile(result.filePath, bundle, 'utf8');
+    await fs.writeFile(portableOutput(portable, result.filePath), bundle, 'utf8');
     return { bundle, path: result.filePath };
   }
   reviewedDiagnostics = bundle;

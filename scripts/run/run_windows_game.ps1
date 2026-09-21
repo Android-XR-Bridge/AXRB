@@ -28,6 +28,14 @@ $ProgressPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
 trap { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }
 . "$PSScriptRoot/../paths.ps1"
+if ($AxrbPortableRoot) {
+    if ($PSBoundParameters.ContainsKey('Sdk') -and [IO.Path]::GetFullPath($Sdk) -ne $env:ANDROID_HOME) {
+        throw 'Portable launches must use the managed SDK inside the portable folder.'
+    }
+    $Sdk = $env:ANDROID_HOME
+    if (!$PSBoundParameters.ContainsKey('Avd')) { $Avd = $(if ($AxrbPortableSettings.avd) { $AxrbPortableSettings.avd } else { 'axrb-managed-api36' }) }
+    if (!$PSBoundParameters.ContainsKey('Port')) { $Port = $(if ($AxrbPortableSettings.port) { $AxrbPortableSettings.port } else { 5584 }) }
+}
 $env:ANDROID_ADB_SERVER_PORT = '5038'
 $env:ADB_SERVER_SOCKET = $null
 if (!$HostExe) { $HostExe = $AxrbHostExe }

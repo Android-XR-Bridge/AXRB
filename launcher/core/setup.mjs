@@ -138,9 +138,9 @@ async function installationAt(directory) {
 }
 
 export class Setup {
-  constructor({ root, directory, currentDirectory = directory, resumableDirectory = '', runtime, components = [], select = async () => {}, stage = async () => {}, save, changed, debug = false, shutdownGraceMs = 180000, onOutput = () => {} }) {
-    Object.assign(this, { root, directory, currentDirectory, resumableDirectory, runtime, components, select, stage, save, changed, debug, shutdownGraceMs, onOutput });
-    this.status = { phase: 'checking', directory, current: null, storageGB: runtime.settings?.storageGB ?? 32, completed: 0, total: 0, active: false, startedAt: 0, logs: [], debug };
+  constructor({ root, portableRoot = '', directory, currentDirectory = directory, resumableDirectory = '', runtime, components = [], select = async () => {}, stage = async () => {}, save, changed, debug = false, shutdownGraceMs = 180000, onOutput = () => {} }) {
+    Object.assign(this, { root, portableRoot, directory, currentDirectory, resumableDirectory, runtime, components, select, stage, save, changed, debug, shutdownGraceMs, onOutput });
+    this.status = { phase: 'checking', directory, portableRoot, current: null, storageGB: runtime.settings?.storageGB ?? 32, completed: 0, total: 0, active: false, startedAt: 0, logs: [], debug };
     this.logPartials = new Map();
   }
   update(value) {
@@ -176,6 +176,7 @@ export class Setup {
     process.env.AXRB_DATA_HOME = path.join(this.directory, 'output');
     process.env.ANDROID_AVD_HOME = path.join(this.directory, 'avd');
     process.env.ANDROID_USER_HOME = path.join(this.directory, 'android');
+    if (this.portableRoot) process.env.ANDROID_EMULATOR_HOME = process.env.ANDROID_USER_HOME;
     // Keep AXRB's emulator transport away from Android Studio, Quest tools,
     // and other emulators that may own the default ADB server on 5037.
     process.env.ANDROID_ADB_SERVER_PORT = '5038';

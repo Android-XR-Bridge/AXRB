@@ -46,17 +46,38 @@ library entries, ownership information or downloaded files.
 
 ### Portable ZIP
 
+**Strict portability is not yet achieved.** The pinned Windows ADB was observed
+loading `%USERPROFILE%\.android\adbkey` despite portable Android-home and temp
+settings. A child `USERPROFILE` override also did not redirect the Windows
+profile API. The containment below does not eliminate this machine-local
+credential dependency. Choosing a maintained patched ADB build or another
+verified compatibility strategy requires a maintainer decision; neither is
+implemented here. Full emulator filesystem tracing and a moved-AVD cold boot
+with the original folder unavailable are also not yet verified.
+
 Extract `AXRB-Portable-<version>.zip` into a writable folder and run `AXRB.exe`.
-Keep the `AXRB.portable` marker beside it. This mode stores its profile in
-`data/`, defaults downloads to `downloads/`, and defaults Android to
-`AXRB Runtime/` beside the executable. The marker takes precedence over
-`--user-data-dir`, and Electron's session cache stays inside `data/` as well.
-The direct-launch EXE has no marker and uses the Windows user profile and
-external runtime defaults.
+Keep the `AXRB.portable` marker beside it. The portable folder contains:
+
+- `data/`: launcher profile, Chromium storage/cache, logs and crash dumps.
+- `temp/`: temporary files, also used by AXRB's child processes. Windows never
+  prunes this folder, so AXRB removes entries older than a week at startup.
+- `downloads/`: default game downloads, copied imports and patched APKs.
+- `AXRB Runtime/`: default managed SDK, Android configuration, AVD and saves.
+
+The marker takes precedence over `--user-data-dir`. Setup, downloads, patch
+output and saved diagnostic reports must remain inside the portable folder.
+External APKs and content files are copied into it; the originals are untouched.
+External setup archives can be read without becoming ongoing dependencies.
+Put the complete optional ovrport CLI distribution inside the portable folder
+before selecting it. Java, if that CLI requires it, remains a machine prerequisite.
+SteamVR-launched packaged helpers restore the same portable paths and temporary
+environment without requiring the launcher to remain open.
+
+The direct-launch EXE has no marker and keeps its Windows user profile, external
+runtime defaults and reference-in-place imports.
 
 Close AXRB and Android before moving or copying the entire portable folder.
 Internal paths follow the new location even if the original copy still exists.
-Explicit paths outside that folder stay external and do not travel with it.
 Setup repairs moved AVD paths and discards its old quick-boot snapshot while
 preserving Android storage, installed games and saves. A runtime-app update or
 path repair does not redownload SDK components whose pinned receipts remain valid.
@@ -68,6 +89,12 @@ Sign out before sharing or discarding the folder. Signing out deletes both local
 session formats but does not revoke copies already taken; revoke the session in
 Meta account settings if the folder or drive is lost. Nonportable mode keeps using
 Electron safeStorage (Windows DPAPI).
+
+This is application-level portability, not an OS sandbox. Windows, GPU drivers,
+Java and an independently installed SteamVR can maintain their own system files.
+AXRB constrains the output paths it passes to an optional ovrport CLI; it cannot
+sandbox arbitrary third-party code. SteamVR's external registration must be
+refreshed by launching the game through AXRB after moving the folder.
 
 ## Live diagnostics
 

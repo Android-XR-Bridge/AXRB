@@ -94,6 +94,7 @@ export function SetupScreen({ setup }) {
         : 'The current disk size, installed games and saves are preserved. Storage can be grown later in Settings.'}</p> : <>
         <div className="space-y-2"><label htmlFor="runtime-folder" className="text-sm">{current ? 'New install folder' : 'Install folder'}</label><div className="flex gap-2"><Input id="runtime-folder" value={directory} onChange={e => setDirectory(e.target.value)} /><Button variant="outline" onClick={async () => { const value = await invoke('chooseFolder'); if (value) setDirectory(value); }}>Browse</Button></div></div>
         <p className="text-xs text-muted-foreground">Setup creates an AXRB Runtime subfolder.{current && ' The old installation stays untouched; its games and saves are not copied.'}</p>
+        {setup.portableRoot && <p className="text-xs text-muted-foreground">Portable mode keeps Android inside {setup.portableRoot}. Choose this folder or a subfolder.</p>}
         <div className="space-y-2"><label htmlFor="android-storage" className="text-sm">Android storage (GB)</label><Input id="android-storage" type="number" min="8" max="256" step="8" value={storageGB} onChange={e => setStorageGB(Number(e.target.value))} /></div>
         <p className="text-sm text-muted-foreground">{downloadBytes !== undefined ? `${sizeText(downloadBytes)} still to download. ` : 'Only missing components are downloaded. '}Allow {Math.ceil(storageGB * 1.2 + 14)} GB free for setup. Android checks this space before creating its disk. Downloaded game APKs need additional space.</p>
       </>}

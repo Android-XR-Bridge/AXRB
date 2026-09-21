@@ -28,6 +28,7 @@ export function Settings({ state, run, pending, notify }) {
   }}>
     {field('downloadDir', 'Download folder', { required: true })}
     {field('ovrportCli', 'ovrport CLI', { placeholder: 'Optional .exe or .jar' })}
+    {state.portable && <p className="text-sm text-muted-foreground">Portable mode keeps downloads, imported files and patch output inside its folder. Put the complete optional ovrport CLI distribution inside that folder before selecting it. Java, when required by the CLI, remains a system prerequisite.</p>}
     <div className="flex items-center justify-between border-y py-4"><span>Meta{state.signedIn && <span className="ml-3 text-muted-foreground">Connected</span>}</span>
       <Button type="button" variant="outline" disabled={pending.has('account')} onClick={() => run('account', () => call(state.signedIn ? 'logout' : 'login'))}>{state.signedIn ? 'Sign out' : 'Connect'}</Button>
     </div>
