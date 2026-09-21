@@ -70,6 +70,9 @@
       "artifactName": "AXRB-${version}.${ext}",
       "icon": "assets/axrb.ico"
     },
+    "portable": {
+      "unpackDirName": false
+    },
     "beforePack": "./verify-release.cjs"
   }
 }

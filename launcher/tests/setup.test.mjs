@@ -299,6 +299,34 @@ test('activating a fresh disk refreshes installed flags without discarding the l
   assert.deepEqual(reopened.data.games, games.map(game => ({ ...game, installed: false })));
 });
 
+test('a failed library write leaves a completed custom disk recoverable after restart', async t => {
+  const { root, current, setup, state } = await installationFixture(t);
+  setup.select = value => state.stageRuntime(value);
+  setup.stage = (value, installed) => state.stageRuntime(value, installed);
+  setup.save = (value, installed) => state.commitRuntime(value, setup.runtime.settings, installed);
+  state.save = async () => { throw new Error('profile write failed'); };
+  const destination = path.join(root, 'completed-custom');
+  await setup.start({ directory: destination, storageGB: 8, accepted: true });
+  await setup.task;
+  assert.equal(setup.status.phase, 'error');
+  assert.match(setup.status.error, /profile write failed/);
+  const reopened = new State(state.directory); await reopened.load();
+  assert.equal(reopened.data.settings.managedDirectory, current);
+  const pending = await reopened.pendingRuntime();
+  assert.equal(pending.directory, path.join(destination, 'AXRB Runtime'));
+  assert.ok(Array.isArray(pending.installed));
+  const restarted = new Setup({ root, directory: pending.directory, currentDirectory: current,
+    resumableDirectory: pending.directory, runtime: setup.runtime, components: [], changed() {} });
+  assert.equal((await restarted.inspect()).ready, true);
+  await restarted.check();
+  assert.deepEqual(restarted.status.current, { directory: current, storageGB: 64 });
+  await reopened.commitRuntime(pending.directory, setup.runtime.settings, new Set(pending.installed));
+  const recovered = new State(state.directory); await recovered.load();
+  assert.equal(recovered.data.settings.managedDirectory, pending.directory);
+  assert.ok(recovered.data.games.every(game => !game.installed));
+  assert.equal(await recovered.pendingRuntime(), null);
+});
+
 test('reusing a disk reconciles the library with the apps actually on that disk', async t => {
   const { current, setup, state } = await installationFixture(t);
   const games = structuredClone(state.data.games);

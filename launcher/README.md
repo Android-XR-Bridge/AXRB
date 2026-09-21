@@ -116,8 +116,9 @@ in `distribution.json`. The loader uses the system's active OpenXR runtime;
 SteamVR's private loader is neither required nor bundled.
 
 The host tries `AXRB_OPENXR_LOADER` first (a developer/debug override), then an
-absolute path to the DLL beside the host, then ordinary Windows DLL lookup for
-unbundled development builds. A failed override falls through to those defaults.
+absolute path to the DLL beside the host, then ordinary Windows DLL lookup.
+Windows native builds copy the pinned Khronos DLL beside the development host;
+a failed override falls through to these defaults.
 Paths support Unicode, and diagnostics report each attempted loader location
 and its Windows error code. If no loader is available, startup stops. A bundled
 loader does not replace the requirement to install and configure an OpenXR

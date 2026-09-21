@@ -110,6 +110,7 @@ test('portable copies and moves keep carried files while preserving external pat
   state.put({ id: 'carried', apk, files: [{ path: asset, kind: 'obb' }], owned: true, installed: true });
   state.put({ id: 'external', apk: external, files: [{ path: external, kind: 'apk' }] });
   await state.save();
+  await state.stageRuntime(path.join(original, 'AXRB Runtime'), new Set(['com.game.carried']));
   const originalLibrary = await fs.readFile(path.join(original, 'data/library.json'), 'utf8');
   await fs.cp(original, copied, { recursive: true });
   await fs.writeFile(path.join(copied, 'downloads/game/base.apk'), 'copied APK');
@@ -122,6 +123,7 @@ test('portable copies and moves keep carried files while preserving external pat
   assert.equal(copy.data.games[1].apk, external, 'a sibling with the same prefix is not inside the portable root');
   assert.equal(copy.data.games[1].files[0].path, external);
   assert.equal(copy.data.games[0].owned, true); assert.equal(copy.data.games[0].installed, true);
+  assert.deepEqual(await copy.pendingRuntime(), { directory: path.join(copied, 'AXRB Runtime'), installed: ['com.game.carried'] });
   assert.equal(await fs.readFile(path.join(original, 'data/library.json'), 'utf8'), originalLibrary);
 
   // Explicitly moving runtime/download storage outside the portable folder is
@@ -132,6 +134,7 @@ test('portable copies and moves keep carried files while preserving external pat
   await copy.save(); await fs.rename(copied, moved);
   const reopened = new State(path.join(moved, 'data')); await reopened.load({ portableRoot: moved });
   assert.equal(await fs.readFile(reopened.data.games[0].apk, 'utf8'), 'copied APK');
+  assert.equal((await reopened.pendingRuntime()).directory, path.join(moved, 'AXRB Runtime'));
   assert.deepEqual(reopened.data.settings, copy.data.settings);
   const restarted = new State(path.join(moved, 'data')); await restarted.load({ portableRoot: moved });
   assert.deepEqual(restarted.data, reopened.data, 'the migrated paths survive restart without being rebased twice');

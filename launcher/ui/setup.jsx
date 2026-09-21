@@ -7,10 +7,14 @@ import { call } from './common';
 export function SetupScreen({ setup }) {
   const current = setup.current;
   const [newDirectory, setDirectory] = useState(null);
-  // A newly discovered disk defaults to reuse; refreshes must not undo an opt-out.
-  const [ignoredCurrent, setIgnoredCurrent] = useState(null);
-  const useCurrent = Boolean(current) && ignoredCurrent !== current.directory;
-  const directory = newDirectory ?? (current ? '' : setup.directory.replace(/[\\/]AXRB Runtime$/, '').replace(/^([A-Za-z]:)$/, '$1\\'));
+  const normalizeDirectory = value => String(value || '').replaceAll('/', '\\').replace(/[\\]+$/, '').toLowerCase();
+  // Resume a selected new disk after failure; keep an explicit reuse choice
+  // through status refreshes for the same current disk.
+  const [reuseChoice, setReuseChoice] = useState(null);
+  const useCurrent = Boolean(current) && (reuseChoice?.directory === current.directory
+    ? reuseChoice.enabled : normalizeDirectory(current.directory) === normalizeDirectory(setup.directory));
+  const directory = newDirectory ?? (current && normalizeDirectory(current.directory) === normalizeDirectory(setup.directory)
+    ? '' : setup.directory.replace(/[\\/]AXRB Runtime$/, '').replace(/^([A-Za-z]:)$/, '$1\\'));
   const [accepted, setAccepted] = useState(false);
   const [storageGB, setStorageGB] = useState(setup.storageGB ?? 32);
   const selectedStorageGB = useCurrent ? current.storageGB : storageGB;
@@ -30,7 +34,6 @@ export function SetupScreen({ setup }) {
   const elapsed = setup.active && setup.startedAt ? Math.max(0, Math.floor((now - setup.startedAt) / 1000)) : 0;
   const elapsedText = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`;
   const labels = { checking: 'Checking your PC', download: 'Downloading', verify: 'Verifying download', extract: 'Extracting', boot: 'Preparing Android' };
-  const normalizeDirectory = value => String(value || '').replaceAll('/', '\\').replace(/[\\]+$/, '').toLowerCase();
   const target = useCurrent ? current.directory : `${directory.replace(/[\\/]+$/, '')}\\AXRB Runtime`;
   const inspected = useCurrent ? setup.currentNeeds ?? setup.needs : setup.needs;
   const needs = inspected && normalizeDirectory(inspected.directory) === normalizeDirectory(target) ? inspected : null;
@@ -77,7 +80,7 @@ export function SetupScreen({ setup }) {
       <p>{useCurrent ? 'Set up AXRB using your existing Android disk.' : 'Set up Android 16 and the emulator.'}</p>
       <div className="grid gap-6 md:grid-cols-2"><div className="space-y-4">
       {current && <div className="space-y-3 rounded-lg border p-4">
-        <label className="flex items-start gap-3 text-sm"><input id="use-current-installation" type="checkbox" checked={useCurrent} onChange={e => { setIgnoredCurrent(e.target.checked ? null : current.directory); setError(''); }} aria-describedby="current-installation" className="mt-1" /><span>Use current Android installation</span></label>
+        <label className="flex items-start gap-3 text-sm"><input id="use-current-installation" type="checkbox" checked={useCurrent} onChange={e => { setReuseChoice({ directory: current.directory, enabled: e.target.checked }); setError(''); }} aria-describedby="current-installation" className="mt-1" /><span>Use current Android installation</span></label>
         <div id="current-installation" className="space-y-1 text-sm">
           <p className="font-medium">Current installation</p>
           <p className="break-all text-muted-foreground">{current.directory}</p>

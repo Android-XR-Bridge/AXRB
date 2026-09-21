@@ -230,22 +230,33 @@ async function importTransfer(kind, input) {
 
 async function bootstrap() {
 state = new State(app.getPath('userData')); await state.load({ portableRoot: portable });
+const pendingRuntime = await state.pendingRuntime();
 const components = JSON.parse(await fs.readFile(path.join(directory, 'core/components.json'), 'utf8'));
 state.data.settings = { sdk: path.join(process.env.LOCALAPPDATA || '', 'Android/Sdk'), avd: 'axrb-games-api34', port: 5580,
   memoryMB: 8192, cpuCores: 4, downloadDir: path.join(portable || app.getPath('downloads'), portable ? 'downloads' : 'AXRB'), ovrportCli: '',
   precomposeProjectionLayers: false,
   guestClock: await exists(path.join(root, 'out/clock/Release/axrb_clock_launcher.exe')) ? 'TscCorrected' : 'Default', ...state.data.settings };
 runtime = new Runtime(root, state.data.settings, (text, metadata) => liveDiagnostics?.write('launcher', text, { tag: 'runtime', ...metadata }));
-if (!smoke && (app.isPackaged || state.data.settings.managedDirectory || !await exists(path.join(state.data.settings.sdk, 'emulator/emulator.exe')))) {
-  const managed = state.data.settings.managedDirectory || path.join(portable || process.env.LOCALAPPDATA, 'AXRB Runtime');
+if (!smoke && (app.isPackaged || pendingRuntime || state.data.settings.managedDirectory || !await exists(path.join(state.data.settings.sdk, 'emulator/emulator.exe')))) {
+  const managed = pendingRuntime?.directory || state.data.settings.managedDirectory || path.join(portable || process.env.LOCALAPPDATA, 'AXRB Runtime');
   // The setup receipt persists the managed root; derive all runtime paths from
   // it on every launch so a previous install never falls back to the user's
   // unrelated default SDK, AVD or emulator port.
   Object.assign(runtime.settings, { sdk: path.join(managed, 'sdk'), avd: 'axrb-managed-api36', port: 5584 });
-  setup = new Setup({ root, directory: managed, runtime, components,
-    save: async (value, installed) => { state.activateRuntime(value, runtime.settings, installed); await persist(); }, changed, debug,
+  setup = new Setup({ root, directory: managed, currentDirectory: state.data.settings.managedDirectory || managed,
+    resumableDirectory: pendingRuntime?.directory || '', runtime, components,
+    select: value => state.stageRuntime(value),
+    stage: (value, installed) => state.stageRuntime(value, installed),
+    save: async (value, installed) => {
+      await state.commitRuntime(value, runtime.settings, installed);
+      changed();
+    }, changed, debug,
     onOutput: (text, metadata) => liveDiagnostics?.write('launcher', text, { tag: 'setup', ...metadata }) });
   setup.environment();
+  if (pendingRuntime?.installed && (await setup.inspect().catch(() => null))?.ready) {
+    await state.commitRuntime(managed, runtime.settings, new Set(pendingRuntime.installed));
+    setup.currentDirectory = managed;
+  }
 }
 liveDiagnostics = new LiveDiagnostics({
   directory: path.join(state.directory, 'diagnostics'),

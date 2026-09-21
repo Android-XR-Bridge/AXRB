@@ -24,6 +24,10 @@ export class State {
           if (game.apk) game.apk = rebase(game.apk);
           for (const file of game.files || []) file.path = rebase(file.path);
         }
+        const pending = await this.pendingRuntime();
+        if (pending && rebase(pending.directory) !== pending.directory) {
+          await this.stageRuntime(rebase(pending.directory), pending.installed);
+        }
         this.data.portableRoot = current;
         await this.save();
       }
@@ -38,6 +42,29 @@ export class State {
     };
     this.writes = this.writes.catch(() => {}).then(write);
     return this.writes;
+  }
+  async pendingRuntime() {
+    let pending;
+    try { pending = JSON.parse(await fs.readFile(path.join(this.directory, 'setup-pending.json'), 'utf8')); }
+    catch (error) { if (error.code === 'ENOENT') return null; throw new Error('Pending Android setup could not be read. The original file has been preserved.'); }
+    if (!pending || typeof pending !== 'object' || typeof pending.directory !== 'string' || !path.isAbsolute(pending.directory) ||
+        (pending.installed !== null && (!Array.isArray(pending.installed) || !pending.installed.every(value => typeof value === 'string')))) {
+      throw new Error('Pending Android setup has invalid data. The original file has been preserved.');
+    }
+    return pending;
+  }
+  async stageRuntime(directory, installed = null) {
+    if (typeof directory !== 'string' || !path.isAbsolute(directory)) throw new Error('Pending Android setup needs an absolute folder.');
+    const snapshot = JSON.stringify({ directory, installed: installed === null ? null : [...installed] });
+    const file = path.join(this.directory, 'setup-pending.json');
+    await fs.writeFile(`${file}.tmp`, snapshot);
+    await fs.rename(`${file}.tmp`, file);
+  }
+  async clearPendingRuntime() { await fs.rm(path.join(this.directory, 'setup-pending.json'), { force: true }); }
+  async commitRuntime(directory, settings, installed) {
+    this.activateRuntime(directory, settings, installed);
+    await this.save();
+    await this.clearPendingRuntime();
   }
   activateRuntime(directory, settings, installed) {
     this.data.settings = settings;

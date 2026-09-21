@@ -138,8 +138,8 @@ async function installationAt(directory) {
 }
 
 export class Setup {
-  constructor({ root, directory, runtime, components = [], save, changed, debug = false, shutdownGraceMs = 180000, onOutput = () => {} }) {
-    Object.assign(this, { root, directory, runtime, components, save, changed, debug, shutdownGraceMs, onOutput });
+  constructor({ root, directory, currentDirectory = directory, resumableDirectory = '', runtime, components = [], select = async () => {}, stage = async () => {}, save, changed, debug = false, shutdownGraceMs = 180000, onOutput = () => {} }) {
+    Object.assign(this, { root, directory, currentDirectory, resumableDirectory, runtime, components, select, stage, save, changed, debug, shutdownGraceMs, onOutput });
     this.status = { phase: 'checking', directory, current: null, storageGB: runtime.settings?.storageGB ?? 32, completed: 0, total: 0, active: false, startedAt: 0, logs: [], debug };
     this.logPartials = new Map();
   }
@@ -209,7 +209,9 @@ export class Setup {
       ready: !components.length && Boolean(config) && !moved && android && !runtime && licensed };
   }
   async refreshCurrent() {
-    let current = await installationAt(this.directory);
+    // During a move, keep the previously active disk available while the
+    // selected destination is still being prepared.
+    let current = await installationAt(this.currentDirectory) || await installationAt(this.directory);
     // A failed fresh install must not hide the previous disk's reuse option.
     if (!current && this.status.current && this.status.current.directory !== this.directory) {
       current = await installationAt(this.status.current.directory);
@@ -248,6 +250,9 @@ export class Setup {
       if (!existing) throw new Error(`The current Android disk is no longer available at ${selected}. Check the drive or choose a new installation folder.`);
       if (existing.storageGB === null) throw new Error(`Cannot determine the Android disk size at ${selected}. Restore its config.ini or choose a new installation folder. The disk has not been changed.`);
       storageGB = existing.storageGB;
+    } else if (existing && sameDirectory(selected, this.resumableDirectory)) {
+      if (existing.storageGB === null) throw new Error(`Cannot determine the Android disk size at ${selected}. Restore its config.ini before retrying setup.`);
+      storageGB = existing.storageGB;
     } else if (existing) {
       const size = existing.storageGB === null ? 'size unknown' : `${existing.storageGB} GB`;
       throw new Error(`An Android installation already exists at ${selected} (${size}). Choose a different folder for a new installation, or select Use current Android installation to keep the current disk.`);
@@ -269,6 +274,9 @@ export class Setup {
         }
       }
     }
+    // Remember the selected disk before setup changes it, so a completed
+    // custom installation can still be found if the library write fails.
+    await this.select(selected);
     this.selectedArchives = new Map(selectedArchives.map(archive => [archive.id, archive.path]));
     this.directory = selected;
     // Setup settings are provisional until the selected disk is ready.
@@ -390,8 +398,11 @@ export class Setup {
       }
     }
     signal.throwIfAborted();
+    await this.stage(this.directory, installed);
     await fs.writeFile(path.join(this.directory, 'ready.json'), JSON.stringify({ version: 1, runtimeHash: await this.runtimeHash(), completedAt: new Date().toISOString() }));
     await this.save(this.directory, installed);
+    this.currentDirectory = this.directory;
+    this.resumableDirectory = '';
     this.update({ phase: 'ready', component: '', completed: 0, total: 0 });
   }
 }
