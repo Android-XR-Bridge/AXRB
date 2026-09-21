@@ -6,6 +6,7 @@ games, the live Quest storefront, owned-game downloads, expansion files and DLC.
 ## Install
 
 Run `AXRB-Setup-<version>.exe`, or extract the portable ZIP described below.
+The normal installer uses a one-click flow with no install-folder wizard.
 First-run setup checks Windows Hypervisor Platform, explains how to enable it
 if needed, and installs the pinned Android 16 runtime after license acceptance.
 Choose a drive and Android disk size; setup checks available space first.

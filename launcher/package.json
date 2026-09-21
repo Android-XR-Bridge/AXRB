@@ -1,6 +1,6 @@
 {
   "name": "axrb-launcher",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "description": "Quest library and native Windows AXRB launcher",
   "license": "MIT",
@@ -71,9 +71,9 @@
       "icon": "assets/axrb.ico"
     },
     "nsis": {
-      "oneClick": false,
+      "oneClick": true,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": true,
+      "allowToChangeInstallationDirectory": false,
       "deleteAppDataOnUninstall": false,
       "createDesktopShortcut": true,
       "shortcutName": "AXRB",
