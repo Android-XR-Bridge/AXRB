@@ -8,6 +8,7 @@ export function Settings({ state, run, pending, notify }) {
   const [draft, setDraft] = useState({ ...state.settings });
   const [dirty, setDirty] = useState(false);
   const [report, setReport] = useState(null);
+  const [scan, setScan] = useState(null);
   const [storage, setStorage] = useState(state.settings.storageGB ?? 32);
   const edit = (key, value) => { setDraft(d => ({ ...d, [key]: value })); setDirty(true); };
   const browse = key => run(`choose-${key}`, async () => {
@@ -63,7 +64,7 @@ export function Settings({ state, run, pending, notify }) {
         <div className="space-y-2">
           <div className="flex items-center justify-between"><label htmlFor="cpuCores">vCPUs</label><output htmlFor="cpuCores">{draft.cpuCores ?? 4}</output></div>
           <input id="cpuCores" name="cpuCores" type="range" min="2" max="6" step="1" value={draft.cpuCores ?? 4} onChange={e => edit('cpuCores', Number(e.target.value))} className="w-full accent-primary" aria-describedby="cpu-restart" />
-          <p id="cpu-restart" className="text-xs text-muted-foreground">Applies after restarting Android.</p>
+          <p id="cpu-restart" className="text-xs text-muted-foreground">Applies after restarting Android. Six is the emulator's own maximum. Leave some of the PC's cores free: past that, Android competes with the headset compositor and frames get worse, not better.</p>
         </div>
       </div>
     </details>
@@ -81,6 +82,29 @@ export function Settings({ state, run, pending, notify }) {
       <input id="fps-hud" type="checkbox" role="switch" checked={state.settings.fpsHud === true} disabled={pending.has('fpsHud')}
         className="size-4 accent-primary" onChange={e => { const enabled = e.target.checked; run('fpsHud', () => call('fpsHud', enabled)); }} />
     </label>
+    {/* A scan samples a session that is running, so there is nothing to offer
+        between games and the control stays out of the way until there is. */}
+    {state.running && <div className="space-y-3 border-t pt-5">
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <div>Performance scan</div>
+          <p className="text-xs text-muted-foreground">Watches the running game for ten seconds — Windows processes, GPU engines, Android threads and the bridge's own timings — and says where the frame time went. Keep playing while it runs. Same redaction as below.</p>
+        </div>
+        <div className="flex shrink-0 gap-2">
+          <Button type="button" variant="outline" disabled={pending.has('scan')}
+            onClick={() => run('scan', async () => setScan({ ...await call('performanceScan', {}), url: '' }))}>{pending.has('scan') ? 'Scanning…' : 'Run scan'}</Button>
+          <Button type="button" variant="outline" disabled={pending.has('scan')}
+            onClick={() => run('scan', async () => {
+              const result = await call('performanceScan', { upload: true });
+              setScan(result);
+              try { await navigator.clipboard.writeText(result.url); notify('Scan link copied'); } catch { notify('Scan uploaded'); }
+            })}>Run &amp; upload</Button>
+        </div>
+      </div>
+      {scan?.url && <p className="text-sm break-all">Share this link: <a href={scan.url} target="_blank" rel="noreferrer" className="underline">{scan.url}</a></p>}
+      {scan && <textarea readOnly value={scan.bundle} rows={16} aria-label="Performance scan"
+        className="w-full rounded-md border bg-secondary/40 p-3 font-mono text-xs" />}
+    </div>}
     <div className="space-y-3 border-t pt-5">
       <div className="flex items-center justify-between gap-4">
         <div>

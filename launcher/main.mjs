@@ -12,13 +12,14 @@ import { Setup, identifyArchives, avdDirectory, parseStorageGB, planStorageChang
 import { loadLibraryArtwork } from './core/artwork.mjs';
 import { Quest } from './core/quest.mjs';
 import { importGameZip } from './core/game-files.mjs';
-import { collectDiagnostics, uploadDiagnostics } from './core/diagnostics.mjs';
+import { collectDiagnostics, redact, uploadDiagnostics } from './core/diagnostics.mjs';
 import { LiveDiagnostics } from './core/live-diagnostics.mjs';
 import { EmulatorWatchdog } from './core/watchdog.mjs';
 import { loadCompatibilityProfiles, resolveCompatibility, compatibilityPatchArgs, compatibilityRuntimeOptions } from './core/compatibility.mjs';
 import { Ovrport, selectedPatchArgs } from './core/ovrport.mjs';
 import { MetaSession } from './core/session.mjs';
 import { carryPortableFiles, configurePortable, portableOutput, sweepPortableTemp } from './core/portable.mjs';
+import { performanceScanArgs, performanceScanTimeout } from './core/performance.mjs';
 
 // Keep the packaged app in Electron GUI mode even when launched from a shell
 // that uses ELECTRON_RUN_AS_NODE for other tooling.
@@ -499,6 +500,9 @@ handler('settings', async values => {
   if (settings.managedDirectory && (settings.sdk !== state.data.settings.sdk || settings.avd !== state.data.settings.avd)) throw new Error('Managed Android paths cannot be changed here.');
   if (!/^[A-Za-z0-9_-]+$/.test(settings.avd) || !Number.isInteger(settings.port) || settings.port < 5554 || settings.port > 5682 || settings.port % 2 ||
     !Number.isInteger(settings.memoryMB) || settings.memoryMB < 2048 || settings.memoryMB > 16384) throw new Error('Check the Android AVD, even-numbered port, and memory settings.');
+  // Six is the Android emulator's own ceiling: it clamps -cores above that and
+  // reports the clamped count back, which ensure() would then read as a
+  // mismatch and refuse to launch. Never offer a number it will not honour.
   if (!Number.isInteger(settings.cpuCores) || settings.cpuCores < 2 || settings.cpuCores > 6) throw new Error('Choose between 2 and 6 vCPUs.');
   if (typeof settings.precomposeProjectionLayers !== 'boolean') throw new Error('Choose whether to precompose projection layers.');
   for (const key of ['sdk', 'downloadDir']) if (typeof settings[key] !== 'string' || !path.isAbsolute(settings[key])) throw new Error('Select absolute Windows paths.');
@@ -576,6 +580,22 @@ handler('diagnostics', async ({ upload = false, save = false } = {}) => {
   }
   reviewedDiagnostics = bundle;
   return { bundle };
+});
+// A scan describes a session that is happening, not one that happened: it
+// samples the guest's threads and the bridge's timers while they run. The
+// renderer only offers it during a session, and this refuses again in case the
+// game exited between the click and the call.
+handler('performanceScan', async ({ upload = false, seconds = 10 } = {}) => {
+  if (!runtime.child) throw new Error('Start a game first: the scan samples a running session.');
+  const game = state.data.games.find(g => g.id === runtime.game);
+  const output = await run('powershell.exe', performanceScanArgs(root, state.data.settings,
+    { seconds, version: app.getVersion(), packageName: game?.package || '' }), { timeout: performanceScanTimeout(seconds) });
+  // The script removes the same three identifiers itself, so that a report
+  // someone runs by hand is safe to send. Running it again here costs nothing
+  // and keeps the launcher's guarantee independent of the script's.
+  const bundle = redact(output.replaceAll('\r\n', '\n')).trim() + '\n';
+  if (!upload) return { bundle };
+  return { bundle, url: await uploadDiagnostics(bundle, { endpoint: state.data.settings.diagnosticsEndpoint || undefined, title: 'AXRB performance scan' }) };
 });
 const uiErrors = [];
 if (smoke) window.webContents.on('console-message', details => { if (details.level === 'error') uiErrors.push(details.message); });

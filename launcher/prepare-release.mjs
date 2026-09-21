@@ -41,6 +41,7 @@ const files = [
     'scripts/emulator/android_runtime_policy.py', 'scripts/emulator/audio_policy.py', 'scripts/emulator/distribution.py',
     'scripts/emulator/storage_policy.py', 'scripts/emulator/unreal_memory_policy.py',
     'scripts/run/run_windows_game.ps1', 'scripts/run/fps_hud.ps1', 'scripts/run/stop_game.ps1',
+    'scripts/run/performance_scan.ps1',
     'scripts/run/open_windows_features.ps1', 'scripts/run/android_app_label.py', 'scripts/run/steamvr_app_identity.py'].map(p => [p, p]),
 ];
 const sha256 = {};
