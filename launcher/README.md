@@ -49,8 +49,10 @@ library entries, ownership information or downloaded files.
 Extract `AXRB-Portable-<version>.zip` into a writable folder and run `AXRB.exe`.
 Keep the `AXRB.portable` marker beside it. This mode stores its profile in
 `data/`, defaults downloads to `downloads/`, and defaults Android to
-`AXRB Runtime/` beside the executable. The direct-launch EXE has no marker and
-uses the Windows user profile and external runtime defaults.
+`AXRB Runtime/` beside the executable. The marker takes precedence over
+`--user-data-dir`, and Electron's session cache stays inside `data/` as well.
+The direct-launch EXE has no marker and uses the Windows user profile and
+external runtime defaults.
 
 Close AXRB and Android before moving or copying the entire portable folder.
 Internal paths follow the new location even if the original copy still exists.
@@ -59,9 +61,13 @@ Setup repairs moved AVD paths and discards its old quick-boot snapshot while
 preserving Android storage, installed games and saves. A runtime-app update or
 path repair does not redownload SDK components whose pinned receipts remain valid.
 
-Meta credentials remain encrypted with Electron safeStorage (Windows DPAPI)
-in both modes. Moving to another PC or Windows account may require signing in
-again; portability does not make the encrypted session transferable.
+Portable mode stores the Meta session **unencrypted** in `data/meta-session.txt`
+inside the portable folder so it can move between computers. Anyone with a copy
+can use that session for the store and owned-content downloads until it expires.
+Sign out before sharing or discarding the folder. Signing out deletes both local
+session formats but does not revoke copies already taken; revoke the session in
+Meta account settings if the folder or drive is lost. Nonportable mode keeps using
+Electron safeStorage (Windows DPAPI).
 
 ## Live diagnostics
 
@@ -105,6 +111,9 @@ Add `-Portable` to build `AXRB-Portable-<version>.zip` instead of the EXE, with
 `SHA256SUMS-<version>-portable.txt`. `npm run dist:portable --prefix launcher`
 uses the same build wrapper. Neither package includes an existing profile or
 managed Android installation.
+Each build finalizes the shared source ZIP, then refreshes checksum manifests for
+both package modes present in `out/releases`. Build both packages from the same
+source checkout before publishing; refreshing a manifest does not rebuild its package.
 Distribute the matching source archive alongside either launcher package.
 Code signing uses electron-builder's standard certificate environment variables;
 without a signing certificate, the EXE is unsigned.
@@ -192,8 +201,9 @@ Source components are in `ui/`, with shared shadcn components in `ui/components/
   library. Purchases open on Meta's site. Sign in to list your Quest entitlements
   and access downloads; a Rift purchase is not a Quest entitlement.
 - **Connect Meta:** Sign in on Meta's hosted page. Credentials are never sent to
-  an AXRB service. The account token is encrypted with Electron safeStorage
-  (Windows DPAPI) and never sent to the launcher renderer or written in logs.
+  an AXRB service. Nonportable mode encrypts the account token with Electron
+  safeStorage (Windows DPAPI); portable mode stores it unencrypted inside its
+  `data/` folder. Tokens are never sent to the launcher renderer or written in logs.
 - **Downloads:** Choose a Quest build. APK, OBB and binary asset files are saved
   with original filenames. Transfers can be cancelled/retried, incomplete files
   stay `.part`, resume requires an ETag, and completed files receive a local
@@ -326,7 +336,10 @@ host startup, not changed during an active session.
 
 The direct-launch EXE uses `%APPDATA%/AXRB/library.json` for games, settings and task
 history; portable mode uses `data/library.json` beside the executable.
-`meta-session.bin` in the same profile stores the encrypted Meta token.
+`meta-session.bin` in the nonportable profile stores the encrypted Meta token;
+portable mode uses plaintext `data/meta-session.txt` inside the portable folder.
+Both session filenames are ignored by Git at any depth and excluded from source
+archives. `/AXRB-Portable/` is also ignored for local portable installations.
 Downloads default to `~/Downloads/AXRB/<app-id>/<build-id>/` with the EXE
 or `downloads/<app-id>/<build-id>/` in portable mode. Games' saves stay in the AVD.
 Five GB of free disk headroom is reserved before downloads to keep Android

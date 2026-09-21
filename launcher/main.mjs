@@ -16,6 +16,7 @@ import { collectDiagnostics, uploadDiagnostics } from './core/diagnostics.mjs';
 import { LiveDiagnostics } from './core/live-diagnostics.mjs';
 import { loadCompatibilityProfiles, resolveCompatibility, compatibilityPatchArgs, compatibilityRuntimeOptions } from './core/compatibility.mjs';
 import { Ovrport, selectedPatchArgs } from './core/ovrport.mjs';
+import { MetaSession } from './core/session.mjs';
 
 // Keep the packaged app in Electron GUI mode even when launched from a shell
 // that uses ELECTRON_RUN_AS_NODE for other tooling.
@@ -26,14 +27,18 @@ const smoke = process.argv.includes('--smoke-test');
 const debug = process.argv.includes('--axrb-debug') || process.argv.includes('--debug') || process.env.AXRB_DEBUG === '1';
 const profile = app.commandLine.getSwitchValue('user-data-dir');
 const portable = app.isPackaged && existsSync(path.join(path.dirname(process.execPath), 'AXRB.portable')) ? path.dirname(process.execPath) : '';
-if (profile) app.setPath('userData', path.resolve(profile));
-else if (portable) app.setPath('userData', path.join(portable, 'data'));
+if (portable) {
+  app.setPath('userData', path.join(portable, 'data'));
+  app.setPath('sessionData', app.getPath('userData'));
+}
+else if (profile) app.setPath('userData', path.resolve(profile));
 else if (smoke) app.setPath('userData', path.join(root, 'out/launcher/smoke'));
 else app.setPath('userData', path.join(app.getPath('appData'), 'AXRB'));
 if (!app.requestSingleInstanceLock()) app.quit();
 app.on('second-instance', () => { window?.show(); window?.focus(); });
 let window, authWindow, state, runtime, token = '', account = '', busy = false;
 let setup;
+let metaSession;
 let liveDiagnostics, reviewedDiagnostics = null;
 let quitting = false;
 let compatibilityProfiles;
@@ -134,8 +139,7 @@ async function login() {
         event?.preventDefault(); if (processing) return; processing = true;
         try {
           const value = await auth.complete(target);
-          if (!safeStorage.isEncryptionAvailable()) throw new Error('Windows credential encryption is unavailable.');
-          await fs.writeFile(path.join(state.directory, 'meta-session.bin'), safeStorage.encryptString(value));
+          await metaSession.save(value);
           token = value; completed = true; authWindow.close(); changed(); resolve();
         } catch (error) { completed = true; authWindow.close(); reject(error); }
       } else if (dest.protocol !== 'https:' || !['meta.com', 'facebook.com', 'oculus.com', 'instagram.com'].some(d => dest.hostname === d || dest.hostname.endsWith(`.${d}`))) event?.preventDefault();
@@ -244,6 +248,7 @@ async function importTransfer(kind, input) {
 async function bootstrap() {
 compatibilityProfiles = await loadCompatibilityProfiles(path.join(directory, 'core/game-compatibility.json'));
 state = new State(app.getPath('userData')); await state.load({ portableRoot: portable });
+metaSession = new MetaSession(state.directory, { portable: Boolean(portable), safeStorage });
 const pendingRuntime = await state.pendingRuntime();
 const components = JSON.parse(await fs.readFile(path.join(directory, 'core/components.json'), 'utf8'));
 state.data.settings = { sdk: path.join(process.env.LOCALAPPDATA || '', 'Android/Sdk'), avd: 'axrb-games-api34', port: 5580,
@@ -278,7 +283,7 @@ liveDiagnostics = new LiveDiagnostics({
   onUpdate: () => { if (window && !window.isDestroyed()) window.webContents.send('axrb:diagnostics'); },
 });
 await liveDiagnostics.start();
-try { if (safeStorage.isEncryptionAvailable()) token = safeStorage.decryptString(await fs.readFile(path.join(state.directory, 'meta-session.bin'))); } catch {}
+token = await metaSession.load();
 window = new BrowserWindow({ width: 1320, height: 880, minWidth: 920, minHeight: 640, title: 'AXRB', icon: path.join(directory, 'assets/axrb.ico'), backgroundColor: '#141414',
   autoHideMenuBar: true, webPreferences: { preload: path.join(directory, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false } });
 window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -307,7 +312,12 @@ handler('chooseSetupArchives', async () => {
 handler('setupFeatures', () => openWindowsFeatures(root));
 handler('setupLicense', async () => { const error = await shell.openPath(path.join(app.isPackaged ? process.resourcesPath : directory, 'licenses/android-sdk.txt')); if (error) throw new Error(error); });
 handler('login', async () => { await login(); return syncMeta(); });
-handler('logout', async () => { for (const controller of controllers.values()) controller.abort(); token = ''; account = ''; await fs.rm(path.join(state.directory, 'meta-session.bin'), { force: true }); changed(); });
+handler('logout', async () => {
+  for (const controller of controllers.values()) controller.abort();
+  token = ''; account = '';
+  await metaSession.clear();
+  changed();
+});
 handler('sync', async () => { const online = await syncInstalled(); const result = token ? await syncMeta() : null; return { online, meta: result }; });
 handler('search', async text => { const games = await new QuestStore(token).search(text); for (const game of games) searchResults.set(game.id, game); return games; });
 handler('add', async id => { const game = searchResults.get(appId(id)); if (!game) throw new Error('Search for this app again.'); const existing = state.data.games.find(g => g.id === game.id); if (!existing) state.put(game); await persist(); return game.id; });

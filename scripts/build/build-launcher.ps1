@@ -23,11 +23,6 @@ try {
     foreach ($file in @($installer, $source)) {
         if (!(Test-Path -LiteralPath $file -PathType Leaf)) { throw "Expected build artifact is missing: $file" }
     }
-    $lines = foreach ($file in @($installer, $source)) {
-        $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
-        "$hash  $([IO.Path]::GetFileName($file))"
-    }
-    $lines | Set-Content -LiteralPath (Join-Path $release "SHA256SUMS-$version$(if ($Portable) { '-portable' }).txt") -Encoding ascii
     if (!$KeepUnpacked) {
         $unpacked = Join-Path $release 'win-unpacked'
         if (Test-Path -LiteralPath $unpacked) { Remove-Item -LiteralPath $unpacked -Recurse -Force }

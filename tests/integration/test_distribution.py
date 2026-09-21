@@ -1,8 +1,14 @@
 import importlib.util
+import hashlib
+import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('distribution',
@@ -66,6 +72,70 @@ class NdkDiscoveryTests(unittest.TestCase):
         driver.unlink()
         with self.assertRaises(RuntimeError):
             distribution.ndk_compiler(managed, cxx=True)
+
+
+class ReleaseChecksumTests(unittest.TestCase):
+    def test_both_packages_follow_the_finalized_shared_source_archive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            release = root / 'out/releases'
+            release.mkdir(parents=True)
+            for name in ('launcher', 'host', 'runtime', 'protocol', 'scripts/build', 'tests'):
+                (root / name).mkdir(parents=True)
+            (root / 'launcher/package.json').write_text('{"version":"1.2.3"}')
+            for name in ('CMakeLists.txt', 'CMakePresets.json', 'README.md', '.gitignore', 'logo_axrb.png'):
+                (root / name).write_bytes(b'fixture')
+            profile = root / 'launcher/profile'
+            profile.mkdir()
+            for name in ('meta-session.txt', 'meta-session.bin'):
+                (profile / name).write_bytes(b'private session fixture')
+            script = root / 'scripts/build/source_archive.py'
+            shutil.copyfile(Path(__file__).resolve().parents[2] / 'scripts/build/source_archive.py', script)
+            portable = release / 'AXRB-Portable-1.2.3.zip'
+            executable = release / 'AXRB-1.2.3.exe'
+            source = release / 'AXRB-1.2.3-source.zip'
+            portable_manifest = release / 'SHA256SUMS-1.2.3-portable.txt'
+            exe_manifest = release / 'SHA256SUMS-1.2.3.txt'
+
+            def finalize():
+                subprocess.run([sys.executable, str(script)], check=True, capture_output=True, text=True)
+
+            def verify(manifest, package):
+                entries = dict(line.split('  ', 1)[::-1] for line in manifest.read_text().splitlines())
+                self.assertEqual(set(entries), {package.name, source.name})
+                for file in (package, source):
+                    self.assertEqual(entries[file.name], hashlib.sha256(file.read_bytes()).hexdigest())
+
+            portable.write_bytes(b'portable package')
+            finalize()
+            verify(portable_manifest, portable)
+            self.assertFalse(exe_manifest.exists())
+            with zipfile.ZipFile(source) as archive:
+                self.assertIn('launcher/package.json', archive.namelist())
+                for name in ('meta-session.txt', 'meta-session.bin'):
+                    self.assertNotIn(f'launcher/profile/{name}', archive.namelist())
+            previous_source = source.read_bytes()
+
+            # Building the other mode may regenerate the shared source archive.
+            (root / 'launcher/package.json').write_text(json.dumps({'version': '1.2.3', 'description': 'updated'}))
+            executable.write_bytes(b'executable package')
+            finalize()
+            self.assertNotEqual(source.read_bytes(), previous_source)
+            verify(portable_manifest, portable)
+            verify(exe_manifest, executable)
+
+            # Rebuilding portable must refresh its binary hash and both source entries.
+            (root / 'host/new.cpp').write_text('int updated;')
+            portable.write_bytes(b'rebuilt portable package')
+            finalize()
+            verify(portable_manifest, portable)
+            verify(exe_manifest, executable)
+
+            # A removed package must not leave a manifest advertising missing files.
+            executable.unlink()
+            finalize()
+            self.assertFalse(exe_manifest.exists())
+            verify(portable_manifest, portable)
 
 
 if __name__ == '__main__': unittest.main()

@@ -59,3 +59,10 @@ launcher/dist/
 
 # Persistent local keys and rollback state
 .local/
+
+# Local portable installation, including its profile and Android storage
+/AXRB-Portable/
+
+# Meta account sessions, including custom profiles inside the checkout
+meta-session.txt
+meta-session.bin

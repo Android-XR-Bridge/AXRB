@@ -50,9 +50,13 @@ The launcher keeps the game library, downloads and runtime state together:
 - **Runtime:** emulator storage, memory, vCPU and OpenXR-related settings.
 - **Play:** game launch, SteamVR app identity, preview window and clean stop.
 
-Meta account credentials remain in Meta’s sign-in window. The launcher stores
-the resulting session with Windows credential protection and does not expose it
-to the renderer or game processes.
+Meta account credentials remain in Meta’s sign-in window. Nonportable mode stores
+the resulting session with Windows credential protection. Portable mode stores
+it **unencrypted** in `data/meta-session.txt` inside the portable folder so it can
+move between computers. Anyone with a copy can use that session until it expires:
+sign out before sharing the folder, and revoke the session in Meta account settings
+if it is lost. Signing out does not revoke earlier copies. Neither mode exposes
+the token to the renderer or game processes.
 
 **Settings → Precompose projection layers** provides an optional compatibility
 workaround for incorrect multi-projection rendering, including The Climb 2 on
