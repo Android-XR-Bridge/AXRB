@@ -48,3 +48,13 @@ export function GameGrid({ games, onOpen, store = false }) {
   </div>;
 }
 export function Empty({ children }) { return <p className="py-24 text-center text-muted-foreground">{children}</p>; }
+
+const EMULATOR_LABELS = { online: 'Android running', starting: 'Android starting…', stopped: 'Android stopped', unknown: 'Android status unknown' };
+const EMULATOR_DOTS = { online: 'bg-emerald-400', starting: 'bg-amber-400', stopped: 'bg-muted-foreground', unknown: 'bg-red-400' };
+export function EmulatorStatus({ emulator, className }) {
+  if (!emulator) return null;
+  return <span className={cn('flex items-center gap-2 text-xs text-muted-foreground', className)} title={emulator.detail}>
+    <span className={cn('size-1.5 shrink-0 rounded-full', EMULATOR_DOTS[emulator.phase] || EMULATOR_DOTS.unknown)} aria-hidden="true" />
+    <span role="status">{EMULATOR_LABELS[emulator.phase] || EMULATOR_LABELS.unknown}</span>
+  </span>;
+}

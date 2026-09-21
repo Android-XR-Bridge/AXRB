@@ -45,6 +45,23 @@ export async function libraryActionsSmoke(window, { state, runtime, dialog, pers
     game.installed = true; runtime.uninstall = async () => { throw Error('Android uninstall rejected'); }; await persist();
     await js(`window.axrb.uninstall('${game.id}')`); assert.equal(game.installed, true);
     await check(`Array.from(document.querySelectorAll('[data-job-toast]')).some(e => e.textContent.includes('Android uninstall rejected'))`, 'Uninstall failure toast missing');
+    // An unrelated game's active download must never block this one (it used to,
+    // via a global controllers.size check instead of scoping to this game's jobs).
+    runtime.uninstall = async () => { removed++; };
+    const unrelatedJob = { id: 'unrelated-download', gameId: 'some-other-game', name: 'Unrelated', status: 'downloading' };
+    state.data.jobs.unshift(unrelatedJob); await persist();
+    const beforeUnrelated = removed;
+    let uninstallResult = await js(`window.axrb.uninstall('${game.id}')`);
+    assert.equal(uninstallResult.ok, true, uninstallResult.error);
+    assert.equal(removed, beforeUnrelated + 1, 'An unrelated active job must not block uninstalling this game');
+    game.installed = true; await persist();
+    // This game's own active job must still block it.
+    const ownJob = { id: 'own-transfer', gameId: game.id, name: game.name, status: 'downloading' };
+    state.data.jobs.unshift(ownJob); await persist();
+    uninstallResult = await js(`window.axrb.uninstall('${game.id}')`);
+    assert.equal(uninstallResult.ok, false);
+    assert.match(uninstallResult.error, /Finish this game.s transfer/);
+    state.data.jobs = state.data.jobs.filter(j => j !== unrelatedJob && j !== ownJob); await persist();
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: ['C:/test/import.apk'] });
     runtime.inspect = async () => { await new Promise(r => setTimeout(r, 250)); return { id: 'local:com.axrbtest.imported', package: 'com.axrbtest.imported', name: 'APK toast test', source: 'local', apk: 'C:/test/import.apk' }; };
     await js(`window.axrb.import()`);

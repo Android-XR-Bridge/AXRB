@@ -23,6 +23,7 @@ export function SetupScreen({ setup }) {
   const [archives, setArchives] = useState([]);
   const [selectingArchives, setSelectingArchives] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [forceReinstall, setForceReinstall] = useState(false);
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     if (!setup.active || !setup.startedAt) return undefined;
@@ -57,7 +58,8 @@ export function SetupScreen({ setup }) {
   const start = async () => {
     setStarting(true);
     try { await invoke('setupStart', { directory, accepted: licenseNeeded ? accepted : true,
-      storageGB: selectedStorageGB, useCurrent, archives: useCurrent ? [] : archives.map(archive => archive.path) }); }
+      storageGB: selectedStorageGB, useCurrent, archives: useCurrent ? [] : archives.map(archive => archive.path),
+      forceReinstall: setup.debug && needs?.runtime ? forceReinstall : false }); }
     finally { setStarting(false); }
   };
   return <main className="flex min-h-screen items-center justify-center p-6"><section className="w-full max-w-4xl space-y-4" aria-label="Runtime setup">
@@ -111,6 +113,7 @@ export function SetupScreen({ setup }) {
         <p>Setup needs to complete:</p>
         <ul className="list-disc space-y-1 pl-5">{steps.map(step => <li key={step}>{step}</li>)}</ul>
         {useCurrent && needs.android && <p className="text-muted-foreground">Installed games and Android storage are kept. A changed AXRB runtime app does not require downloading Android again.</p>}
+        {setup.debug && needs.runtime && <label className="flex items-start gap-3 rounded-md border p-3"><input id="setup-force-reinstall" type="checkbox" checked={forceReinstall} onChange={e => setForceReinstall(e.target.checked)} className="mt-1" /><span>Debug: uninstall the existing AXRB runtime app before installing, instead of updating it in place. Use this if setup fails because the runtime app's signing key changed (Android refuses to update an app across a different signing identity).</span></label>}
       </div>}
       </div></div>
       <div className="flex flex-wrap items-center justify-between gap-3">

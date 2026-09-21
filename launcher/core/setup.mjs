@@ -230,10 +230,12 @@ export class Setup {
       this.update({ hardware, phase: setupPhase(hardware, { ready: this.status.needs.ready, debug: this.debug }) });
     } catch (error) { this.update({ phase: 'error', error: error.message }); }
   }
-  async start({ directory, accepted, storageGB = 32, useCurrent = false, archives = [] }) {
+  async start({ directory, accepted, storageGB = 32, useCurrent = false, archives = [], forceReinstall = false }) {
     if (this.status.active || this.starting) throw new Error('Setup is already running.');
     this.starting = true;
     try {
+    if (forceReinstall && !this.debug) throw new Error('Reinstalling the runtime from scratch is a debug-only option.');
+    this.forceReinstall = forceReinstall === true;
     if (accepted !== true && !this.status.needs?.licensed && !this.status.currentNeeds?.licensed) throw new Error('Accept the Android SDK license to set up Android.');
     if (!this.debug && !hardwareRequirementsMet(this.status.hardware)) throw new Error('Resolve the system requirements first.');
     if (!this.status.hardware?.hypervisor) throw new Error('Enable the Windows hypervisor first.');
@@ -374,6 +376,15 @@ export class Setup {
       await this.runtime.ensure({ onOutput: (text, metadata) => this.appendLog(text, metadata) });
       this.appendLog('Android boot completed; verifying GPU and ABI.\n');
       signal.throwIfAborted();
+      if (this.forceReinstall) {
+        this.update({ component: 'Uninstalling AXRB runtime (debug)' });
+        this.appendLog('Debug: uninstalling the existing AXRB runtime before installing, instead of updating in place.\n');
+        // A mismatched result here is exactly what forces this path in the first
+        // place (Android refuses to update an app across a different signing
+        // key), so a missing package or any other uninstall failure is fine to
+        // ignore: the install below is the real, observable outcome.
+        await this.runtime.adb(['uninstall', 'com.axrb.openxrruntime']).catch(() => {});
+      }
       this.update({ component: 'Installing AXRB runtime' });
       await this.runtime.adb(['install', '--no-incremental', '--force-queryable', '-r', path.join(this.root, 'out/android/runtime-arm64-v8a/axrb-openxr-runtime-debug.apk')], { timeout: 240000 });
       if (!(await this.runtime.adb(['shell', 'pm', 'path', 'com.axrb.openxrruntime'])).includes('package:')) throw new Error('Android did not register the AXRB runtime. Retry setup.');

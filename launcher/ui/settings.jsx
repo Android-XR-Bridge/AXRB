@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { activeStatuses, call } from './common';
+import { activeStatuses, call, EmulatorStatus } from './common';
 
 export function Settings({ state, run, pending, notify }) {
   const [draft, setDraft] = useState({ ...state.settings });
@@ -34,7 +34,18 @@ export function Settings({ state, run, pending, notify }) {
     </div>
     {state.portable && <p className="text-sm text-muted-foreground">This portable install stores your Meta session unencrypted in data/meta-session.txt inside its folder. Anyone with a copy can use your Meta session for the store and downloads until it expires. Sign out before sharing or discarding the folder. Signing out does not revoke earlier copies; revoke the session in Meta account settings if the folder or drive is lost.</p>}
     <details className="group" data-runtime-settings><summary className="flex cursor-pointer list-none items-center justify-between py-1">Android runtime<ChevronDown className="size-4 transition-transform group-open:rotate-180" /></summary>
-      <div className="mt-5 space-y-5">{!state.settings.managedDirectory && <>{field('sdk', 'Android SDK', { required: true })}{field('avd', 'Virtual device', { required: true, pattern: '[a-zA-Z0-9_-]+' })}</>}
+      <div className="mt-5 space-y-5">
+        <div className="flex items-center justify-between gap-4 rounded-md border p-3">
+          <EmulatorStatus emulator={state.emulator} />
+          <div className="flex shrink-0 gap-2">
+            <Button type="button" variant="outline" disabled={pending.has('start-android') || state.busy || ['online', 'starting'].includes(state.emulator?.phase)}
+              onClick={() => run('start-android', async () => { await call('startAndroid'); notify('Android started'); })}>Start</Button>
+            <Button type="button" variant="outline" disabled={pending.has('stop-android') || state.busy || Boolean(state.running) || !['online', 'starting'].includes(state.emulator?.phase)}
+              onClick={() => run('stop-android', async () => { await call('stopAndroid'); notify('Android stopped'); })}>Stop</Button>
+          </div>
+        </div>
+        {/* Escaped so the class stays valid under the stricter v-mode regex engine some Chromium builds use for pattern validation; an unescaped trailing hyphen used to pass unnoticed. */}
+        {!state.settings.managedDirectory && <>{field('sdk', 'Android SDK', { required: true })}{field('avd', 'Virtual device', { required: true, pattern: '[a-zA-Z0-9_\\-]+' })}</>}
         <div className="grid grid-cols-2 gap-4">{field('port', 'Port', { type: 'number', min: 5554, max: 5682, step: 2, required: true })}{field('memoryMB', 'Memory (MB)', { type: 'number', min: 2048, max: 16384, step: 1024, required: true })}</div>
         <div className="space-y-2">
           <label htmlFor="storageGB">Android storage (GB)</label>
