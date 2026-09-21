@@ -5,12 +5,23 @@ games, the live Quest storefront, owned-game downloads, expansion files and DLC.
 
 ## Install
 
-Run `AXRB-Setup-0.1.1.exe`. First-run setup checks Windows Hypervisor Platform,
-explains how to enable it if needed, and downloads the pinned Android 16 runtime
-from Google after license acceptance. Choose a drive and Android disk size;
-setup checks available space before downloading. Games and ovrport are not bundled.
+Run `AXRB-Setup-<version>.exe`, or extract the portable ZIP described below.
+First-run setup checks Windows Hypervisor Platform, explains how to enable it
+if needed, and installs the pinned Android 16 runtime after license acceptance.
+Choose a drive and Android disk size; setup checks available space first.
+Games and ovrport are not bundled.
 This build requires Windows x64, an AMD or NVIDIA GPU, at least 12 GB RAM, and an active
 OpenXR runtime such as SteamVR.
+
+For a new installation, **Use downloaded setup files** accepts one or more of
+the four Android setup ZIPs (emulator, platform-tools, build-tools, system image).
+Files must match the exact sizes and SHA-256/SHA-1 checksums pinned in
+`core/components.json`; names do not matter. Unknown, corrupt or duplicate
+components are rejected rather than silently downloaded instead. A partial
+selection downloads only the remaining missing components. Selected ZIPs are
+extracted directly into the private managed SDK, without copying or deleting
+the originals or linking an external SDK. Keep them outside files setup replaces.
+Selections are not saved between launches and are ignored when reusing a disk.
 
 Setup checks the remembered runtime folder for an existing Android disk. If one
 is found, **Use current Android installation** is checked and shows its full path
@@ -22,13 +33,32 @@ Uncheck the box for a new installation, then choose a folder and storage size.
 Setup creates an `AXRB Runtime` subfolder there and checks only that destination;
 an old disk elsewhere does not constrain the new disk size. An occupied destination
 is rejected rather than overwritten. The old installation is left untouched, and
-its games and saves are not copied. The launcher library and login remain in the
-shared Windows user profile; choosing a new runtime folder does not reset them.
+its games and saves are not copied. The launcher library and login stay in their
+existing profile; choosing a new runtime folder does not reset them.
 
 The saved runtime changes only after setup succeeds. Failed or cancelled setup
 keeps the previous runtime selected after a launcher restart. Successful setup
 refreshes installed-game flags from the selected Android disk without removing
 library entries, ownership information or downloaded files.
+
+### Portable ZIP
+
+Extract `AXRB-Portable-<version>.zip` into a writable folder and run `AXRB.exe`.
+Keep the `AXRB.portable` marker beside it. This mode stores its profile in
+`data/`, defaults downloads to `downloads/`, and defaults Android to
+`AXRB Runtime/` beside the executable. Installed packages have no marker and
+continue using the Windows user profile and external runtime defaults.
+
+Close AXRB and Android before moving or copying the entire portable folder.
+Internal paths follow the new location even if the original copy still exists.
+Explicit paths outside that folder stay external and do not travel with it.
+Setup repairs moved AVD paths and discards its old quick-boot snapshot while
+preserving Android storage, installed games and saves. A runtime-app update or
+path repair does not redownload SDK components whose pinned receipts remain valid.
+
+Meta credentials remain encrypted with Electron safeStorage (Windows DPAPI)
+in both modes. Moving to another PC or Windows account may require signing in
+again; portability does not make the encrypted session transferable.
 
 ## Live diagnostics
 
@@ -59,7 +89,7 @@ long or fragmented credentials can still escape recognition. Review reports
 before sharing. Nothing is uploaded automatically. The Settings upload action
 requires a preview and publishes that reviewed report.
 
-## Build an installer
+## Build Windows packages
 
 From a configured Windows development checkout, run
 `powershell -ExecutionPolicy Bypass -File launcher/build.ps1`.
@@ -68,7 +98,11 @@ The script keeps the version from `launcher/package.json`, runs the launcher tes
 and writes `SHA256SUMS-<version>.txt`. Use `-SkipNative` when only launcher files
 changed and the existing native/runtime artifacts are still current; use
 `-SkipTests` only for a packaging retry after tests have already passed.
-Distribute the source archive alongside the MIT-licensed launcher installer.
+Add `-Portable` to build `AXRB-Portable-<version>.zip` instead of NSIS, with
+`SHA256SUMS-<version>-portable.txt`. `npm run dist:portable --prefix launcher`
+uses the same build wrapper. Neither package includes an existing profile or
+managed Android installation.
+Distribute the matching source archive alongside either launcher package.
 Code signing uses electron-builder's standard certificate environment variables;
 without a signing certificate, the installer is unsigned.
 
@@ -203,9 +237,11 @@ Source components are in `ui/`, with shared shadcn components in `ui/components/
   intentionally stop a running game; stop it with its preview window.
 
 Managed installations use `axrb-managed-api36` on port 5584 with four vCPUs and
-8 GB guest RAM. Android, downloads and logs live outside the application folder
-and survive launcher updates/uninstallation. Development checkouts can continue
-using an existing SDK and AVD. Windows features and SteamVR remain user-installed.
+8 GB guest RAM. In installed mode, Android, downloads and logs live outside the
+application folder and survive launcher updates/uninstallation. Portable mode
+defaults to the adjacent folders described above; retain those folders when
+updating the launcher. Development checkouts can continue using an existing SDK
+and AVD. Windows features and SteamVR remain user-installed.
 
 ### Projection-layer compatibility
 
@@ -240,9 +276,11 @@ host startup, not changed during an active session.
 
 ## Data and limitations
 
-`%APPDATA%/AXRB/library.json` stores games, settings and task history.
-`meta-session.bin` stores the encrypted Meta token. Downloads default to
-`~/Downloads/AXRB/<app-id>/<build-id>/`. Games' actual saves stay in the AVD.
+Installed mode uses `%APPDATA%/AXRB/library.json` for games, settings and task
+history; portable mode uses `data/library.json` beside the executable.
+`meta-session.bin` in the same profile stores the encrypted Meta token.
+Downloads default to `~/Downloads/AXRB/<app-id>/<build-id>/` in installed mode
+or `downloads/<app-id>/<build-id>/` in portable mode. Games' saves stay in the AVD.
 Five GB of free disk headroom is reserved before downloads to keep Android
 bootable. Meta APIs used by community launchers are undocumented and may change;
 API errors are shown rather than treating missing content as successful installs.

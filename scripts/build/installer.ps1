@@ -31,7 +31,7 @@ try {
         if (Test-Path -LiteralPath $staleMarker) { Remove-Item -LiteralPath $staleMarker -Force }
         if ($Portable) {
             # A portable build is the unpacked app plus a marker that keeps its data beside AXRB.exe.
-            Run npm.cmd @('exec', '--', 'electron-builder', '--win', 'dir', '--x64')
+            Run npm.cmd @('exec', '--', 'electron-builder', '--win', 'dir', '--x64', '--publish', 'never')
             $package = Get-Content -LiteralPath 'package.json' -Raw | ConvertFrom-Json
             $unpacked = Join-Path $AxrbRoot 'out/releases/win-unpacked'
             $archive = Join-Path $AxrbRoot "out/releases/AXRB-Portable-$($package.version).zip"
@@ -40,7 +40,7 @@ try {
             Add-Type -AssemblyName System.IO.Compression.FileSystem
             [IO.Compression.ZipFile]::CreateFromDirectory($unpacked, $archive, [IO.Compression.CompressionLevel]::Optimal, $false)
         }
-        else { Run npm.cmd @('exec', '--', 'electron-builder', '--win', 'nsis', '--x64') }
+        else { Run npm.cmd @('exec', '--', 'electron-builder', '--win', 'nsis', '--x64', '--publish', 'never') }
     } finally { Pop-Location }
     Run python @('scripts/build/source_archive.py')
 } finally { Pop-Location }

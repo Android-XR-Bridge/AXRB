@@ -45,6 +45,11 @@ function withImageDirectory(configText, image) {
 }
 const pathKey = value => process.platform === 'win32' ? path.resolve(value).toLowerCase() : path.resolve(value);
 const sameDirectory = (a, b) => Boolean(a) && Boolean(b) && pathKey(a) === pathKey(b);
+const realPath = file => fs.realpath(file).catch(error => { if (error.code === 'ENOENT') return path.resolve(file); throw error; });
+const containsPath = (directory, file) => {
+  const relative = path.relative(directory, file);
+  return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+};
 const systemImageDirectory = sdk => path.join(sdk, 'system-images/android-36/google_apis/x86_64');
 function parseAvdPath(iniText) {
   const match = /^path\s*=\s*(.+?)\s*$/im.exec(String(iniText ?? ''));
@@ -214,7 +219,7 @@ export class Setup {
     this.update({ current, needs, currentNeeds });
   }
   async check() {
-    if (this.status.active) return;
+    if (this.status.active || this.starting) return;
     this.update({ phase: 'checking', error: '' });
     try {
       await this.refreshCurrent();
@@ -251,13 +256,17 @@ export class Setup {
     const needs = await this.inspect(selected);
     if (accepted !== true && (!needs.licensed || needs.components.length)) throw new Error('Accept the Android SDK license to set up Android.');
     const selectedArchives = useCurrent ? [] : await identifyArchives(archives, this.components);
-    const selectedRoot = await fs.realpath(selected).catch(error => { if (error.code === 'ENOENT') return path.resolve(selected); throw error; });
-    for (const archive of selectedArchives) {
-      archive.path = await fs.realpath(archive.path);
-      const relative = path.relative(selectedRoot, archive.path);
-      const inside = !relative || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
-      if (inside && !sameDirectory(path.dirname(archive.path), path.join(selectedRoot, 'downloads'))) {
-        throw new Error(`Keep selected archives outside runtime files that setup replaces: ${archive.path}`);
+    if (selectedArchives.length) {
+      const selectedRoot = await realPath(selected), cacheRoot = await realPath(path.join(selected, 'downloads'));
+      const replaced = await Promise.all(['sdk', 'avd', 'android', 'output', 'license-acceptance.json',
+        `avd/${managedAvd}.ini`, `avd/${managedAvd}.avd/config.ini`,
+        ...this.components.map(c => `downloads/${c.id}-extract`)].map(name => realPath(path.join(selected, name))));
+      for (const archive of selectedArchives) {
+        archive.path = await fs.realpath(archive.path);
+        if ((containsPath(selectedRoot, archive.path) && !sameDirectory(path.dirname(archive.path), cacheRoot))
+          || replaced.some(directory => containsPath(directory, archive.path))) {
+          throw new Error(`Keep selected archives outside runtime files that setup replaces: ${archive.path}`);
+        }
       }
     }
     this.selectedArchives = new Map(selectedArchives.map(archive => [archive.id, archive.path]));
@@ -288,6 +297,8 @@ export class Setup {
       const requiredGB = this.runtime.settings.storageGB * 1.2 + remaining + 5;
       if (availableGB < requiredGB) throw new Error(`Setup needs ${Math.ceil(requiredGB)} GB free here (${availableGB.toFixed(1)} GB available). Choose another drive or a smaller Android disk.`);
     }
+    // A failed repair must not inherit a previous installation's success.
+    await fs.rm(path.join(this.directory, 'ready.json'), { force: true });
     await fs.writeFile(path.join(this.directory, 'license-acceptance.json'), JSON.stringify({ license: 'android-sdk-license', acceptedAt: new Date().toISOString() }));
     for (const c of this.components) {
       signal.throwIfAborted();
@@ -297,10 +308,10 @@ export class Setup {
       await checkSpace(this.directory, c.id === 'image' ? 9 * 1024 ** 3 : c.size * 4);
       const selected = this.selectedArchives?.get(c.id), ownedBySetup = !selected;
       let archive = selected || path.join(cache, `${c.id}.zip`);
-      if (ownedBySetup) {
+      if (ownedBySetup && this.selectedArchives?.size) {
         const protectedPaths = new Set([...(this.selectedArchives?.values() || [])].map(pathKey));
         let suffix = 0;
-        while ([archive, archive + '.part', archive + '.part.json'].some(file => protectedPaths.has(pathKey(file)))) {
+        while ((await Promise.all([archive, archive + '.part', archive + '.part.json'].map(async file => protectedPaths.has(pathKey(await realPath(file)))))).some(Boolean)) {
           archive = path.join(cache, `${c.id}-download-${++suffix}.zip`);
         }
       }

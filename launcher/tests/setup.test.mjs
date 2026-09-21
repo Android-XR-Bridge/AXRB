@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { archivePath, extractZip } from '../core/archive.mjs';
 import { Setup, verify, officialDownload, avdConfig, hardwareRequirementsMet, setupPhase, supportedSystem } from '../core/setup.mjs';
 import { State } from '../core/state.mjs';
+import { run } from '../core/runtime.mjs';
 
 function restoreSetupEnvironment(t) {
   const old = { ...process.env };
@@ -321,4 +322,94 @@ test('an unavailable installed-app inventory never commits an empty library stat
   assert.deepEqual(reopened.data.settings, before.settings);
   assert.deepEqual(reopened.data.games, before.games);
   await assert.rejects(fs.access(path.join(setup.directory, 'ready.json')), { code: 'ENOENT' });
+});
+
+test('failed moved-runtime repair remains retryable without resetting Android', async t => {
+  const { root, current, avd, setup } = await installationFixture(t);
+  await fs.writeFile(path.join(current, 'ready.json'), JSON.stringify({ runtimeHash: await setup.runtimeHash() }));
+  await fs.writeFile(path.join(current, 'license-acceptance.json'), '{"license":"android-sdk-license"}');
+  await fs.writeFile(avd.slice(0, -4) + '.ini', `path=${path.join(root, 'old-location/avd/axrb-managed-api36.avd')}\n`);
+  await fs.mkdir(path.join(avd, 'snapshots/default_boot'), { recursive: true });
+  await fs.writeFile(path.join(avd, 'snapshots/default_boot/memory.bin'), 'old snapshot');
+  await setup.check();
+  assert.equal(setup.status.needs.moved, true);
+  setup.runtime.ensure = async () => { throw new Error('repair boot failed'); };
+  await setup.start({ useCurrent: true, accepted: false }); await setup.task;
+  assert.equal(setup.status.phase, 'error');
+  assert.equal(await fs.readFile(path.join(avd, 'userdata-qemu.img'), 'utf8'), 'saved Android data');
+  await assert.rejects(fs.access(path.join(avd, 'snapshots/default_boot')), { code: 'ENOENT' });
+  await setup.check();
+  assert.equal(setup.status.phase, 'install', 'Failed repair must not reuse the old success receipt.');
+});
+
+async function componentArchive(root, id) {
+  const file = path.join(root, `renamed-${id}.zip`);
+  await run('python', ['-c', 'import sys,zipfile\nwith zipfile.ZipFile(sys.argv[1],"w") as z: z.writestr("payload/tool.exe",sys.argv[2])', file, id]);
+  const bytes = await fs.readFile(file);
+  return { file, bytes, component: { id, name: id, destination: id, prefix: 'payload', probe: 'tool.exe',
+    size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'),
+    url: `https://dl.google.com/android/repository/fixture-${id}.zip` } };
+}
+
+test('selected archives install offline without changing their originals', async t => {
+  const { root, setup } = await installationFixture(t);
+  const a = await componentArchive(root, 'tools-a'), b = await componentArchive(root, 'tools-b');
+  setup.components = [a.component, b.component];
+  t.mock.method(globalThis, 'fetch', async () => { throw new Error('No network is allowed for a complete local selection.'); });
+  await setup.start({ directory: path.join(root, 'offline'), storageGB: 8, accepted: true, archives: [a.file, b.file] });
+  await setup.task;
+  assert.equal(setup.status.phase, 'ready', setup.status.error);
+  for (const source of [a, b]) {
+    assert.equal(await fs.readFile(path.join(setup.runtime.settings.sdk, source.component.destination, 'tool.exe'), 'utf8'), source.component.id);
+    assert.deepEqual(await fs.readFile(source.file), source.bytes);
+  }
+});
+
+test('partial selection preserves sources through a cache junction and removes only its downloaded archive', async t => {
+  const { root, setup } = await installationFixture(t);
+  const a = await componentArchive(root, 'tools-a'), b = await componentArchive(root, 'tools-b');
+  setup.components = [a.component, b.component];
+  const destination = path.join(root, 'partial'), cache = path.join(destination, 'AXRB Runtime/downloads');
+  const external = path.join(root, 'external-archives');
+  await fs.mkdir(path.dirname(cache), { recursive: true }); await fs.mkdir(external);
+  await fs.symlink(external, cache, 'junction');
+  // An arbitrary filename can coincide with another component's cache slot.
+  const selected = path.join(external, 'tools-b.zip');
+  await fs.rename(a.file, selected);
+  const requests = [];
+  t.mock.method(globalThis, 'fetch', async url => {
+    requests.push(String(url));
+    assert.equal(String(url), b.component.url);
+    return new Response(b.bytes, { headers: { 'content-length': String(b.bytes.length) } });
+  });
+  await setup.start({ directory: destination, storageGB: 8, accepted: true, archives: [selected] });
+  await setup.task;
+  assert.equal(setup.status.phase, 'ready', setup.status.error);
+  assert.deepEqual(requests, [b.component.url]);
+  assert.deepEqual(await fs.readFile(selected), a.bytes);
+  assert.deepEqual(await fs.readdir(external), ['tools-b.zip']);
+  assert.equal(await fs.readFile(path.join(setup.runtime.settings.sdk, 'tools-b/tool.exe'), 'utf8'), 'tools-b');
+});
+
+test('invalid explicit selections fail before provisioning instead of falling back to downloads', async t => {
+  const { root, setup } = await installationFixture(t);
+  const a = await componentArchive(root, 'tools-a'), b = await componentArchive(root, 'tools-b');
+  setup.components = [a.component, b.component];
+  const duplicate = path.join(root, 'duplicate.zip'), corrupt = path.join(root, 'corrupt.zip'), unknown = path.join(root, 'unknown.zip');
+  await fs.copyFile(a.file, duplicate);
+  const damaged = Buffer.from(a.bytes); damaged[0] ^= 1;
+  await fs.writeFile(corrupt, damaged); await fs.writeFile(unknown, 'unknown');
+  const destination = path.join(root, 'rejected');
+  for (const [archives, error] of [[[corrupt], /verification/], [[unknown], /Unknown archive/], [[a.file, duplicate], /same component/]]) {
+    await assert.rejects(setup.start({ directory: destination, storageGB: 8, accepted: true, archives }), error);
+    await assert.rejects(fs.access(destination), { code: 'ENOENT' });
+  }
+  const externalSdk = path.join(root, 'external-sdk'), target = path.join(destination, 'AXRB Runtime');
+  await fs.mkdir(externalSdk); await fs.mkdir(target, { recursive: true });
+  const insideSdk = path.join(externalSdk, 'source.zip');
+  await fs.copyFile(a.file, insideSdk);
+  await fs.symlink(externalSdk, path.join(target, 'sdk'), 'junction');
+  await assert.rejects(setup.start({ directory: destination, storageGB: 8, accepted: true, archives: [insideSdk] }), /outside runtime files/);
+  assert.deepEqual(await fs.readFile(insideSdk), a.bytes);
+  await assert.rejects(fs.access(path.join(target, 'license-acceptance.json')), { code: 'ENOENT' });
 });
