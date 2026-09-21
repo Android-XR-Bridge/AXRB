@@ -61,23 +61,14 @@
     "win": {
       "target": [
         {
-          "target": "nsis",
+          "target": "portable",
           "arch": [
             "x64"
           ]
         }
       ],
-      "artifactName": "AXRB-Setup-${version}.${ext}",
+      "artifactName": "AXRB-${version}.${ext}",
       "icon": "assets/axrb.ico"
-    },
-    "nsis": {
-      "oneClick": true,
-      "perMachine": false,
-      "allowToChangeInstallationDirectory": false,
-      "deleteAppDataOnUninstall": false,
-      "createDesktopShortcut": true,
-      "shortcutName": "AXRB",
-      "runAfterFinish": true
     },
     "beforePack": "./verify-release.cjs"
   }

@@ -26,7 +26,7 @@ try {
         if (!$env:AXRB_SKIP_LAUNCHER_TESTS) { Run npm.cmd @('test') }
         Run npm.cmd @('run', 'build')
         Run node @('prepare-release.mjs')
-        # win-unpacked is shared across modes; a previous portable build must not leak its marker into an installed package.
+        # win-unpacked is shared across modes; the direct-launch EXE keeps its profile outside the app.
         $staleMarker = Join-Path $AxrbRoot 'out/releases/win-unpacked/AXRB.portable'
         if (Test-Path -LiteralPath $staleMarker) { Remove-Item -LiteralPath $staleMarker -Force }
         if ($Portable) {
@@ -40,7 +40,7 @@ try {
             Add-Type -AssemblyName System.IO.Compression.FileSystem
             [IO.Compression.ZipFile]::CreateFromDirectory($unpacked, $archive, [IO.Compression.CompressionLevel]::Optimal, $false)
         }
-        else { Run npm.cmd @('exec', '--', 'electron-builder', '--win', 'nsis', '--x64', '--publish', 'never') }
+        else { Run npm.cmd @('exec', '--', 'electron-builder', '--win', 'portable', '--x64', '--publish', 'never') }
     } finally { Pop-Location }
     Run python @('scripts/build/source_archive.py')
 } finally { Pop-Location }

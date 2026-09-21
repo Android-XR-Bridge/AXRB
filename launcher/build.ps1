@@ -20,7 +20,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Installer build failed ($LASTEXITCODE)." }
     $release = Join-Path $root 'out/releases'
     $artifacts = @(
-        (Join-Path $release $(if ($Portable) { "AXRB-Portable-$version.zip" } else { "AXRB-Setup-$version.exe" })),
+        (Join-Path $release $(if ($Portable) { "AXRB-Portable-$version.zip" } else { "AXRB-$version.exe" })),
         (Join-Path $release "AXRB-$version-source.zip")
     )
     foreach ($file in $artifacts) { if (!(Test-Path -LiteralPath $file -PathType Leaf)) { throw "Missing build artifact: $file" } }

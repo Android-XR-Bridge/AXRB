@@ -3,10 +3,12 @@
 A native Windows desktop frontend for the AXRB runtime: your installed Android
 games, the live Quest storefront, owned-game downloads, expansion files and DLC.
 
-## Install
+## Run
 
-Run `AXRB-Setup-<version>.exe`, or extract the portable ZIP described below.
-The normal installer uses a one-click flow with no install-folder wizard.
+Run `AXRB-<version>.exe` to open AXRB directly, or extract the portable ZIP
+described below. The EXE has no Windows installation wizard. It keeps the
+launcher profile in `%APPDATA%/AXRB` and defaults the Android runtime to
+`%LOCALAPPDATA%/AXRB Runtime`.
 First-run setup checks Windows Hypervisor Platform, explains how to enable it
 if needed, and installs the pinned Android 16 runtime after license acceptance.
 Choose a drive and Android disk size; setup checks available space first.
@@ -47,8 +49,8 @@ library entries, ownership information or downloaded files.
 Extract `AXRB-Portable-<version>.zip` into a writable folder and run `AXRB.exe`.
 Keep the `AXRB.portable` marker beside it. This mode stores its profile in
 `data/`, defaults downloads to `downloads/`, and defaults Android to
-`AXRB Runtime/` beside the executable. Installed packages have no marker and
-continue using the Windows user profile and external runtime defaults.
+`AXRB Runtime/` beside the executable. The direct-launch EXE has no marker and
+uses the Windows user profile and external runtime defaults.
 
 Close AXRB and Android before moving or copying the entire portable folder.
 Internal paths follow the new location even if the original copy still exists.
@@ -94,18 +96,18 @@ requires a preview and publishes that reviewed report.
 
 From a configured Windows development checkout, run
 `powershell -ExecutionPolicy Bypass -File launcher/build.ps1`.
-The NSIS installer and matching source archive are written to `out/releases`.
+The direct-launch EXE and matching source archive are written to `out/releases`.
 The script keeps the version from `launcher/package.json`, runs the launcher tests,
 and writes `SHA256SUMS-<version>.txt`. Use `-SkipNative` when only launcher files
 changed and the existing native/runtime artifacts are still current; use
 `-SkipTests` only for a packaging retry after tests have already passed.
-Add `-Portable` to build `AXRB-Portable-<version>.zip` instead of NSIS, with
+Add `-Portable` to build `AXRB-Portable-<version>.zip` instead of the EXE, with
 `SHA256SUMS-<version>-portable.txt`. `npm run dist:portable --prefix launcher`
 uses the same build wrapper. Neither package includes an existing profile or
 managed Android installation.
 Distribute the matching source archive alongside either launcher package.
 Code signing uses electron-builder's standard certificate environment variables;
-without a signing certificate, the installer is unsigned.
+without a signing certificate, the EXE is unsigned.
 
 Release preparation downloads Khronos's official `OpenXR.Loader.1.1.60.nupkg`
 and verifies its pinned SHA-256 before extracting only the Windows x64 desktop
@@ -238,7 +240,7 @@ Source components are in `ui/`, with shared shadcn components in `ui/components/
   intentionally stop a running game; stop it with its preview window.
 
 Managed installations use `axrb-managed-api36` on port 5584 with four vCPUs and
-8 GB guest RAM. In installed mode, Android, downloads and logs live outside the
+8 GB guest RAM. With the direct-launch EXE, Android, downloads and logs live outside the
 application folder and survive launcher updates/uninstallation. Portable mode
 defaults to the adjacent folders described above; retain those folders when
 updating the launcher. Development checkouts can continue using an existing SDK
@@ -277,10 +279,10 @@ host startup, not changed during an active session.
 
 ## Data and limitations
 
-Installed mode uses `%APPDATA%/AXRB/library.json` for games, settings and task
+The direct-launch EXE uses `%APPDATA%/AXRB/library.json` for games, settings and task
 history; portable mode uses `data/library.json` beside the executable.
 `meta-session.bin` in the same profile stores the encrypted Meta token.
-Downloads default to `~/Downloads/AXRB/<app-id>/<build-id>/` in installed mode
+Downloads default to `~/Downloads/AXRB/<app-id>/<build-id>/` with the EXE
 or `downloads/<app-id>/<build-id>/` in portable mode. Games' saves stay in the AVD.
 Five GB of free disk headroom is reserved before downloads to keep Android
 bootable. Meta APIs used by community launchers are undocumented and may change;

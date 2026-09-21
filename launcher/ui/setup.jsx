@@ -102,7 +102,6 @@ export function SetupScreen({ setup }) {
             <p>{archives.length} recognized archive{archives.length === 1 ? '' : 's'} selected.</p>
             <ul className="list-disc pl-5">{archives.map(archive => <li key={archive.id} className="break-words">{archive.name} — {archive.path.split(/[\\/]/).at(-1)}</li>)}</ul>
           </div>}
-          <p className="text-xs text-muted-foreground">Select any of the four Android setup ZIPs. Files are identified by size and checksum, not filename. Missing components will still be downloaded. Selected originals remain untouched, and this selection is not saved between launches.</p>
         </div>}
       {steps.length > 0 && <div className="space-y-2 text-sm" data-setup-needs>
         <p>Setup needs to complete:</p>
