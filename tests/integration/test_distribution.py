@@ -138,4 +138,70 @@ class ReleaseChecksumTests(unittest.TestCase):
             verify(portable_manifest, portable)
 
 
+@unittest.skipUnless(os.name == 'nt', 'Windows PowerShell portable helpers')
+class PortableHelperTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name)
+        self.portable = self.directory / 'Moved \u03a9'
+        scripts = self.portable / 'resources/runtime/scripts'
+        scripts.mkdir(parents=True)
+        self.paths = scripts / 'paths.ps1'
+        shutil.copyfile(Path(__file__).resolve().parents[2] / 'scripts/paths.ps1', self.paths)
+        (self.portable / 'AXRB.portable').touch()
+        (self.portable / 'data').mkdir()
+        self.profile = self.portable / 'data/library.json'
+        self.environment = {**os.environ, 'AXRB_TEST_PYTHON': sys.executable}
+        self.environment.pop('AXRB_PORTABLE_ROOT', None)
+        self.environment['AXRB_DATA_HOME'] = str(self.directory / 'external-output')
+        self.environment['ANDROID_EMULATOR_HOME'] = str(self.directory / 'external-emulator')
+
+    def run_helper(self, body):
+        script = self.directory / 'probe.ps1'
+        script.write_text(
+            "param([string]$Paths)\n$ErrorActionPreference = 'Stop'\n"
+            "[Console]::OutputEncoding = [Text.UTF8Encoding]::new()\n. $Paths\n" + body,
+            encoding='utf8')
+        return subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-File',
+            str(script), '-Paths', str(self.paths)], env=self.environment,
+            capture_output=True, text=True, encoding='utf8', timeout=30)
+
+    def test_standalone_helpers_carry_unicode_runtime_and_temporary_files(self):
+        old = self.directory / 'Original \u03a9'
+        managed = self.portable / 'Custom \u03a9/AXRB Runtime'
+        (managed / 'sdk').mkdir(parents=True)
+        (managed / 'sdk/probe.txt').write_text('carried SDK')
+        self.profile.write_text(json.dumps({'portableRoot': str(old),
+            'settings': {'managedDirectory': str(old / 'Custom \u03a9/AXRB Runtime')}}, ensure_ascii=False), encoding='utf8')
+        result = self.run_helper("""
+$probe = [IO.File]::ReadAllText((Join-Path $env:ANDROID_HOME 'probe.txt'))
+$native = [IO.Path]::GetTempFileName()
+$python = & $env:AXRB_TEST_PYTHON -c "import tempfile; f=tempfile.NamedTemporaryFile(delete=False); f.write(b'child data'); f.close(); print(f.name)"
+if ($LASTEXITCODE -ne 0) { throw 'Python failed' }
+$AxrbPortableRoot = [IO.Path]::GetPathRoot($AxrbPortableRoot)
+$volumePath = Assert-AxrbPortablePath (Join-Path $AxrbPortableRoot 'AXRB-no-write/output')
+@{ probe=$probe; native=$native; python=$python; emulatorHome=$env:ANDROID_EMULATOR_HOME; volumePath=$volumePath } | ConvertTo-Json -Compress
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        observed = json.loads(result.stdout)
+        self.assertEqual(observed['probe'], 'carried SDK')
+        self.assertEqual(Path(observed['emulatorHome']), managed / 'android')
+        for name in ('native', 'python'):
+            self.assertEqual(Path(observed[name]).parent, self.portable / 'temp')
+            self.assertTrue(Path(observed[name]).is_file())
+        self.assertEqual(Path(observed['python']).read_bytes(), b'child data')
+        self.assertEqual(Path(observed['volumePath']), Path(self.portable.anchor) / 'AXRB-no-write/output')
+        self.assertFalse((self.directory / 'external-output').exists())
+        self.assertFalse((self.directory / 'external-emulator').exists())
+
+    def test_standalone_helper_rejects_external_runtime_before_creating_it(self):
+        external = self.directory / 'external-runtime'
+        self.profile.write_text(json.dumps({'settings': {'managedDirectory': str(external)}}), encoding='utf8')
+        result = self.run_helper("throw 'Should not reach runtime work'\n")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Portable mode keeps output inside its folder', result.stderr)
+        self.assertFalse(external.exists())
+
+
 if __name__ == '__main__': unittest.main()
