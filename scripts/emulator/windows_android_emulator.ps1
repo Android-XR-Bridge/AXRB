@@ -49,6 +49,30 @@ $serial = "emulator-$Port"
 if (!$RuntimeApk) { $RuntimeApk = "$AxrbAssets/android/runtime-$Abi/axrb-openxr-runtime-debug.apk" }
 $image = "system-images;android-$ApiLevel;google_apis;x86_64"
 $logs = Join-Path $AxrbOut 'logs/emulator'
+$avdHome = if ($env:ANDROID_AVD_HOME) { $env:ANDROID_AVD_HOME } else { Join-Path $HOME '.android\avd' }
+$xrFeatureMarker = Join-Path $avdHome "$Avd.avd\.axrb-xr-features"
+# Store titles refuse to start unless the device advertises the headset
+# features their manifests require, and a stock emulator image advertises
+# none of them. PackageManager reads feature declarations only from the
+# read-only partitions, once, while system_server starts, so they have to be
+# written into /system rather than handed to the app.
+$xrFeatures = @(
+    'android.hardware.vr.headtracking',
+    'android.hardware.vr.high_performance',
+    'android.software.vr.mode',
+    'android.software.xr.api.openxr',
+    'android.software.xr.api.spatial',
+    'android.hardware.xr.input.controller',
+    'android.hardware.xr.input.hand_tracking',
+    'android.hardware.xr.input.eye_tracking',
+    'oculus.software.handtracking',
+    'oculus.software.eye_tracking',
+    'oculus.software.face_tracking',
+    'oculus.software.body_tracking',
+    'oculus.software.overlay_keyboard',
+    'com.oculus.feature.PASSTHROUGH',
+    'com.oculus.feature.RENDER_MODEL'
+)
 function Require-Path([string]$Path, [string]$Description) {
     if (!(Test-Path -LiteralPath $Path)) { throw "Android startup diagnostic: $Description was not found at $Path" }
 }
@@ -190,6 +214,80 @@ function Verify-Abi {
         Write-Output "ARM64 native bridge: $bridge; guest ABIs: $abis"
     }
 }
+function Get-GuestFeatures {
+    return @(Invoke-Adb @('-s', $serial, 'shell', 'pm', 'list', 'features') 60 |
+        ForEach-Object { ($_ -replace '^feature:', '').Trim() } | Where-Object { $_ })
+}
+function Wait-BootCompleted([int]$TimeoutSeconds) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        Start-Sleep -Seconds 2
+        [string]$state = ''
+        try { $state = ((Invoke-ExternalWithTimeout $adb @('-s', $serial, 'shell', 'getprop', 'sys.boot_completed') 10) -join '').Trim() } catch { }
+        if ($state -eq '1') { return $true }
+    } while ((Get-Date) -lt $deadline)
+    return $false
+}
+# Restarting the framework is enough to re-read the declarations: only
+# system_server parses them, and a full reboot would cost another cold start.
+function Install-XrFeatures {
+    Write-Output 'Android startup diagnostic: declaring headset features in the guest.'
+    $body = ($xrFeatures | ForEach-Object { "    <feature name=`"$_`" />" }) -join "`n"
+    $xml = "<?xml version=`"1.0`" encoding=`"utf-8`"?>`n<permissions>`n$body`n</permissions>`n"
+    $local = Join-Path ([IO.Path]::GetTempPath()) 'axrb-xr-features.xml'
+    # Android's parser rejects a byte-order mark, which PowerShell's UTF8
+    # encoding writes by default.
+    [IO.File]::WriteAllText($local, $xml, [Text.UTF8Encoding]::new($false))
+    try {
+        Invoke-Adb @('-s', $serial, 'root') 30 | Out-Null
+        Start-Sleep -Seconds 3
+        Invoke-Adb @('-s', $serial, 'wait-for-device') 60 | Out-Null
+        [string]$remount = ((Invoke-Adb @('-s', $serial, 'remount') 60) -join ' ')
+        if ($remount -match 'not allowed|Permission denied|bootloader') {
+            throw "the system partition stayed read-only ($($remount.Trim()))"
+        }
+        Invoke-Adb @('-s', $serial, 'push', $local, '/data/local/tmp/axrb-xr-features.xml') 60 | Out-Null
+        Invoke-Adb @('-s', $serial, 'shell', 'cp', '/data/local/tmp/axrb-xr-features.xml', '/system/etc/permissions/axrb-xr-features.xml') 60 | Out-Null
+        Invoke-Adb @('-s', $serial, 'shell', 'chmod', '644', '/system/etc/permissions/axrb-xr-features.xml') 30 | Out-Null
+        # A file copied out of /data keeps its data label, which system_server
+        # is not allowed to read.
+        Invoke-Adb @('-s', $serial, 'shell', 'chcon', 'u:object_r:system_file:s0', '/system/etc/permissions/axrb-xr-features.xml') 30 | Out-Null
+        Invoke-Adb @('-s', $serial, 'shell', 'rm', '-f', '/data/local/tmp/axrb-xr-features.xml') 30 | Out-Null
+        Invoke-Adb @('-s', $serial, 'shell', 'stop') 60 | Out-Null
+        Invoke-Adb @('-s', $serial, 'shell', 'start') 60 | Out-Null
+        if (!(Wait-BootCompleted 240)) { throw 'Android did not finish restarting its framework' }
+    } finally {
+        Remove-Item -LiteralPath $local -Force -ErrorAction SilentlyContinue
+        try { Invoke-ExternalWithTimeout $adb @('-s', $serial, 'unroot') 30 | Out-Null } catch { }
+        Start-Sleep -Seconds 2
+        try { Invoke-ExternalWithTimeout $adb @('-s', $serial, 'wait-for-device') 60 | Out-Null } catch { }
+    }
+}
+# Missing features cost compatibility, not correctness, so a failure here is
+# reported and the launch continues rather than taking Android down with it.
+function Ensure-XrFeatures {
+    try {
+        $present = Get-GuestFeatures
+        $missing = @($xrFeatures | Where-Object { $_ -notin $present })
+        if (!$missing.Count) {
+            if (!(Test-Path -LiteralPath $xrFeatureMarker)) { New-Item -ItemType File -Force -Path $xrFeatureMarker | Out-Null }
+            Write-Output "Headset features: all $($xrFeatures.Count) declared by the guest."
+            return
+        }
+        # The marker exists but the guest lost the declarations, so the next
+        # launch has to ask for a writable system again.
+        Remove-Item -LiteralPath $xrFeatureMarker -Force -ErrorAction SilentlyContinue
+        Install-XrFeatures
+        $present = Get-GuestFeatures
+        $missing = @($xrFeatures | Where-Object { $_ -notin $present })
+        if ($missing.Count) { throw "the guest still does not advertise: $($missing -join ', ')" }
+        New-Item -ItemType File -Force -Path $xrFeatureMarker | Out-Null
+        Write-Output "Headset features: declared $($xrFeatures.Count) in the guest."
+    } catch {
+        Remove-Item -LiteralPath $xrFeatureMarker -Force -ErrorAction SilentlyContinue
+        Write-Output "Android startup diagnostic: warning: could not declare headset features ($($_.Exception.Message -replace '\s+', ' ')). Games that require them will refuse to start."
+    }
+}
 switch ($Action) {
     Setup {
         Run "$Sdk\cmdline-tools\latest\bin\sdkmanager.bat" @($image)
@@ -303,6 +401,10 @@ switch ($Action) {
         $arguments = @('-avd', $Avd, '-ports', "$Port,$adbPort", '-gpu', 'host', '-accel', 'on', '-no-boot-anim', '-memory', "$MemoryMB")
         if ($PSBoundParameters.ContainsKey('CpuCores')) { $arguments += @('-cores', "$CpuCores") }
         if (!$ShowWindow) { $arguments += '-no-window' }
+        # A writable system costs this launch its quick-boot snapshot, so ask
+        # for one only until the headset features are in place; the edit lives
+        # in the AVD's own system overlay and survives later read-only starts.
+        if (!(Test-Path -LiteralPath $xrFeatureMarker)) { $arguments += '-writable-system' }
         if ($ColdBoot -and $GuestClock -ne 'TscCorrected') { $arguments += '-no-snapshot-load' }
         if ($GuestClock -eq 'TscCorrected') {
             # The clock-correction launcher cannot safely combine its host clock
@@ -429,7 +531,7 @@ switch ($Action) {
             }
         } while ((Get-Date) -lt $deadline)
         if (!$booted) { throw "Android did not finish booting within $bootTimeoutMinutes minutes. Last emulator output: $(Read-LogTail) Logs: $logs\emulator.stdout.log and $logs\emulator.stderr.log" }
-        try { Verify-Gpu; Verify-Abi; Write-Output 'Android startup diagnostic: guest verification complete.' } catch {
+        try { Verify-Gpu; Verify-Abi; Ensure-XrFeatures; Write-Output 'Android startup diagnostic: guest verification complete.' } catch {
             try { Invoke-ExternalWithTimeout $adb @('-s', $serial, 'emu', 'kill') 5 | Out-Null } catch { }
             throw
         }
