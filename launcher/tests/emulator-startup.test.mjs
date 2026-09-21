@@ -88,3 +88,38 @@ Write-Output ('RESULT:' + (ConvertTo-Json -InputObject @($script:calls.ToArray()
 `);
   assert.deepEqual(result, ['reconnect offline', 'kill-server', 'start-server']);
 });
+
+test('stale cleanup requests graceful shutdown only for the requested emulator and port owner', windows, async () => {
+  const result = await probe(`
+$definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Stop-StaleManagedEmulator' }, $true)
+. ([scriptblock]::Create($definition.Extent.Text))
+$Sdk = 'C:\\fixture\\sdk'
+$Avd = 'axrb-managed-api36'
+$Port = 5584
+$script:commands = [System.Collections.Generic.List[string]]::new()
+$script:listenerOwner = 11
+$script:processes = @(
+  [pscustomobject]@{ ProcessId = 11; Name = 'emulator.exe'; ExecutablePath = 'C:\\fixture\\sdk\\emulator\\emulator.exe'; CommandLine = 'emulator.exe -avd axrb-managed-api36 -ports 5584,5585' },
+  [pscustomobject]@{ ProcessId = 12; Name = 'emulator.exe'; ExecutablePath = 'C:\\other\\emulator\\emulator.exe'; CommandLine = 'emulator.exe -avd axrb-managed-api36 -ports 5584,5585' },
+  [pscustomobject]@{ ProcessId = 13; Name = 'emulator.exe'; ExecutablePath = 'C:\\fixture\\sdk\\emulator\\emulator.exe'; CommandLine = 'emulator.exe -avd axrb-managed-api36 -ports 5586,5587' }
+)
+function Get-CimInstance { param($ClassName, $Filter, $ErrorAction)
+  if ($Filter) { return $script:processes | Where-Object { $Filter -eq "ProcessId=$($_.ProcessId)" } }
+  return $script:processes
+}
+function Get-NetTCPConnection { return [pscustomobject]@{ OwningProcess = $script:listenerOwner } }
+function Invoke-ExternalWithTimeout { param($Exe, $Arguments, $TimeoutSeconds)
+  $script:commands.Add(($Arguments -join ' '))
+  $script:processes = @($script:processes | Where-Object { $_.ProcessId -ne 11 })
+  return ''
+}
+function Stop-Process { throw 'Force stop must not be called' }
+Stop-StaleManagedEmulator -RequireCandidate
+$script:listenerOwner = 99
+$script:processes = @([pscustomobject]@{ ProcessId = 11; Name = 'emulator.exe'; ExecutablePath = 'C:\\fixture\\sdk\\emulator\\emulator.exe'; CommandLine = 'emulator.exe -avd axrb-managed-api36 -ports 5584,5585' })
+$rejected = $false
+try { Stop-StaleManagedEmulator -RequireCandidate | Out-Null } catch { $rejected = $_.Exception.Message -match 'belongs to another process' }
+Write-Output ('RESULT:' + (@{ commands = @($script:commands.ToArray()); rejected = $rejected } | ConvertTo-Json -Compress))
+`);
+  assert.deepEqual(result, { commands: ['-s emulator-5584 emu kill'], rejected: true });
+});

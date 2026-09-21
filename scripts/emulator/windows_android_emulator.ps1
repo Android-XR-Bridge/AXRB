@@ -11,7 +11,9 @@ param(
     [string]$RuntimeApk,
     [string]$AppApk,
     [switch]$GpuSharing,
-    [switch]$ShowWindow
+    [switch]$ShowWindow,
+    [switch]$ColdBoot,
+    [switch]$RecoverUnresponsive
 )
 # See run_windows_game.ps1 for why these are set here rather than by the caller.
 # That script also runs this one with &, so this one deliberately has no trap:
@@ -78,19 +80,44 @@ function Invoke-ExternalWithTimeout([string]$Exe, [string[]]$Arguments, [int]$Ti
         return [string[]]@($output.TrimEnd("`r`n") -split '\r?\n')
     } finally { $process.Dispose() }
 }
-function Stop-StaleManagedEmulator {
-    # PowerShell/CIM reports quoted command-line arguments for some launches;
-    # match the validated AVD name itself so both forms are caught.
-    $patternAvd = [regex]::Escape($Avd)
+function Stop-StaleManagedEmulator([switch]$RequireCandidate) {
+    # Only touch the requested AVD on the requested ports, launched by this SDK.
+    # Matching a name anywhere in a command line could stop an unrelated process.
+    $patternAvd = '(?i)(?:^|\s)-avd\s+"?' + [regex]::Escape($Avd) + '"?(?=\s|$)'
+    $patternPorts = '(?i)(?:^|\s)-ports\s+"?' + [regex]::Escape("$Port,$($Port + 1)") + '"?(?=\s|$)'
+    $sdkEmulator = [IO.Path]::GetFullPath((Join-Path $Sdk 'emulator'))
     $candidates = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-        $_.CommandLine -and $_.CommandLine -match $patternAvd -and
-        $_.Name -match '^(qemu-system-x86_64-headless|emulator|axrb_clock_launcher)\.exe$'
+        $_.CommandLine -match $patternAvd -and $_.CommandLine -match $patternPorts -and
+        $_.Name -match '^(qemu-system-x86_64-headless|emulator)\.exe$' -and
+        $_.ExecutablePath -and [IO.Path]::GetFullPath($_.ExecutablePath).StartsWith($sdkEmulator + '\', [StringComparison]::OrdinalIgnoreCase)
     }
-    foreach ($candidate in $candidates | Sort-Object @{ Expression = { if ($_.Name -like 'qemu*') { 0 } else { 1 } } }) {
-        Write-Output "Android startup diagnostic: stopping stale $($candidate.Name) (pid $($candidate.ProcessId))."
-        Stop-Process -Id $candidate.ProcessId -Force -ErrorAction SilentlyContinue
+    if ($RequireCandidate -and !$candidates) { throw 'The unresponsive Android port is not owned by the requested AXRB emulator. Stop it manually before retrying.' }
+    if (!$candidates) { return }
+    $candidateIds = @($candidates | ForEach-Object { $_.ProcessId })
+    $listeners = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
+    if ($listeners.Count -and @($listeners | Where-Object { $candidateIds -notcontains $_.OwningProcess }).Count) {
+        throw "Android console port $Port belongs to another process. AXRB will not stop it automatically."
     }
-    if ($candidates) { Start-Sleep -Seconds 2 }
+    if ($listeners.Count) {
+        Write-Output "Android startup diagnostic: requesting graceful shutdown of $serial."
+        try { Invoke-ExternalWithTimeout $adb @('-s', $serial, 'emu', 'kill') 10 | Out-Null }
+        catch { Write-Output "Android startup diagnostic: graceful shutdown request failed: $($_.Exception.Message)" }
+    } else {
+        Write-Output "Android startup diagnostic: console port $Port is not listening; waiting for the old AXRB emulator to exit."
+    }
+    # Snapshot save and filesystem flush can take minutes. Never force-kill a
+    # process from an earlier session: an ADB timeout does not prove it is safe.
+    $deadline = (Get-Date).AddSeconds(180)
+    do {
+        $remaining = @($candidates | Where-Object {
+            $current = Get-CimInstance Win32_Process -Filter "ProcessId=$($_.ProcessId)" -ErrorAction SilentlyContinue
+            $current -and $current.ExecutablePath -eq $_.ExecutablePath -and
+                $current.CommandLine -eq $_.CommandLine -and $current.CreationDate -eq $_.CreationDate
+        })
+        if (!$remaining.Count) { return }
+        Start-Sleep -Seconds 2
+    } while ((Get-Date) -lt $deadline)
+    throw "The old AXRB emulator did not shut down within 180 seconds. Close it manually and retry; AXRB did not force-stop it or alter its Android data."
 }
 # Verification runs the moment sys.boot_completed flips, while Android is still
 # starting services and dexopting, so the ADB transport can stall well past a
@@ -218,15 +245,24 @@ switch ($Action) {
         $existingState = ''
         if ($devices -match "^$serial\s") {
             try { $existingState = [string]((Invoke-ExternalWithTimeout $adb @('-s', $serial, 'get-state') 10) -join ''); $existingState = $existingState.Trim() } catch { }
-            if ($existingState -eq 'device') { throw "$serial is already running; use Verify or Stop first." }
-            Write-Output "Android startup diagnostic: $serial is offline; cleaning up its stale managed emulator."
+            if ($existingState -eq 'device') {
+                if (!$RecoverUnresponsive -or $Avd -ne 'axrb-managed-api36') { throw "$serial is already running; use Verify or Stop first." }
+                [string]$bootState = ''
+                $shellFailed = $false
+                try { $bootState = ((Invoke-ExternalWithTimeout $adb @('-s', $serial, 'shell', 'getprop', 'sys.boot_completed') 8) -join '').Trim() } catch { $shellFailed = $true }
+                if ($bootState -eq '1') { throw "$serial is answering Android shell commands; it will not be stopped automatically." }
+                if (!$shellFailed) { throw "$serial is still booting; wait for Android before retrying." }
+                Write-Output "Android startup diagnostic: $serial claims to be online but does not answer Android shell commands."
+            } else {
+                Write-Output "Android startup diagnostic: $serial is offline; cleaning up its stale managed emulator."
+            }
         }
         # A previous AXRB launch may have registered with another ADB server
         # (for example the default 5037 daemon), so it would not appear above
         # even though it still holds this AVD.  Once a healthy instance was
         # ruled out, remove any same-AVD process before starting a replacement.
-        if ($existingState -ne 'device') {
-            Stop-StaleManagedEmulator
+        if ($existingState -ne 'device' -or $RecoverUnresponsive) {
+            Stop-StaleManagedEmulator -RequireCandidate:($existingState -eq 'device')
             try { Invoke-ExternalWithTimeout $adb @('reconnect', 'offline') 10 | Out-Null } catch { }
         }
         # Managed installations should reuse Android's quick-boot snapshot. Older
@@ -249,6 +285,7 @@ switch ($Action) {
         $arguments = @('-avd', $Avd, '-ports', "$Port,$adbPort", '-gpu', 'host', '-accel', 'on', '-no-boot-anim', '-memory', "$MemoryMB")
         if ($PSBoundParameters.ContainsKey('CpuCores')) { $arguments += @('-cores', "$CpuCores") }
         if (!$ShowWindow) { $arguments += '-no-window' }
+        if ($ColdBoot -and $GuestClock -ne 'TscCorrected') { $arguments += '-no-snapshot-load' }
         if ($GuestClock -eq 'TscCorrected') {
             # The clock-correction launcher cannot safely combine its host clock
             # shim with a persisted Android snapshot. Keep normal launches on
@@ -375,7 +412,7 @@ switch ($Action) {
         } while ((Get-Date) -lt $deadline)
         if (!$booted) { throw "Android did not finish booting within $bootTimeoutMinutes minutes. Last emulator output: $(Read-LogTail) Logs: $logs\emulator.stdout.log and $logs\emulator.stderr.log" }
         try { Verify-Gpu; Verify-Abi; Write-Output 'Android startup diagnostic: guest verification complete.' } catch {
-            & $adb -s $serial emu kill | Out-Null
+            try { Invoke-ExternalWithTimeout $adb @('-s', $serial, 'emu', 'kill') 5 | Out-Null } catch { }
             throw
         }
         if ($GuestClock -ne 'Default') {

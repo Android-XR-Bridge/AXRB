@@ -65,18 +65,54 @@ export class Runtime {
   constructor(root, settings, onOutput = () => {}) { this.root = root; this.settings = settings; this.onOutput = onOutput; this.child = null; }
   adb(args, options) { return run(path.join(this.settings.sdk, 'platform-tools/adb.exe'), ['-s', `emulator-${this.settings.port}`, ...args], options); }
   async online() { try { return (await this.adb(['get-state'], { timeout: 2500 })).trim() === 'device'; } catch { return false; } }
+  async startEmulator({ onOutput, coldBoot = false, recoverUnresponsive = false }) {
+    // Allow the script's 180-second graceful shutdown, full boot deadline,
+    // and bounded ADB verification retries before timing out its wrapper.
+    const timeout = ((this.settings.guestClock || 'Default') === 'TscCorrected' ? 40 : 30) * 60 * 1000;
+    return run('powershell.exe', powershellArgs(path.join(this.root, 'scripts/emulator/windows_android_emulator.ps1'), {
+      Action: 'Start', Avd: this.settings.avd, Port: this.settings.port, Sdk: this.settings.sdk,
+      ApiLevel: 36, Abi: 'arm64-v8a', MemoryMB: this.settings.memoryMB, CpuCores: this.settings.cpuCores ?? 4,
+      GuestClock: this.settings.guestClock || 'Default', GpuSharing: true, ColdBoot: coldBoot, RecoverUnresponsive: recoverUnresponsive
+    }), { timeout, onOutput });
+  }
   async ensure({ onOutput = this.onOutput } = {}) {
     if (await this.online()) {
-      const name = (await this.adb(['emu', 'avd', 'name'])).split(/\r?\n/)[0].trim();
-      if (name !== this.settings.avd) throw new Error(`Android port is occupied by ${name}. Select that AVD or stop it first.`);
-      const cores = Number((await this.adb(['shell', 'getconf', '_NPROCESSORS_ONLN'])).trim());
+      let name = '';
+      try { name = (await this.adb(['emu', 'avd', 'name'], { timeout: 8000 })).split(/\r?\n/)[0].trim(); } catch { /* Check the guest before deciding the console is stale. */ }
+      if (name && name !== this.settings.avd) throw new Error(`Android port is occupied by ${name}. Select that AVD or stop it first.`);
+      let boot = '', shellFailed = false;
+      try { boot = (await this.adb(['shell', 'getprop', 'sys.boot_completed'], { timeout: 8000 })).trim(); }
+      catch { shellFailed = true; }
+      if (!boot && !shellFailed) {
+        const deadline = Date.now() + 60000;
+        while (Date.now() < deadline && boot !== '1') {
+          await new Promise(resolve => setTimeout(resolve, 3000));
+          try { boot = (await this.adb(['shell', 'getprop', 'sys.boot_completed'], { timeout: 8000 })).trim(); }
+          catch { break; }
+        }
+      }
+      if (boot !== '1') {
+        if (this.settings.avd !== 'axrb-managed-api36' || !shellFailed) throw new Error('Android is still starting or is unresponsive. Wait for it to finish, then try again.');
+        onOutput('Android is unresponsive; restarting the AXRB emulator with a cold boot.\n');
+        await this.startEmulator({ onOutput, coldBoot: true, recoverUnresponsive: true });
+        return;
+      }
+      if (!name) throw new Error('Android answered shell commands, but its emulator console is unavailable. Restart Android and try again.');
+      const cores = Number((await this.adb(['shell', 'getconf', '_NPROCESSORS_ONLN'], { timeout: 8000 })).trim());
       if (cores !== (this.settings.cpuCores ?? 4)) throw new Error('Restart Android to apply the selected vCPU count.');
       return;
     }
-    await run('powershell.exe', powershellArgs(path.join(this.root, 'scripts/emulator/windows_android_emulator.ps1'), {
-      Action: 'Start', Avd: this.settings.avd, Port: this.settings.port, Sdk: this.settings.sdk,
-      ApiLevel: 36, Abi: 'arm64-v8a', MemoryMB: this.settings.memoryMB, CpuCores: this.settings.cpuCores ?? 4, GuestClock: this.settings.guestClock || 'Default', GpuSharing: true
-    }), { timeout: (this.settings.guestClock || 'Default') === 'TscCorrected' ? 17 * 60 * 1000 : 10 * 60 * 1000, onOutput });
+    try { await this.startEmulator({ onOutput }); }
+    catch (error) {
+      // The guest may still be doing first-boot work at the boot deadline.
+      // Leave that live process alone rather than turning a slow boot into a kill.
+      if (/did not finish booting within/i.test(error.message)) {
+        throw new Error(`${error.message}\nAndroid may still be starting. AXRB left it running; wait or close it manually before retrying.`);
+      }
+      if (this.settings.avd !== 'axrb-managed-api36' || !/timed out|could not connect to TCP port|actively refused|device offline|device .*not found|is already running; use Verify/i.test(error.message)) throw error;
+      onOutput('Android stopped responding during startup; retrying once with a cold boot.\n');
+      await this.startEmulator({ onOutput, coldBoot: true, recoverUnresponsive: true });
+    }
   }
   async permissions(packageName) {
     validPackage(packageName);

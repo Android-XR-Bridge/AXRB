@@ -5,6 +5,79 @@ import os from 'node:os';
 import path from 'node:path';
 import { Runtime, run, openWindowsFeatures, windowsFeaturesCommand } from '../core/runtime.mjs';
 
+test('install readiness recovers only an unresponsive managed emulator', async () => {
+  class ProbeRuntime extends Runtime {
+    constructor(avd, responses) {
+      super('fixture', { avd, port: 5584, sdk: 'fixture', memoryMB: 8192 });
+      this.responses = responses;
+      this.starts = [];
+    }
+    async adb(args) {
+      const key = args.join(' ');
+      const response = this.responses[key];
+      if (response instanceof Error) throw response;
+      return response;
+    }
+    async startEmulator(options) { this.starts.push(options); }
+  }
+  const stale = new ProbeRuntime('axrb-managed-api36', {
+    'get-state': 'device', 'emu avd name': new Error('port refused'),
+    'shell getprop sys.boot_completed': new Error('timed out'),
+  });
+  await stale.ensure();
+  assert.equal(stale.starts.length, 1);
+  assert.equal(stale.starts[0].coldBoot, true);
+  assert.equal(stale.starts[0].recoverUnresponsive, true);
+
+  const healthy = new ProbeRuntime('axrb-managed-api36', {
+    'get-state': 'device', 'emu avd name': 'axrb-managed-api36\nOK',
+    'shell getprop sys.boot_completed': '1', 'shell getconf _NPROCESSORS_ONLN': '4',
+  });
+  await healthy.ensure();
+  assert.equal(healthy.starts.length, 0);
+
+  const other = new ProbeRuntime('other-avd', stale.responses);
+  await assert.rejects(other.ensure(), /still starting or is unresponsive/);
+  assert.equal(other.starts.length, 0);
+});
+
+test('failed managed startup gets one cold boot retry', async () => {
+  class ProbeRuntime extends Runtime {
+    constructor() {
+      super('fixture', { avd: 'axrb-managed-api36', port: 5584, sdk: 'fixture', memoryMB: 8192 });
+      this.starts = [];
+    }
+    async online() { return false; }
+    async startEmulator(options) {
+      this.starts.push(options);
+      if (this.starts.length === 1) throw new Error('adb.exe timed out after 90 seconds');
+    }
+  }
+  const runtime = new ProbeRuntime();
+  await runtime.ensure();
+  assert.equal(runtime.starts.length, 2);
+  assert.equal(runtime.starts[0].coldBoot, undefined);
+  assert.equal(runtime.starts[1].coldBoot, true);
+  assert.equal(runtime.starts[1].recoverUnresponsive, true);
+});
+
+test('a slow but still running Android boot is never stopped for an automatic retry', async () => {
+  class ProbeRuntime extends Runtime {
+    constructor() {
+      super('fixture', { avd: 'axrb-managed-api36', port: 5584, sdk: 'fixture', memoryMB: 8192 });
+      this.starts = 0;
+    }
+    async online() { return false; }
+    async startEmulator() {
+      this.starts++;
+      throw new Error('Android did not finish booting within 8 minutes.');
+    }
+  }
+  const runtime = new ProbeRuntime();
+  await assert.rejects(runtime.ensure(), /AXRB left it running/);
+  assert.equal(runtime.starts, 1);
+});
+
 test('Windows Features uses shell activation instead of spawning optionalfeatures directly', async () => {
   const args = windowsFeaturesCommand('C:\\root', 'C:\\Windows');
   assert.equal(args[0], '-NoProfile');
