@@ -216,11 +216,20 @@ Source components are in `ui/`, with shared shadcn components in `ui/components/
   expansion files. Originals are referenced in place, not deleted or modified.
   Import recognizes standard launcher entries and enabled, exported `MAIN`
   activities or aliases marked `INFO` or Oculus `VR`, even without a phone launcher entry.
-- **Patch:** Optionally configure the ovrport **CLI** `.exe` or `.jar` in Settings
-  (the JAR requires Java), then save Settings. Patching writes a separate
-  `axrb-patched/<input-name>-axrb.apk`; installation remains a separate explicit
-  action. For an already-installed game, choose **Update installation** after
-  patching. General patching does not guarantee every game's compatibility with AXRB.
+- **Patch:** Configure the separately installed ovrport **CLI** `.exe` or `.jar`
+  in Settings (the JAR requires Java), then save Settings. Choose **Patch with
+  ovrport** from the game's menu. A verified compatibility profile applies its
+  preset automatically; other games and unmatched versions show the configured
+  CLI's available patches, with its recommended selection checked. Review the
+  options, optionally supply comma-separated advanced arguments, then choose
+  **Apply selected patches**. Cancel leaves the APK untouched.
+  Use a current CLI with `patches --json` support; profiled patches also require
+  `--extra-patches` support. Older CLIs fail visibly instead of silently ignoring
+  a preset. AXRB bundles neither ovrport nor Java.
+  Patching writes a separate `axrb-patched/<input-name>-axrb.apk`; installation
+  remains a separate explicit action. For an already-installed game, choose
+  **Update installation** afterward. General patching does not guarantee every
+  game's compatibility with AXRB.
 - **Install:** Uses `adb install -r`, preserving app data. Signature conflicts
   report an error; the launcher does not uninstall the existing app. Assets are
   copied into their package-specific `Android/obb` or `Android/data` destinations.
@@ -247,15 +256,50 @@ defaults to the adjacent folders described above; retain those folders when
 updating the launcher. Development checkouts can continue using an existing SDK
 and AVD. Windows features and SteamVR remain user-installed.
 
+### Verified game profiles
+
+`core/game-compatibility.json` is the bundled, versioned database of maintained
+patch and launch actions. The initial profile is **The Climb 2 2.2**
+(`com.crytek.climb2`): recommended ovrport patches plus the experimental
+`patch_vrapi_openxr` adapter, and projection-layer precomposition at launch.
+Use an experimental CLI build containing the adapter. The profile does not
+establish complete gameplay compatibility.
+
+Game details disclose the local APK's matching profile. **Patch** re-inspects
+the actual input file before selecting a preset or showing manual choices, and
+again when applying those choices. Replacing an APK therefore refreshes its
+saved version rather than reusing a stale preset. A different package is rejected
+without changing the library record. If the input gains a verified profile while
+the picker is open, reopen the details instead of applying stale manual choices.
+A known package with a missing or different version gets no automatic patch
+actions; unknown packages also use manual choices.
+
+**Play** checks the selected Android runtime's installed package, exact version
+and launch activity on every launch, independently of the downloaded APK.
+Downloading or patching another version does not change the installed build's
+profile. A failed installed-identity check stops launch instead of falling back
+to library metadata. Notifications identify an applied profile or warn when
+the installed version is unverified. Global runtime settings still apply.
+
+Profiles match exact package names and optional exact-string `versionName`
+(the library's `version` field) and/or `versionCode` selectors. Every supplied
+field in a rule must match; any rule may match. Omit `versions` only for a
+verified package-wide action. Keep large version codes as JSON strings.
+Unknown schema/action keys and ambiguous matches are errors, not silent
+fallbacks. Derived compatibility data is never written to `library.json`.
+After a base APK download, both version fields are taken from its inspected
+manifest rather than the store's version label or a previous library record.
+
 ### Projection-layer compatibility
 
-**Settings → Precompose projection layers** is **off by default**. Enable it only
-when a game has incorrect multi-projection rendering, such as the boxed/cross-eyed
-menu observed in The Climb 2 with VDXR. Stop the game, change the switch, click
-**Save**, then launch again. This is a global launcher setting, not a per-game
-override: turn it off before launching games that do not need the workaround.
+**Settings → Precompose projection layers** is **off by default**. The Climb 2
+2.2 profile enables it automatically for that game version. The global switch
+can force it on for other games with incorrect multi-projection rendering.
+Stop the game, change the switch, click **Save**, then launch again. Profiles
+never turn off an enabled global setting; turning the global switch off does
+not disable a matched profile's requirement.
 
-- **Off:** submit layers natively when they fit the OpenXR runtime's capacity.
+- **Off, without a matching profile:** submit layers natively when they fit the OpenXR runtime's capacity.
 - **On:** combine stacks containing two or more projection layers into one stereo
   projection, preserving their contents, ordering and alpha. Single-projection
   and within-capacity native quad/equirect paths remain unchanged.
@@ -299,13 +343,16 @@ npm run smoke --prefix launcher
 ```
 
 Unit tests cover Quest filtering, SSO challenge validation, DLC entitlement
-selection, APK/OBB plans, download integrity/resume, unsafe paths/redirects, atomic
-library persistence and shell argument handling. The desktop smoke test uses a
+selection, APK/OBB plans, download integrity/resume, unsafe paths/redirects,
+atomic library persistence, exact-version profiles, CLI capability/selection
+validation and PowerShell launch switches. The desktop smoke test uses a
 separate `out/launcher/smoke` profile, navigates Library/Settings/Downloads,
-queries the live Quest store, adds a listing to that test profile, checks filters,
-dialog/menu keyboard focus, progress display, and the minimum window width.
-It also checks that state updates preserve text being edited. Screenshots are
-written there. It does not sign in, download APKs, install, or launch any games.
+uses a local store listing fixture, and checks filters, dialog/menu keyboard
+focus, progress display and minimum window width. It also checks profile
+disclosures, Patch/Play notifications, manual patch options and cancellation
+through production IPC/React with process and APK boundaries stubbed.
+Screenshots are written to the smoke profile. No Meta account, live store
+search, APK download, installation, patching or Android game launch is needed.
 
 Meta login challenge creation, public storefront search and installed-game scan
 have been checked live. Account-specific downloads/install/DLC still need a

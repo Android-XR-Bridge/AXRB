@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { Runtime, run, openWindowsFeatures, windowsFeaturesCommand } from '../core/runtime.mjs';
+import { Runtime, run } from '../core/runtime.mjs';
+import { loadCompatibilityProfiles, resolveCompatibility, compatibilityRuntimeOptions } from '../core/compatibility.mjs';
 
 test('install readiness recovers only an unresponsive managed emulator', async () => {
   class ProbeRuntime extends Runtime {
@@ -78,23 +79,6 @@ test('a slow but still running Android boot is never stopped for an automatic re
   assert.equal(runtime.starts, 1);
 });
 
-test('Windows Features uses shell activation instead of spawning optionalfeatures directly', async () => {
-  const args = windowsFeaturesCommand('C:\\root', 'C:\\Windows');
-  assert.equal(args[0], '-NoProfile');
-  assert.ok(!args.includes('-EncodedCommand'));
-  assert.equal(args.at(-4), '-File');
-  assert.match(args.at(-3), /open_windows_features\.ps1$/);
-  assert.deepEqual(args.slice(-2), ['-WindowsDir', 'C:\\Windows']);
-  // The activation itself moved into the script the launcher now runs by path.
-  const script = await fs.readFile(new URL('../../scripts/run/open_windows_features.ps1', import.meta.url), 'utf8');
-  assert.match(script, /Start-Process -LiteralPath/);
-  assert.match(script, /System32[\\/]optionalfeatures\.exe/i);
-  const calls = [];
-  await openWindowsFeatures('C:\\root', async (...received) => { calls.push(received); return 'started'; });
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0][0], 'powershell.exe');
-  assert.ok(calls[0][1].includes('-File'));
-});
 
 test('Windows game launch actually executes PowerShell and reports its exit', { skip: process.platform !== 'win32', timeout: 15000 }, async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'axrb-launch-'));
@@ -114,6 +98,33 @@ exit 7
   assert.match(result.output, /EXECUTED:com.example.game/);
   assert.match(result.output, /CORES:6/);
   assert.equal(runtime.game, null);
+});
+
+test('projection precomposition follows matched profiles or the global override', { skip: process.platform !== 'win32', timeout: 20000 }, async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'axrb-profile-launch-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.mkdir(path.join(root, 'scripts/run'), { recursive: true });
+  await fs.writeFile(path.join(root, 'scripts/run/run_windows_game.ps1'), `
+param($Avd, $Port, $Sdk, $MemoryMB, $CpuCores, $Package, $Activity, $GameName, [switch]$FpsHud, $FpsHudEventName, [switch]$PrecomposeProjectionLayers)
+Write-Output "PRECOMPOSE:$PrecomposeProjectionLayers"
+`);
+  const profiles = await loadCompatibilityProfiles(new URL('../core/game-compatibility.json', import.meta.url));
+  const runtime = new Runtime(root, { avd: 'test', port: 5580, sdk: root, memoryMB: 8192, precomposeProjectionLayers: false });
+  const climb = { id: 'climb', package: 'com.crytek.climb2', activity: 'com.crytek.climb2/.Main', name: 'The Climb 2', version: '2.2' };
+  const unrelated = { id: 'other', package: 'com.example.game', activity: 'com.example.game/.Main', name: 'Other' };
+  async function launch(game) {
+    const result = await new Promise(resolve => {
+      runtime.launch(game, (code, output) => resolve({ code, output }), compatibilityRuntimeOptions(resolveCompatibility(profiles, game)));
+      t.after(() => runtime.child?.kill());
+    });
+    assert.equal(result.code, 0, result.output);
+    return result.output;
+  }
+  assert.match(await launch(climb), /PRECOMPOSE:True/);
+  assert.match(await launch(unrelated), /PRECOMPOSE:False/);
+  assert.match(await launch({ ...climb, version: '2.3' }), /PRECOMPOSE:False/);
+  runtime.settings.precomposeProjectionLayers = true;
+  assert.match(await launch(unrelated), /PRECOMPOSE:True/);
 });
 
 test('FPS HUD can be switched live through the session event', { skip: process.platform !== 'win32', timeout: 15000 }, async t => {
@@ -179,4 +190,181 @@ test('run still reports a failing exit code and its stderr', { skip: process.pla
   await assert.rejects(
     run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '[Console]::Error.WriteLine("boom"); exit 3']),
     /boom/);
+});
+
+function installedDumpsys({ code = '100', name = '2.2', user0 = 'User 0: ceDataInode=1 installed=true' } = {}) {
+  const lines = ['Packages:', '  Package [com.example.game] (abc123):', '    userId=12345'];
+  if (code !== null) lines.push(`    versionCode=${code} targetSdk=34`);
+  if (name !== null) lines.push(`    versionName=${name}`);
+  if (user0 !== null) lines.push(`    ${user0}`);
+  lines.push('');
+  return lines.join('\n');
+}
+
+class PrepareProbe extends Runtime {
+  constructor({ dumpsys = '', activities = {}, online = true, dumpsysError = null } = {}) {
+    super('fixture', { avd: 'test-avd', port: 5584, sdk: 'fixture', memoryMB: 8192 });
+    this.dumpsys = dumpsys;
+    this.activities = activities;
+    this._online = online;
+    this.ensureCalls = 0;
+    this.adbCalls = [];
+    this.dumpsysError = dumpsysError;
+  }
+  async online() { return this._online; }
+  async ensure() { this.ensureCalls++; }
+  async adb(args) {
+    const key = args.join(' ');
+    this.adbCalls.push(key);
+    if (key === 'shell dumpsys package com.example.game') {
+      if (this.dumpsysError) throw this.dumpsysError;
+      return this.dumpsys;
+    }
+    if (key.startsWith('shell cmd package resolve-activity')) {
+      const out = this.activities[key];
+      if (out instanceof Error) throw out;
+      if (out !== undefined) return out;
+      return 'No activity found';
+    }
+    if (key === 'emu kill') return '';
+    throw new Error(`unexpected adb call: ${key}`);
+  }
+}
+
+const BARE_QUERY = 'shell cmd package resolve-activity --brief com.example.game';
+const INFO_QUERY = 'shell cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.INFO com.example.game';
+const VR_QUERY = 'shell cmd package resolve-activity --brief -a android.intent.action.MAIN -c com.oculus.intent.category.VR com.example.game';
+
+test('prepareLaunch resolves live installed identity without touching local metadata', async () => {
+  const local = { id: 'local:com.example.game', package: 'com.example.game', version: '1.0-local', versionCode: '1', activity: 'com.example.game/.Local', name: 'Test' };
+  const before = { ...local };
+  const runtime = new PrepareProbe({
+    dumpsys: installedDumpsys({ code: '9007199254740993', name: '2.2-live' }),
+    activities: { [BARE_QUERY]: 'priority=0\ncom.example.game/.Live\n' },
+  });
+  const prepared = await runtime.prepareLaunch(local);
+  assert.equal(runtime.ensureCalls, 1);
+  assert.equal(prepared.ownsEmulator, false);
+  assert.equal(prepared.game.package, 'com.example.game');
+  assert.equal(prepared.game.version, '2.2-live');
+  assert.equal(prepared.game.versionCode, '9007199254740993');
+  assert.equal(typeof prepared.game.versionCode, 'string');
+  assert.equal(prepared.game.activity, 'com.example.game/.Live');
+  assert.equal(prepared.game.id, local.id);
+  assert.deepEqual(local, before);
+});
+
+test('prepareLaunch re-reads the installed build on every call', async () => {
+  const local = { id: 'local:com.example.game', package: 'com.example.game', version: 'stale', versionCode: '0', activity: 'com.example.game/.Local', name: 'Test' };
+  const runtime = new PrepareProbe({
+    dumpsys: installedDumpsys({ code: '100', name: '2.2' }),
+    activities: { [BARE_QUERY]: 'com.example.game/.Live\n' },
+  });
+  const first = await runtime.prepareLaunch(local);
+  assert.equal(first.game.version, '2.2');
+  assert.equal(first.game.versionCode, '100');
+  runtime.dumpsys = installedDumpsys({ code: '101', name: '2.3' });
+  const second = await runtime.prepareLaunch(local);
+  assert.equal(second.game.version, '2.3');
+  assert.equal(second.game.versionCode, '101');
+  assert.equal(first.game.version, '2.2');
+  assert.equal(local.version, 'stale');
+});
+
+test('prepareLaunch scopes identity to the current package record and owner install', async () => {
+  const local = { id: 'local:com.example.game', package: 'com.example.game', version: 'stale', versionCode: '0', activity: 'com.example.game/.Local', name: 'Test' };
+  const live = { [BARE_QUERY]: 'com.example.game/.Live\n' };
+  const current = installedDumpsys({ code: '200', name: '3.0' });
+  const hiddenFirst = ['Hidden system packages:', '  Package [com.example.game] (old):', '    versionCode=1', '    versionName=stale-hidden', '    User 0: installed=true', '', current].join('\n');
+  const hiddenLast = [current, 'Hidden system packages:', '  Package [com.example.game] (old):', '    versionCode=1', '    versionName=stale-hidden', '    User 0: installed=true', ''].join('\n');
+  for (const dumpsys of [hiddenFirst, hiddenLast]) {
+    const runtime = new PrepareProbe({ dumpsys, activities: live });
+    const prepared = await runtime.prepareLaunch(local);
+    assert.equal(prepared.game.version, '3.0');
+    assert.equal(prepared.game.versionCode, '200');
+  }
+  const sibling = installedDumpsys().replaceAll('com.example.game', 'com.example.game2');
+  await assert.rejects(new PrepareProbe({ dumpsys: sibling, activities: live }).prepareLaunch(local), /not installed/);
+  await assert.rejects(new PrepareProbe({ dumpsys: 'Packages:\n', activities: live }).prepareLaunch(local), /not installed/);
+  const duplicate = [installedDumpsys({ code: '200', name: '3.0' }), '  Package [com.example.game] (other):', '    versionCode=200', '    versionName=3.0', '    User 0: installed=true', ''].join('\n');
+  await assert.rejects(new PrepareProbe({ dumpsys: duplicate, activities: live }).prepareLaunch(local), /Multiple installed records/);
+  const notOwner = installedDumpsys({ user0: 'User 0: ceDataInode=1 installed=false' }) + '    User 10: ceDataInode=2 installed=true\n';
+  await assert.rejects(new PrepareProbe({ dumpsys: notOwner, activities: live }).prepareLaunch(local), /not installed/);
+  await assert.rejects(new PrepareProbe({ dumpsys: installedDumpsys({ code: null }), activities: live }).prepareLaunch(local), /installed version/);
+  const noName = await new PrepareProbe({ dumpsys: installedDumpsys({ name: null }), activities: live }).prepareLaunch(local);
+  assert.equal(noName.game.version, '');
+  assert.equal(noName.game.versionCode, '100');
+});
+
+test('prepareLaunch never falls back to local metadata on read failure', async () => {
+  const local = { id: 'local:com.example.game', package: 'com.example.game', version: '1.0-local', versionCode: '1', activity: 'com.example.game/.Local', name: 'Test' };
+  const live = { [BARE_QUERY]: 'com.example.game/.Live\n' };
+  await assert.rejects(new PrepareProbe({ dumpsysError: new Error('adb shell failed'), activities: live }).prepareLaunch(local), /adb shell failed/);
+  assert.equal(local.version, '1.0-local');
+  const runtime = new PrepareProbe({ dumpsys: installedDumpsys(), activities: {} });
+  await assert.rejects(runtime.prepareLaunch(local), /launch activity/);
+  assert.equal(local.activity, 'com.example.game/.Local');
+  assert.ok(!runtime.adbCalls.some(call => call.includes('.Local')));
+});
+
+test('prepareLaunch resolves Quest activities without a phone launcher entry', async () => {
+  const local = { id: 'local:com.example.game', package: 'com.example.game', version: 'stale', versionCode: '0', activity: 'com.example.game/.Local', name: 'Test' };
+  const dumpsys = installedDumpsys();
+  const bare = await new PrepareProbe({ dumpsys, activities: { [BARE_QUERY]: 'com.example.game/.Bare\n' } }).prepareLaunch(local);
+  assert.equal(bare.game.activity, 'com.example.game/.Bare');
+  const info = await new PrepareProbe({ dumpsys, activities: { [BARE_QUERY]: 'No activity found\n', [INFO_QUERY]: 'com.example.game/.Info\n' } }).prepareLaunch(local);
+  assert.equal(info.game.activity, 'com.example.game/.Info');
+  const vr = await new PrepareProbe({ dumpsys, activities: { [BARE_QUERY]: 'No activity found\n', [INFO_QUERY]: 'No activity found\n', [VR_QUERY]: 'com.example.game/.Vr\n' } }).prepareLaunch(local);
+  assert.equal(vr.game.activity, 'com.example.game/.Vr');
+  const probe = new PrepareProbe({ dumpsys, activities: { [BARE_QUERY]: 'com.other/.Other\n', [INFO_QUERY]: 'No activity found\n', [VR_QUERY]: 'No activity found\n' } });
+  await assert.rejects(probe.prepareLaunch(local), /launch activity/);
+  assert.equal(local.activity, 'com.example.game/.Local');
+});
+
+test('prepareLaunch owns only emulators it boots', async () => {
+  const local = { id: 'local:com.example.game', package: 'com.example.game', version: 'stale', versionCode: '0', activity: 'com.example.game/.Local', name: 'Test' };
+  const live = { [BARE_QUERY]: 'com.example.game/.Live\n' };
+  const coldFailure = new PrepareProbe({ online: false, dumpsysError: new Error('adb shell failed'), activities: live });
+  await assert.rejects(coldFailure.prepareLaunch(local), /adb shell failed/);
+  assert.ok(coldFailure.adbCalls.includes('emu kill'));
+  const warmFailure = new PrepareProbe({ online: true, dumpsysError: new Error('adb shell failed'), activities: live });
+  await assert.rejects(warmFailure.prepareLaunch(local), /adb shell failed/);
+  assert.ok(!warmFailure.adbCalls.includes('emu kill'));
+  const cold = new PrepareProbe({ online: false, dumpsys: installedDumpsys(), activities: live });
+  const preparedCold = await cold.prepareLaunch(local);
+  assert.equal(preparedCold.ownsEmulator, true);
+  assert.ok(!cold.adbCalls.includes('emu kill'));
+  const warm = new PrepareProbe({ online: true, dumpsys: installedDumpsys(), activities: live });
+  const preparedWarm = await warm.prepareLaunch(local);
+  assert.equal(preparedWarm.ownsEmulator, false);
+  assert.ok(!warm.adbCalls.includes('emu kill'));
+  const busy = new PrepareProbe({ dumpsys: installedDumpsys(), activities: live });
+  busy.child = {};
+  await assert.rejects(busy.prepareLaunch(local), /already running/);
+  assert.equal(busy.ensureCalls, 0);
+});
+
+test('failed launch retains session ownership until emulator cleanup completes', { skip: process.platform !== 'win32', timeout: 10000 }, async () => {
+  const runtime = new Runtime('missing-fixture', { avd: 'test', port: 5580, sdk: 'missing-fixture', memoryMB: 8192 });
+  const game = { id: 'test', package: 'com.example.game', activity: 'com.example.game/.Main' };
+  let finishCleanup, cleanupStarted;
+  const cleanup = new Promise(resolve => { finishCleanup = resolve; });
+  const started = new Promise(resolve => { cleanupStarted = resolve; });
+  runtime.adb = async args => { assert.deepEqual(args, ['emu', 'kill']); cleanupStarted(); await cleanup; };
+  let exit;
+  const exited = new Promise(resolve => { exit = resolve; });
+  const savedPath = process.env.PATH;
+  try {
+    process.env.PATH = '';
+    runtime.launch(game, code => exit(code), {}, { ownsEmulator: true });
+  } finally { process.env.PATH = savedPath; }
+  const closed = new Promise(resolve => runtime.child.once('close', resolve));
+  try {
+    await started;
+    await closed;
+    assert.throws(() => runtime.launch(game, () => {}), /already running/);
+  } finally { finishCleanup(); }
+  assert.equal(await exited, 1);
+  assert.equal(runtime.child, null);
+  assert.equal(runtime.game, null);
 });

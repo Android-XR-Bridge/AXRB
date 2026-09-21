@@ -61,6 +61,37 @@ export function validPackage(value) {
   if (!/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+$/.test(value || '')) throw new Error('Invalid Android package name.');
   return value;
 }
+// Play reads identity from the live Android build, never from the library's
+// local APK metadata, so an externally updated install cannot inherit a stale
+// profile. `dumpsys package` also prints stale hidden-system records, so the
+// read is scoped to the current Packages section and the exact
+// `Package [<name>]` header, and the owner user must show installed=true.
+// versionCode stays an exact string; a missing versionName becomes '' instead
+// of borrowing the library's copy.
+function parseInstalledIdentity(output, packageName) {
+  const escaped = packageName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const header = new RegExp(`^\\s*Package \\[${escaped}\\](?:\\s*\\([^)]*\\))?\\s*:\\s*$`);
+  const lines = String(output ?? '').split(/\r?\n/);
+  let scoped = false;
+  const section = [];
+  for (const line of lines) {
+    if (/^\s*Packages:\s*$/.test(line)) { scoped = true; continue; }
+    if (/^\S/.test(line)) { scoped = false; continue; }
+    if (scoped) section.push(line);
+  }
+  const matches = section.filter(line => header.test(line));
+  if (matches.length === 0) throw new Error(`${packageName} is not installed. Refresh your library.`);
+  if (matches.length > 1) throw new Error(`Multiple installed records for ${packageName}. Refresh your library.`);
+  const start = section.findIndex(line => header.test(line));
+  const block = [];
+  for (let i = start + 1; i < section.length && !/^\s*Package \[/.test(section[i]); i++) block.push(section[i]);
+  const user = block.find(line => /^\s*User 0:/.test(line)) ?? '';
+  if (!/\binstalled=true\b/.test(user)) throw new Error(`${packageName} is not installed. Refresh your library.`);
+  const code = /^\s*versionCode=([0-9]+)(?:\s|$)/.exec(block.find(line => /^\s*versionCode=/.test(line)) ?? '')?.[1];
+  if (!code) throw new Error(`Could not read the installed version for ${packageName}. Refresh your library.`);
+  const name = /^\s*versionName=(.*)$/.exec(block.find(line => /^\s*versionName=/.test(line)) ?? '')?.[1];
+  return { package: packageName, version: name === 'null' ? '' : name ?? '', versionCode: code };
+}
 export class Runtime {
   constructor(root, settings, onOutput = () => {}) { this.root = root; this.settings = settings; this.onOutput = onOutput; this.child = null; }
   adb(args, options) { return run(path.join(this.settings.sdk, 'platform-tools/adb.exe'), ['-s', `emulator-${this.settings.port}`, ...args], options); }
@@ -155,6 +186,46 @@ export class Runtime {
     return { id: `local:${packageName}`, package: packageName, activity, name: metadata.label, source: 'installed', installed: true,
       image: metadata.icon ? `data:image/png;base64,${(await fs.readFile(metadata.icon)).toString('base64')}` : '' };
   }
+  // Quest builds often lack a phone LAUNCHER entry, so a bare query that
+  // finds nothing falls back to explicit MAIN/INFO and MAIN/Oculus-VR
+  // queries, mirroring the APK inspector's accepted entry points. Transport
+  // failures propagate; an unresolvable activity never borrows local metadata.
+  async installedActivity(packageName) {
+    const prefix = `${packageName}/`;
+    const queries = [
+      ['shell', 'cmd', 'package', 'resolve-activity', '--brief', packageName],
+      ['shell', 'cmd', 'package', 'resolve-activity', '--brief', '-a', 'android.intent.action.MAIN', '-c', 'android.intent.category.INFO', packageName],
+      ['shell', 'cmd', 'package', 'resolve-activity', '--brief', '-a', 'android.intent.action.MAIN', '-c', 'com.oculus.intent.category.VR', packageName],
+    ];
+    for (const args of queries) {
+      const output = await this.adb(args, { timeout: 20000 });
+      const activity = String(output ?? '').split(/\r?\n/).map(line => line.trim()).find(line => line.startsWith(prefix));
+      if (activity) return activity;
+    }
+    throw new Error(`Could not resolve the launch activity for ${packageName}. Refresh your library.`);
+  }
+  // Resolve Play's launch inputs from the installed build on every call, so an
+  // externally updated version can never inherit a stale profile. The returned
+  // game is a copy; the caller's record is never rewritten and nothing is
+  // cached. ownsEmulator reports whether this call booted Android, so the
+  // session script keeps its shutdown ownership after preparation.
+  async prepareLaunch(game) {
+    if (this.child) throw new Error('A game is already running.');
+    validPackage(game?.package);
+    const wasOnline = await this.online();
+    await this.ensure();
+    const ownsEmulator = !wasOnline;
+    try {
+      const identity = parseInstalledIdentity(await this.adb(['shell', 'dumpsys', 'package', game.package], { timeout: 20000, requireCompleteOutput: true }), game.package);
+      const activity = await this.installedActivity(game.package);
+      return { game: { ...game, package: identity.package, version: identity.version, versionCode: identity.versionCode, activity }, ownsEmulator };
+    } catch (error) {
+      // A newly booted emulator is torn down; a pre-existing runtime is never
+      // touched. Startup failures from ensure() above keep its own contract.
+      if (ownsEmulator) await this.adb(['emu', 'kill']).catch(() => {});
+      throw error;
+    }
+  }
   async install(game, update = () => {}) {
     validPackage(game.package);
     if (this.child) throw new Error('Close the running game before installing.');
@@ -174,14 +245,19 @@ export class Runtime {
     const result = await this.adb(['uninstall', game.package], { timeout: 240000 });
     if (!/^Success\s*$/m.test(result)) throw new Error(result.trim() || 'Android did not confirm the uninstall.');
   }
-  launch(game, onExit) {
+  launch(game, onExit, compatibility = {}, options = {}) {
     if (this.child) throw new Error('A game is already running.');
     validPackage(game.package);
     if (!/^[A-Za-z0-9_./]+$/.test(game.activity || '') || game.activity.split('/')[0] !== game.package) throw new Error('Invalid launch activity. Refresh installed games.');
+    // Preparation may have booted Android before the session script runs, so
+    // ownership arrives explicitly instead of being inferred from the device.
+    const ownsEmulator = options?.ownsEmulator === true;
     this.fpsHudEvent = `Local\\AXRB.FpsHud.${randomUUID().replaceAll('-', '')}`;
     const args = powershellArgs(path.join(this.root, 'scripts/run/run_windows_game.ps1'), { Avd: this.settings.avd, Port: this.settings.port,
       Sdk: this.settings.sdk, MemoryMB: this.settings.memoryMB, CpuCores: this.settings.cpuCores ?? 4, Package: game.package, Activity: game.activity, GameName: game.name, FpsHud: this.settings.fpsHud === true, FpsHudEventName: this.fpsHudEvent,
-      ...(this.settings.precomposeProjectionLayers === true ? { PrecomposeProjectionLayers: true } : {}),
+      // An absent switch keeps the script's historic device-presence behavior.
+      ...(ownsEmulator ? { OwnsEmulator: true } : {}),
+      ...(this.settings.precomposeProjectionLayers === true || compatibility.precomposeProjectionLayers === true ? { PrecomposeProjectionLayers: true } : {}),
       ...(this.settings.managedDirectory ? { RuntimeApk: path.join(this.root, 'out/android/runtime-arm64-v8a/axrb-openxr-runtime-debug.apk') } : {}) });
     // Windows PowerShell can exit successfully without executing its command
     // when CREATE_NEW_PROCESS_GROUP/detached is combined with no console.
@@ -192,7 +268,7 @@ export class Runtime {
     const stdout = { stream: `${child.pid}:stdout`, tag: 'game launch' }, stderr = { stream: `${child.pid}:stderr`, tag: 'game launch', level: 'E' };
     child.stdout.on('data', text => { tail = (tail + text).slice(-4000); this.onOutput(text, stdout); });
     child.stderr.on('data', text => { tail = (tail + text).slice(-4000); this.onOutput(text, stderr); });
-    let finished = false, drain = null, stdoutEnded = false, stderrEnded = false;
+    let finished = false, spawnFailed = false, drain = null, stdoutEnded = false, stderrEnded = false;
     const endStdout = () => { if (stdoutEnded) return; stdoutEnded = true; this.onOutput('', { ...stdout, end: true }); };
     const endStderr = () => { if (stderrEnded) return; stderrEnded = true; this.onOutput('', { ...stderr, end: true }); };
     child.stdout.once('close', endStdout);
@@ -205,11 +281,17 @@ export class Runtime {
       this.child = null; this.game = null; this.fpsHudEvent = null;
       onExit(code, error || tail);
     };
-    child.on('error', e => end(1, e.message));
+    child.on('error', async e => {
+      spawnFailed = true;
+      // Keep the session occupied until cleanup finishes; otherwise a new Play
+      // could start an emulator that this failed launch would then shut down.
+      if (ownsEmulator) await this.adb(['emu', 'kill']).catch(error => this.onOutput(`Android shutdown failed: ${error.message}\n`));
+      end(1, e.message);
+    });
     // Like run(), drain briefly after exit rather than waiting indefinitely
     // for an emulator or host descendant to release inherited pipe handles.
-    child.on('exit', code => { if (!finished) drain = setTimeout(() => end(code), 500); });
-    child.on('close', code => end(code));
+    child.on('exit', code => { if (!finished && !spawnFailed) drain = setTimeout(() => end(code), 500); });
+    child.on('close', code => { if (!spawnFailed) end(code); });
   }
   async setFpsHud(enabled) {
     if (typeof enabled !== 'boolean') throw new Error('Invalid FPS HUD setting.');

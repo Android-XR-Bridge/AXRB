@@ -14,6 +14,8 @@ import { Quest } from './core/quest.mjs';
 import { importGameZip } from './core/game-files.mjs';
 import { collectDiagnostics, uploadDiagnostics } from './core/diagnostics.mjs';
 import { LiveDiagnostics } from './core/live-diagnostics.mjs';
+import { loadCompatibilityProfiles, resolveCompatibility, compatibilityPatchArgs, compatibilityRuntimeOptions } from './core/compatibility.mjs';
+import { Ovrport, selectedPatchArgs } from './core/ovrport.mjs';
 
 // Keep the packaged app in Electron GUI mode even when launched from a shell
 // that uses ELECTRON_RUN_AS_NODE for other tooling.
@@ -34,6 +36,8 @@ let window, authWindow, state, runtime, token = '', account = '', busy = false;
 let setup;
 let liveDiagnostics, reviewedDiagnostics = null;
 let quitting = false;
+let compatibilityProfiles;
+const ovrport = new Ovrport();
 app.on('before-quit', event => {
   if (!liveDiagnostics || quitting) return;
   event.preventDefault(); quitting = true;
@@ -56,12 +60,21 @@ const exists = async file => { try { await fs.access(file); return true; } catch
 function publicState() {
   return { ...state.data, setup: setup?.status, signedIn: Boolean(token), account, running: runtime.game, busy, portable: Boolean(portable),
     // Credentials and signed CDN URLs never reach the renderer or library file.
-    games: state.data.games.map(g => ({ ...g, files: g.files?.map(f => ({ name: f.name, path: f.path, kind: f.kind, size: f.size })) })) };
+    games: state.data.games.map(g => {
+      const { status, label, summary, verifiedVersions } = resolveCompatibility(compatibilityProfiles, g);
+      return { ...g, compatibility: { status, label, summary, verifiedVersions },
+        files: g.files?.map(f => ({ name: f.name, path: f.path, kind: f.kind, size: f.size })) };
+    }) };
 }
 function changed() { if (window && !window.isDestroyed()) window.webContents.send('axrb:changed', publicState()); }
 async function persist() { await state.save(); changed(); }
 function getGame(id) { const game = state.data.games.find(g => g.id === id); if (!game) throw new Error('Game is no longer in your library.'); return game; }
 function store() { if (!token) throw new Error('Sign in to Meta first.'); return new QuestStore(token); }
+async function configuredCli() {
+  const cli = state.data.settings.ovrportCli;
+  if (!cli || !await exists(cli)) throw new Error('Choose the ovrport CLI executable or JAR in Settings first.');
+  return cli;
+}
 function handler(name, callback) {
   ipcMain.handle(`axrb:${name}`, async (event, ...args) => {
     if (event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('Untrusted launcher request.');
@@ -175,7 +188,7 @@ async function downloadGame(id, binaryId, dlcId) {
         const metadata = await runtime.inspect(apk.path);
         if (metadata.package !== plan.package) throw new Error('Downloaded APK package does not match the selected build.');
         Object.assign(game, { package: metadata.package, activity: metadata.activity, apk: apk.path, patched: metadata.patched,
-          version: plan.version, binaryId: plan.binaryId, files, downloaded: true });
+          version: metadata.version, versionCode: metadata.versionCode, binaryId: plan.binaryId, files, downloaded: true });
       } else {
         game.files = [...(game.files || []).filter(f => !files.some(n => n.name === f.name)), ...files];
       }
@@ -229,6 +242,7 @@ async function importTransfer(kind, input) {
 }
 
 async function bootstrap() {
+compatibilityProfiles = await loadCompatibilityProfiles(path.join(directory, 'core/game-compatibility.json'));
 state = new State(app.getPath('userData')); await state.load({ portableRoot: portable });
 const pendingRuntime = await state.pendingRuntime();
 const components = JSON.parse(await fs.readFile(path.join(directory, 'core/components.json'), 'utf8'));
@@ -359,31 +373,62 @@ handler('uninstall', id => exclusive(async () => {
   finally { await persist(); }
   return job.status === 'complete';
 }));
-handler('patch', id => exclusive(async () => {
-  const game = getGame(id), cli = state.data.settings.ovrportCli;
-  if (!cli || !await exists(cli)) throw new Error('Choose the ovrport CLI executable or JAR in Settings first.');
+handler('patch', (id, selected) => exclusive(async () => {
+  const game = getGame(id), cli = await configuredCli();
   if (!game.apk) throw new Error('Download or import the APK first.');
-  const outputDirectory = path.join(path.dirname(game.apk), 'axrb-patched');
-  const output = path.join(outputDirectory, `${path.basename(game.apk, path.extname(game.apk))}-axrb.apk`);
-  const args = ['patch', `--input=${game.apk}`, `--output=${outputDirectory}`, '--output-name={filename}-axrb.apk'];
-  await run(cli.endsWith('.jar') ? 'java' : cli, cli.endsWith('.jar') ? ['-jar', cli, ...args] : args, { timeout: 20 * 60 * 1000 });
+  const input = game.apk;
+  const identity = await runtime.inspect(input);
+  if (identity.package !== game.package) throw new Error('APK package no longer matches this game; import it separately.');
+  Object.assign(game, { version: identity.version, versionCode: identity.versionCode, activity: identity.activity, patched: identity.patched });
+  await persist();
+  const compatibility = resolveCompatibility(compatibilityProfiles, identity);
+  let patchArgs;
+  if (compatibility.status === 'matched') {
+    if (selected !== undefined) throw new Error('This game now has a verified compatibility profile. Reopen its details to patch.');
+    patchArgs = compatibilityPatchArgs(compatibility);
+    if (patchArgs.length) await ovrport.requireProfiles(cli);
+  } else {
+    if (selected === undefined) return { patches: await ovrport.patches(cli) };
+    patchArgs = selectedPatchArgs(await ovrport.patches(cli), selected);
+  }
+  const outputDirectory = path.join(path.dirname(input), 'axrb-patched');
+  const output = path.join(outputDirectory, `${path.basename(input, path.extname(input))}-axrb.apk`);
+  const args = ['patch', `--input=${input}`, `--output=${outputDirectory}`, '--output-name={filename}-axrb.apk', ...patchArgs];
+  await ovrport.run(cli, args, { timeout: 20 * 60 * 1000 });
   const metadata = await runtime.inspect(output);
   if (metadata.package !== game.package) throw new Error('Patched APK changed its package name; import it separately.');
-  game.apk = output; game.patched = true; await persist();
+  Object.assign(game, { apk: output, patched: true, version: metadata.version, versionCode: metadata.versionCode, activity: metadata.activity });
+  await persist();
+  return { profileLabel: compatibility.status === 'matched' ? compatibility.label : null };
 }));
-handler('play', async id => { const game = getGame(id); if (busy) throw new Error('Wait for installation to finish.');
+handler('play', id => exclusive(async () => {
+  const game = getGame(id);
   if (!game.installed) throw new Error('Install the game first.');
-  liveDiagnostics.append('launcher', `Launching ${game.package}`, { tag: 'game' });
-  runtime.launch(game, async (code, tail) => {
-    liveDiagnostics.append('launcher', `Game process exited (${code ?? 'unknown'}).`, { tag: 'game', level: code ? 'E' : 'I' });
-    if (code) {
-      const error = message(new Error(tail || `Game launcher exited with code ${code}.`));
-      state.data.jobs.unshift({ id: randomUUID(), gameId: id, name: game.name, status: 'failed', stage: 'Launch', error });
-      if (window && !window.isDestroyed()) window.webContents.send('axrb:launch-error', `${game.name}: ${error}`);
-    }
-    await persist();
-  });
-  game.lastPlayed = new Date().toISOString(); await persist(); });
+  if (runtime.child) throw new Error('A game is already running.');
+  const prepared = await runtime.prepareLaunch(game);
+  let compatibility;
+  try {
+    compatibility = resolveCompatibility(compatibilityProfiles, prepared.game);
+    liveDiagnostics.append('launcher', `Launching ${game.package}`, { tag: 'game' });
+    runtime.launch(prepared.game, async (code, tail) => {
+      liveDiagnostics.append('launcher', `Game process exited (${code ?? 'unknown'}).`, { tag: 'game', level: code ? 'E' : 'I' });
+      if (code) {
+        const error = message(new Error(tail || `Game launcher exited with code ${code}.`));
+        state.data.jobs.unshift({ id: randomUUID(), gameId: id, name: game.name, status: 'failed', stage: 'Launch', error });
+        if (window && !window.isDestroyed()) window.webContents.send('axrb:launch-error', `${game.name}: ${error}`);
+      }
+      await persist();
+    }, compatibilityRuntimeOptions(compatibility), { ownsEmulator: prepared.ownsEmulator });
+  } catch (error) {
+    if (prepared.ownsEmulator) await runtime.adb(['emu', 'kill']).catch(cleanupError => liveDiagnostics.append('launcher', `Android shutdown failed: ${message(cleanupError)}`, { tag: 'game', level: 'W' }));
+    throw error;
+  }
+  game.lastPlayed = new Date().toISOString(); await persist();
+  return {
+    profileLabel: compatibility.status === 'matched' ? compatibility.label : null,
+    compatibilityNotice: compatibility.status === 'mismatch' ? `Installed Android build: ${compatibility.summary}` : null
+  };
+}));
 handler('stop', () => runtime.stop());
 handler('fpsHud', async enabled => {
   await runtime.setFpsHud(enabled);
@@ -482,7 +527,7 @@ if (smoke) {
   const { uiSmoke } = await import('./tests/ui-smoke.mjs');
   await uiSmoke(window, path.join(root, 'out/launcher/smoke'), publicState, uiErrors);
   const { libraryActionsSmoke } = await import('./tests/library-actions-smoke.mjs');
-  await libraryActionsSmoke(window, { state, runtime, dialog, persist, publicState });
+  await libraryActionsSmoke(window, { state, runtime, dialog, persist, publicState, ovrport });
   app.quit();
 } else { if (!setup || setup.status.phase === 'ready') syncInstalled().catch(() => {}); refreshArtwork().catch(() => {}); }
 app.on('window-all-closed', () => { for (const controller of controllers.values()) controller.abort(); setup?.cancel(); if (setup?.task) setup.task.finally(() => app.quit()); else app.quit(); });

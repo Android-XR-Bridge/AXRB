@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { clipboard } from 'electron';
+import { QuestStore } from '../core/meta.mjs';
 
 // This must exercise the button and OS clipboard together: a renderer-only
 // clipboard call can appear wired correctly but fail under Electron permissions.
@@ -24,8 +25,8 @@ export async function diagnosticsSmoke(window) {
   console.log('AXRB diagnostics smoke passed: visible log copied through the native clipboard.');
 }
 
-// Exercise the production bundle in sandboxed Electron. Uses a separate profile;
-// no authentication, installs, patching, or game launches.
+// Exercise the production bundle in sandboxed Electron. Uses a separate profile
+// and a local store fixture; no account, network search, installs or game launches.
 export async function uiSmoke(window, directory, snapshot, errors) {
   const wc = window.webContents;
   const js = code => wc.executeJavaScript(code);
@@ -52,6 +53,9 @@ export async function uiSmoke(window, directory, snapshot, errors) {
   }
   async function escape() { wc.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' }); wc.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' }); await tick(); }
   async function capture(name) { await tick(); await fs.writeFile(path.join(directory, `${name}.png`), (await wc.capturePage()).toPNG()); }
+  const originalSearch = QuestStore.prototype.search;
+  QuestStore.prototype.search = async () => [{ id: '123456', name: 'Pinball smoke fixture', source: 'meta', owned: false }];
+  try {
 
   await check(`Boolean(document.querySelector('#library-search'))`, 'Library did not load');
   await diagnosticsSmoke(window);
@@ -80,9 +84,8 @@ export async function uiSmoke(window, directory, snapshot, errors) {
   await click('[data-nav="store"]');
   await input('#store-query', 'Pinball');
   await js(`document.querySelector('#store-search').requestSubmit()`);
-  for (let i = 0; i < 150; i++) { if (await js(`Boolean(document.querySelector('[data-store="true"]'))`)) break; await new Promise(r => setTimeout(r, 200)); }
+  await check(`Boolean(document.querySelector('[data-store="true"]'))`, 'Store fixture did not render');
   const count = await js(`document.querySelectorAll('[data-store="true"]').length`);
-  if (!count) throw new Error('Live Quest search returned no games');
   await new Promise(r => setTimeout(r, 1200));
   await capture('store');
   await click('[data-store="true"]');
@@ -145,6 +148,7 @@ export async function uiSmoke(window, directory, snapshot, errors) {
   await check(`Boolean(document.querySelector('[data-setup-archives] button'))`, 'New setup does not offer downloaded archives');
   await capture('setup-install');
   setup.current = { directory: 'C:\\Previous AXRB\\AXRB Runtime', storageGB: 64 };
+  setup.directory = setup.current.directory;
   wc.send('axrb:changed', { ...snapshot(), setup });
   await check(`document.querySelector('#use-current-installation')?.checked && !document.querySelector('#runtime-folder')`, 'Discovered installation did not default to reuse');
   await check(`document.querySelector('#current-installation').textContent.includes(${JSON.stringify(setup.current.directory)}) && document.querySelector('#current-installation').textContent.includes('64 GB')`, 'Current installation path and disk size are missing');
@@ -185,5 +189,6 @@ export async function uiSmoke(window, directory, snapshot, errors) {
   await check(`(() => { const box = document.querySelector('[data-setup-start]').getBoundingClientRect(); return box.top >= 0 && box.bottom <= window.innerHeight; })()`, 'Setup action is unreachable at minimum window size');
   await capture('setup-small');
   if (errors.length) throw new Error(`Renderer errors: ${errors.join('; ')}`);
-  console.log(`AXRB React smoke passed: navigation, settings draft, ${count} live Quest results, library add/filter, dialog/menu keyboard focus, download progress, 920px layout`);
+  console.log(`AXRB React smoke passed: navigation, settings draft, ${count} local store fixture, library add/filter, dialog/menu keyboard focus, download progress, 920px layout`);
+  } finally { QuestStore.prototype.search = originalSearch; }
 }

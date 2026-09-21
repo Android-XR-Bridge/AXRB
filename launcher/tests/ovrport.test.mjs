@@ -1,0 +1,36 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { Ovrport, selectedPatchArgs } from '../core/ovrport.mjs';
+
+const catalog = [
+  { name: 'patch_copy_libraries', recommended: true },
+  { name: 'patch_vrapi_openxr', recommended: false },
+  { name: 'patch_remove_vrapi', recommended: false },
+];
+
+test('a legacy CLI cannot claim profiled patch support', async () => {
+  const cli = new Ovrport(async () => 'usage: overport patch --patches=<value>');
+  await assert.rejects(cli.requireProfiles('legacy.jar'), /newer ovrport CLI/);
+  await assert.rejects(cli.patches('legacy.jar'), /Update the ovrport CLI/);
+});
+
+test('profile capabilities belong to the configured CLI path', async () => {
+  const cli = new Ovrport(async (_executable, args) => args.includes('new.jar') ? '--extra-patches=<value>' : '--patches=<value>');
+  await cli.requireProfiles('new.jar');
+  await assert.rejects(cli.requireProfiles('old.jar'), /newer ovrport CLI/);
+});
+
+test('manual selections reject unknown patches, duplicates, conflicts and argument injection', () => {
+  assert.throws(() => selectedPatchArgs(catalog, []), /at least one/);
+  assert.throws(() => selectedPatchArgs(catalog, [{ name: 'patch_typo', arguments: [] }]), /Invalid/);
+  assert.throws(() => selectedPatchArgs(catalog, [{ name: 'patch_copy_libraries', arguments: [] }, { name: 'patch_copy_libraries', arguments: [] }]), /duplicate/);
+  assert.throws(() => selectedPatchArgs(catalog, [{ name: 'patch_vrapi_openxr', arguments: [] }, { name: 'patch_remove_vrapi', arguments: [] }]), /conflicts/);
+  assert.throws(() => selectedPatchArgs(catalog, [{ name: 'patch_copy_libraries', arguments: ['x;patch_remove_vrapi'] }]), /Invalid arguments/);
+  assert.deepEqual(selectedPatchArgs(catalog, [{ name: 'patch_copy_libraries', arguments: ['first', 'second'] }, { name: 'patch_vrapi_openxr', arguments: [] }]), ['--patches=patch_copy_libraries=first,second;patch_vrapi_openxr']);
+});
+
+test('CLI catalog rejects malformed or ambiguous patch choices', async () => {
+  for (const data of [null, [], [...catalog, catalog[0]], [{ name: 'patch_bad;injected', recommended: true }], [{ name: 'patch_copy_libraries', recommended: 'true' }]]) {
+    await assert.rejects(new Ovrport(async () => JSON.stringify(data)).patches('cli.jar'), /invalid patch catalog/);
+  }
+});

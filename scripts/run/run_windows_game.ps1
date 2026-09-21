@@ -16,6 +16,7 @@ param(
     [switch]$FpsHud,
     [ValidatePattern('^Local\\AXRB\.FpsHud\.[a-f0-9]{32}$')][string]$FpsHudEventName,
     [switch]$PrecomposeProjectionLayers,
+    [switch]$OwnsEmulator,
     [string]$HostExe
 )
 # The launcher reads this script's output as UTF-8 and reports a failure from
@@ -69,7 +70,10 @@ function Invoke-Adb([string[]]$Arguments, [int]$TimeoutMs = 10000) {
     } finally { $child.Dispose() }
 }
 
-$ownsEmulator = $false
+# Play preparation may have started Android before this script runs, so a
+# present device never implies a user-owned emulator. Ownership arrives
+# explicitly and only this session's emulator is ever shut down below.
+$ownsEmulator = [bool]$OwnsEmulator
 $bridgeProcess = $null
 $gameStarted = $false
 $closeRequest = $null

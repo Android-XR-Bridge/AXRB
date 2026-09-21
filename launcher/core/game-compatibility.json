@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "profiles": [
+    {
+      "id": "the-climb-2-2.2",
+      "label": "The Climb 2 2.2",
+      "package": "com.crytek.climb2",
+      "versions": [{ "versionName": "2.2" }],
+      "ovrport": { "extraPatches": ["patch_vrapi_openxr"] },
+      "runtime": { "precomposeProjectionLayers": true },
+      "summary": "VrApi OpenXR adapter and projection-layer precomposition"
+    }
+  ]
+}
