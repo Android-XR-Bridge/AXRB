@@ -14,6 +14,7 @@ import { Quest } from './core/quest.mjs';
 import { importGameZip } from './core/game-files.mjs';
 import { collectDiagnostics, uploadDiagnostics } from './core/diagnostics.mjs';
 import { LiveDiagnostics } from './core/live-diagnostics.mjs';
+import { EmulatorWatchdog } from './core/watchdog.mjs';
 import { loadCompatibilityProfiles, resolveCompatibility, compatibilityPatchArgs, compatibilityRuntimeOptions } from './core/compatibility.mjs';
 import { Ovrport, selectedPatchArgs } from './core/ovrport.mjs';
 import { MetaSession } from './core/session.mjs';
@@ -40,13 +41,14 @@ let window, authWindow, state, runtime, token = '', account = '', busy = false;
 let setup;
 let metaSession;
 let liveDiagnostics, reviewedDiagnostics = null;
+let emulatorWatchdog;
 let quitting = false;
 let compatibilityProfiles;
 const ovrport = new Ovrport();
 app.on('before-quit', event => {
   if (!liveDiagnostics || quitting) return;
   event.preventDefault(); quitting = true;
-  liveDiagnostics.stop().finally(() => app.quit());
+  Promise.all([liveDiagnostics.stop(), emulatorWatchdog?.stop()]).finally(() => app.quit());
 });
 const controllers = new Map();
 const searchResults = new Map();
@@ -64,6 +66,7 @@ const message = error => String(error?.message || error).replace(/(?:OC|FRL|EA)[
 const exists = async file => { try { await fs.access(file); return true; } catch { return false; } };
 function publicState() {
   return { ...state.data, setup: setup?.status, signedIn: Boolean(token), account, running: runtime.game, busy, portable: Boolean(portable),
+    emulator: emulatorWatchdog?.snapshot() ?? null,
     // Credentials and signed CDN URLs never reach the renderer or library file.
     games: state.data.games.map(g => {
       const { status, label, summary, verifiedVersions } = resolveCompatibility(compatibilityProfiles, g);
@@ -86,7 +89,7 @@ function handler(name, callback) {
     const started = Date.now(), trace = !['state', 'diagnosticsRead', 'diagnostics', 'copyText'].includes(name);
     if (trace) liveDiagnostics?.append('launcher', `${name} started`, { tag: 'operation' });
     try {
-      if (setup && setup.status.phase !== 'ready' && ['play', 'install', 'uninstall', 'import', 'patch', 'settings', 'questDevices', 'questGames', 'questImport', 'importZip'].includes(name)) throw new Error('Complete runtime setup first.');
+      if (setup && setup.status.phase !== 'ready' && ['play', 'install', 'uninstall', 'import', 'patch', 'settings', 'questDevices', 'questGames', 'questImport', 'importZip', 'startAndroid', 'stopAndroid'].includes(name)) throw new Error('Complete runtime setup first.');
       const value = await callback(...args);
       if (trace) liveDiagnostics?.append('launcher', `${name} completed (${Date.now() - started} ms)`, { tag: 'operation' });
       return { ok: true, value };
@@ -283,6 +286,12 @@ liveDiagnostics = new LiveDiagnostics({
   onUpdate: () => { if (window && !window.isDestroyed()) window.webContents.send('axrb:diagnostics'); },
 });
 await liveDiagnostics.start();
+emulatorWatchdog = new EmulatorWatchdog({
+  getStatus: () => runtime.status(),
+  onChange: () => changed(),
+  onTransition: state => liveDiagnostics.append('launcher', state.detail, { tag: 'watchdog', level: state.phase === 'unknown' ? 'W' : 'I' }),
+});
+emulatorWatchdog.start();
 token = await metaSession.load();
 window = new BrowserWindow({ width: 1320, height: 880, minWidth: 920, minHeight: 640, title: 'AXRB', icon: path.join(directory, 'assets/axrb.ico'), backgroundColor: '#141414',
   autoHideMenuBar: true, webPreferences: { preload: path.join(directory, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false } });
@@ -369,7 +378,12 @@ handler('install', id => exclusive(async () => {
 handler('uninstall', id => exclusive(async () => {
   const game = getGame(id);
   if (!game.installed) throw new Error('Game is not installed.');
-  if (runtime.child || controllers.size) throw new Error('Close the running game and finish transfers before uninstalling.');
+  if (runtime.child) throw new Error('Close the running game before uninstalling.');
+  // Scoped to this game's own jobs, matching the UI's own activeJob check
+  // (game-details.jsx): an unrelated game's download must not block this one.
+  if (state.data.jobs.some(j => j.gameId === id && ['queued', 'downloading', 'installing', 'patching', 'importing', 'uninstalling'].includes(j.status))) {
+    throw new Error('Finish this game’s transfer before uninstalling.');
+  }
   const answer = await dialog.showMessageBox(window, { type: 'warning', title: 'Uninstall game',
     message: `Uninstall ${game.name}?`, detail: 'Removes the game and its saved data from AXRB’s Android emulator. Downloaded APKs and assets stay on your PC.',
     buttons: ['Cancel', 'Uninstall'], defaultId: 0, cancelId: 0, noLink: true });
@@ -440,6 +454,15 @@ handler('play', id => exclusive(async () => {
   };
 }));
 handler('stop', () => runtime.stop());
+// Manual controls alongside the automated boot/shutdown that already happens
+// around play, install and uninstall. Reuses the same exclusive() gate those
+// share, since a manual boot or shutdown is exactly as disruptive to them.
+handler('startAndroid', () => exclusive(() => runtime.ensure()));
+handler('stopAndroid', () => exclusive(async () => {
+  if (runtime.child) throw new Error('Close the running game before stopping Android.');
+  if (!await runtime.online()) return;
+  await runtime.adb(['emu', 'kill']);
+}));
 handler('fpsHud', async enabled => {
   await runtime.setFpsHud(enabled);
   state.data.settings.fpsHud = enabled;

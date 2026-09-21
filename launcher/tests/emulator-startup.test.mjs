@@ -91,17 +91,24 @@ Write-Output ('RESULT:' + (ConvertTo-Json -InputObject @($script:calls.ToArray()
 
 test('stale cleanup requests graceful shutdown only for the requested emulator and port owner', windows, async () => {
   const result = await probe(`
-$definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Stop-StaleManagedEmulator' }, $true)
-. ([scriptblock]::Create($definition.Extent.Text))
+foreach ($name in @('Get-ManagedEmulatorProcess', 'Stop-StaleManagedEmulator')) {
+    $definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
+    . ([scriptblock]::Create($definition.Extent.Text))
+}
 $Sdk = 'C:\\fixture\\sdk'
 $Avd = 'axrb-managed-api36'
 $Port = 5584
 $script:commands = [System.Collections.Generic.List[string]]::new()
 $script:listenerOwner = 11
+# Start-Process -ArgumentList quotes every array element individually, so the
+# real Win32 command line reads "emulator.exe" "-avd" "name" "-ports" "a,b"
+# rather than the space-separated shape it is easy to assume while writing a
+# fixture by hand. Using that real shape here is what makes this test able to
+# catch a matcher that only works against the shape someone imagined.
 $script:processes = @(
-  [pscustomobject]@{ ProcessId = 11; Name = 'emulator.exe'; ExecutablePath = 'C:\\fixture\\sdk\\emulator\\emulator.exe'; CommandLine = 'emulator.exe -avd axrb-managed-api36 -ports 5584,5585' },
-  [pscustomobject]@{ ProcessId = 12; Name = 'emulator.exe'; ExecutablePath = 'C:\\other\\emulator\\emulator.exe'; CommandLine = 'emulator.exe -avd axrb-managed-api36 -ports 5584,5585' },
-  [pscustomobject]@{ ProcessId = 13; Name = 'emulator.exe'; ExecutablePath = 'C:\\fixture\\sdk\\emulator\\emulator.exe'; CommandLine = 'emulator.exe -avd axrb-managed-api36 -ports 5586,5587' }
+  [pscustomobject]@{ ProcessId = 11; Name = 'emulator.exe'; ExecutablePath = 'C:\\fixture\\sdk\\emulator\\emulator.exe'; CommandLine = '"emulator.exe" "-avd" "axrb-managed-api36" "-ports" "5584,5585"' },
+  [pscustomobject]@{ ProcessId = 12; Name = 'emulator.exe'; ExecutablePath = 'C:\\other\\emulator\\emulator.exe'; CommandLine = '"emulator.exe" "-avd" "axrb-managed-api36" "-ports" "5584,5585"' },
+  [pscustomobject]@{ ProcessId = 13; Name = 'emulator.exe'; ExecutablePath = 'C:\\fixture\\sdk\\emulator\\emulator.exe'; CommandLine = '"emulator.exe" "-avd" "axrb-managed-api36" "-ports" "5586,5587"' }
 )
 function Get-CimInstance { param($ClassName, $Filter, $ErrorAction)
   if ($Filter) { return $script:processes | Where-Object { $Filter -eq "ProcessId=$($_.ProcessId)" } }
@@ -116,10 +123,43 @@ function Invoke-ExternalWithTimeout { param($Exe, $Arguments, $TimeoutSeconds)
 function Stop-Process { throw 'Force stop must not be called' }
 Stop-StaleManagedEmulator -RequireCandidate
 $script:listenerOwner = 99
-$script:processes = @([pscustomobject]@{ ProcessId = 11; Name = 'emulator.exe'; ExecutablePath = 'C:\\fixture\\sdk\\emulator\\emulator.exe'; CommandLine = 'emulator.exe -avd axrb-managed-api36 -ports 5584,5585' })
+$script:processes = @([pscustomobject]@{ ProcessId = 11; Name = 'emulator.exe'; ExecutablePath = 'C:\\fixture\\sdk\\emulator\\emulator.exe'; CommandLine = '"emulator.exe" "-avd" "axrb-managed-api36" "-ports" "5584,5585"' })
 $rejected = $false
 try { Stop-StaleManagedEmulator -RequireCandidate | Out-Null } catch { $rejected = $_.Exception.Message -match 'belongs to another process' }
 Write-Output ('RESULT:' + (@{ commands = @($script:commands.ToArray()); rejected = $rejected } | ConvertTo-Json -Compress))
 `);
   assert.deepEqual(result, { commands: ['-s emulator-5584 emu kill'], rejected: true });
+});
+
+test('Status action is side-effect-free and never throws for an unset-up SDK', windows, async () => {
+  const output = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-ExecutionPolicy', 'Bypass', '-File', script,
+    '-Action', 'Status', '-Sdk', 'C:\\fixture\\does-not-exist', '-Avd', 'axrb-managed-api36', '-Port', '5584']);
+  const result = JSON.parse(output.trim().split(/\r?\n/).filter(Boolean).pop());
+  assert.deepEqual(result, { running: false, processId: null, count: 0, adbState: '' });
+});
+
+test('Status action reports the managed process and adb reachability together', windows, async () => {
+  const result = await probe(`
+$definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-ManagedEmulatorProcess' }, $true)
+. ([scriptblock]::Create($definition.Extent.Text))
+$switchStatement = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.SwitchStatementAst] }, $true)
+$statusClause = ($switchStatement.Clauses | Where-Object { $_.Item1.Extent.Text -eq 'Status' } | Select-Object -First 1).Item2
+# The clause's extent already includes its own { } delimiters; recreating a
+# scriptblock straight from that text parses them as a *nested* scriptblock
+# literal (an unexecuted value) instead of a body to run, so strip them first.
+$statusText = $statusClause.Extent.Text
+$statusText = $statusText.Substring(1, $statusText.Length - 2)
+$Sdk = 'C:\\fixture\\sdk'
+$Avd = 'axrb-managed-api36'
+$Port = 5584
+$script:processes = @(
+  [pscustomobject]@{ ProcessId = 11; Name = 'emulator.exe'; ExecutablePath = 'C:\\fixture\\sdk\\emulator\\emulator.exe'; CommandLine = '"emulator.exe" "-avd" "axrb-managed-api36" "-ports" "5584,5585"' }
+)
+function Get-CimInstance { param($ClassName, $Filter, $ErrorAction) return $script:processes }
+function Test-Path { param($LiteralPath) $true }
+function Invoke-ExternalWithTimeout { param($Exe, $Arguments, $TimeoutSeconds) return 'device' }
+$json = . ([scriptblock]::Create($statusText))
+Write-Output ('RESULT:' + $json)
+`);
+  assert.deepEqual(result, { running: true, processId: 11, count: 1, adbState: 'device' });
 });

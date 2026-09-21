@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
-import { activeStatuses, call, Empty, GameGrid, IconButton } from './common';
+import { activeStatuses, call, Empty, EmulatorStatus, GameGrid, IconButton } from './common';
 import { SetupScreen } from './setup';
 import { Settings } from './settings';
 import { Downloads } from './downloads';
@@ -61,7 +61,7 @@ function App() {
     <header className="flex h-16 items-center gap-8 border-b px-8">
       <button onClick={() => setPage('library')} aria-label="AXRB library" className="text-base font-semibold tracking-wide">AXRB</button>
       <nav aria-label="Main navigation" className="flex h-full items-center gap-6">{[['library', 'Library'], ['store', 'Store'], ['quest', 'Quest'], ['downloads', 'Downloads']].map(([id, label]) => <button key={id} data-nav={id} aria-current={page === id ? 'page' : undefined} onClick={() => setPage(id)} className={cn('relative flex h-full items-center gap-2 text-sm text-muted-foreground hover:text-foreground', page === id && 'text-foreground after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-foreground')}>{label}{id === 'downloads' && activeDownloads > 0 && <span className="rounded bg-secondary px-1.5 text-xs">{activeDownloads}</span>}</button>)}</nav>
-      <div className="ml-auto flex items-center gap-2">{state && !state.signedIn && <Button variant="ghost" disabled={pending.has('account')} onClick={() => run('account', () => call('login'))}>{pending.has('account') ? 'Connecting…' : 'Connect Meta'}</Button>}<IconButton label="Settings" data-nav="settings" aria-pressed={page === 'settings'} onClick={() => setPage('settings')}><SettingsIcon /></IconButton></div>
+      <div className="ml-auto flex items-center gap-4">{state && <EmulatorStatus emulator={state.emulator} />}{state && !state.signedIn && <Button variant="ghost" disabled={pending.has('account')} onClick={() => run('account', () => call('login'))}>{pending.has('account') ? 'Connecting…' : 'Connect Meta'}</Button>}<IconButton label="Settings" data-nav="settings" aria-pressed={page === 'settings'} onClick={() => setPage('settings')}><SettingsIcon /></IconButton></div>
     </header>
     <main id="content" className="mx-auto max-w-[1600px] p-8" aria-label={page}>
       {!state ? <Empty><Button variant="ghost" onClick={() => run('state', async () => setState(await call('state')))}>Load library</Button></Empty> : <>
