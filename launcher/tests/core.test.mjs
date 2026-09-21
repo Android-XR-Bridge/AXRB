@@ -97,6 +97,47 @@ test('library writes serialize and interrupted jobs are recoverable', async t =>
   const first=state.save();state.data.jobs.push({id:'job',status:'downloading'});await state.save();await first;
   const reopened=new State(dir);await reopened.load();assert.equal(reopened.data.games[0].name,'Game');assert.equal(reopened.data.jobs[0].status,'interrupted');
 });
+test('portable copies and moves keep carried files while preserving external paths', async t => {
+  const dir = await temp(t), original = path.join(dir, 'AXRB'), copied = path.join(dir, 'AXRB copy'), moved = path.join(dir, 'AXRB moved');
+  const apk = path.join(original, 'downloads/game/base.apk'), asset = path.join(original, 'downloads/game/main.obb');
+  const external = path.join(dir, 'AXRB-external/game.apk');
+  await fs.mkdir(path.dirname(apk), { recursive: true });
+  await fs.mkdir(path.dirname(external), { recursive: true });
+  await fs.writeFile(apk, 'original APK'); await fs.writeFile(asset, 'expansion data'); await fs.writeFile(external, 'external APK');
+  const state = new State(path.join(original, 'data')); await state.load({ portableRoot: original });
+  state.data.settings = { managedDirectory: path.join(original, 'AXRB Runtime'), sdk: path.join(original, 'AXRB Runtime/sdk'),
+    downloadDir: path.join(original, 'downloads'), ovrportCli: path.join(dir, 'external-tools/ovrport.jar') };
+  state.put({ id: 'carried', apk, files: [{ path: asset, kind: 'obb' }], owned: true, installed: true });
+  state.put({ id: 'external', apk: external, files: [{ path: external, kind: 'apk' }] });
+  await state.save();
+  const originalLibrary = await fs.readFile(path.join(original, 'data/library.json'), 'utf8');
+  await fs.cp(original, copied, { recursive: true });
+  await fs.writeFile(path.join(copied, 'downloads/game/base.apk'), 'copied APK');
+
+  const copy = new State(path.join(copied, 'data')); await copy.load({ portableRoot: copied });
+  assert.equal(await fs.readFile(copy.data.games[0].apk, 'utf8'), 'copied APK', 'a copy must not keep using the still-existing original');
+  assert.equal(await fs.readFile(copy.data.games[0].files[0].path, 'utf8'), 'expansion data');
+  assert.deepEqual(copy.data.settings, { ...state.data.settings, managedDirectory: path.join(copied, 'AXRB Runtime'),
+    sdk: path.join(copied, 'AXRB Runtime/sdk'), downloadDir: path.join(copied, 'downloads') });
+  assert.equal(copy.data.games[1].apk, external, 'a sibling with the same prefix is not inside the portable root');
+  assert.equal(copy.data.games[1].files[0].path, external);
+  assert.equal(copy.data.games[0].owned, true); assert.equal(copy.data.games[0].installed, true);
+  assert.equal(await fs.readFile(path.join(original, 'data/library.json'), 'utf8'), originalLibrary);
+
+  // Explicitly moving runtime/download storage outside the portable folder is
+  // respected on the next move; carried APK records still follow their files.
+  copy.data.settings.managedDirectory = path.join(dir, 'external-runtime');
+  copy.data.settings.sdk = path.join(dir, 'external-runtime/sdk');
+  copy.data.settings.downloadDir = path.join(dir, 'external-downloads');
+  await copy.save(); await fs.rename(copied, moved);
+  const reopened = new State(path.join(moved, 'data')); await reopened.load({ portableRoot: moved });
+  assert.equal(await fs.readFile(reopened.data.games[0].apk, 'utf8'), 'copied APK');
+  assert.deepEqual(reopened.data.settings, copy.data.settings);
+  const restarted = new State(path.join(moved, 'data')); await restarted.load({ portableRoot: moved });
+  assert.deepEqual(restarted.data, reopened.data, 'the migrated paths survive restart without being rebased twice');
+  const installedMode = new State(path.join(original, 'data')); await installedMode.load();
+  assert.equal(await fs.readFile(installedMode.data.games[0].apk, 'utf8'), 'original APK');
+});
 test('PowerShell paths and game names are literal, including quotes and substitutions', () => {
   const args=powershellArgs('C:\\project\\run.ps1',{GameName:"A 'quote' $(Get-Content secret)",GpuSharing:true,FpsHud:false});
   // -File puts each value in its own argv entry, so it reaches the parameter

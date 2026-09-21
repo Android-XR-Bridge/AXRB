@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, safeStorage, session, clipboard } from 'electron';
 import fs from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID, createHash } from 'node:crypto';
@@ -7,7 +8,7 @@ import { MetaAuth, QuestStore, appId } from './core/meta.mjs';
 import { downloadFile, safeName, checkSpace } from './core/download.mjs';
 import { State } from './core/state.mjs';
 import { Runtime, openWindowsFeatures, run } from './core/runtime.mjs';
-import { Setup, avdDirectory, parseStorageGB, planStorageChange, withStorageGB } from './core/setup.mjs';
+import { Setup, identifyArchives, avdDirectory, parseStorageGB, planStorageChange, withStorageGB } from './core/setup.mjs';
 import { loadLibraryArtwork } from './core/artwork.mjs';
 import { Quest } from './core/quest.mjs';
 import { importGameZip } from './core/game-files.mjs';
@@ -22,7 +23,9 @@ if (app.isPackaged) process.env.PATH = path.join(root, 'tools/python') + path.de
 const smoke = process.argv.includes('--smoke-test');
 const debug = process.argv.includes('--axrb-debug') || process.argv.includes('--debug') || process.env.AXRB_DEBUG === '1';
 const profile = app.commandLine.getSwitchValue('user-data-dir');
+const portable = app.isPackaged && existsSync(path.join(path.dirname(process.execPath), 'AXRB.portable')) ? path.dirname(process.execPath) : '';
 if (profile) app.setPath('userData', path.resolve(profile));
+else if (portable) app.setPath('userData', path.join(portable, 'data'));
 else if (smoke) app.setPath('userData', path.join(root, 'out/launcher/smoke'));
 else app.setPath('userData', path.join(app.getPath('appData'), 'AXRB'));
 if (!app.requestSingleInstanceLock()) app.quit();
@@ -51,7 +54,7 @@ const uiPath = path.join(directory, 'dist/index.html');
 const message = error => String(error?.message || error).replace(/(?:OC|FRL|EA)[A-Za-z0-9_|-]{30,}/g, '[redacted]').replace(/access_token=[^\s&]+/g, 'access_token=[redacted]');
 const exists = async file => { try { await fs.access(file); return true; } catch { return false; } };
 function publicState() {
-  return { ...state.data, setup: setup?.status, signedIn: Boolean(token), account, running: runtime.game, busy,
+  return { ...state.data, setup: setup?.status, signedIn: Boolean(token), account, running: runtime.game, busy, portable: Boolean(portable),
     // Credentials and signed CDN URLs never reach the renderer or library file.
     games: state.data.games.map(g => ({ ...g, files: g.files?.map(f => ({ name: f.name, path: f.path, kind: f.kind, size: f.size })) })) };
 }
@@ -226,20 +229,20 @@ async function importTransfer(kind, input) {
 }
 
 async function bootstrap() {
-state = new State(app.getPath('userData')); await state.load();
+state = new State(app.getPath('userData')); await state.load({ portableRoot: portable });
+const components = JSON.parse(await fs.readFile(path.join(directory, 'core/components.json'), 'utf8'));
 state.data.settings = { sdk: path.join(process.env.LOCALAPPDATA || '', 'Android/Sdk'), avd: 'axrb-games-api34', port: 5580,
-  memoryMB: 8192, cpuCores: 4, downloadDir: path.join(app.getPath('downloads'), 'AXRB'), ovrportCli: '',
+  memoryMB: 8192, cpuCores: 4, downloadDir: path.join(portable || app.getPath('downloads'), portable ? 'downloads' : 'AXRB'), ovrportCli: '',
   precomposeProjectionLayers: false,
   guestClock: await exists(path.join(root, 'out/clock/Release/axrb_clock_launcher.exe')) ? 'TscCorrected' : 'Default', ...state.data.settings };
 runtime = new Runtime(root, state.data.settings, (text, metadata) => liveDiagnostics?.write('launcher', text, { tag: 'runtime', ...metadata }));
 if (!smoke && (app.isPackaged || state.data.settings.managedDirectory || !await exists(path.join(state.data.settings.sdk, 'emulator/emulator.exe')))) {
-  const managed = state.data.settings.managedDirectory || path.join(process.env.LOCALAPPDATA, 'AXRB Runtime');
+  const managed = state.data.settings.managedDirectory || path.join(portable || process.env.LOCALAPPDATA, 'AXRB Runtime');
   // The setup receipt persists the managed root; derive all runtime paths from
   // it on every launch so a previous install never falls back to the user's
   // unrelated default SDK, AVD or emulator port.
   Object.assign(runtime.settings, { sdk: path.join(managed, 'sdk'), avd: 'axrb-managed-api36', port: 5584 });
-  setup = new Setup({ root, directory: managed, runtime,
-    components: JSON.parse(await fs.readFile(path.join(directory, 'core/components.json'), 'utf8')),
+  setup = new Setup({ root, directory: managed, runtime, components,
     save: async (value, installed) => { state.activateRuntime(value, runtime.settings, installed); await persist(); }, changed, debug,
     onOutput: (text, metadata) => liveDiagnostics?.write('launcher', text, { tag: 'setup', ...metadata }) });
   setup.environment();
@@ -268,6 +271,14 @@ handler('copyText', text => {
 handler('setupCheck', () => setup?.check());
 handler('setupStart', options => setup?.start(options));
 handler('setupCancel', () => setup?.cancel());
+handler('chooseSetupArchives', async () => {
+  if (setup?.status.active) throw new Error('Wait until setup is ready to select archives.');
+  const choice = await dialog.showOpenDialog(window, { title: 'Use downloaded Android setup files',
+    properties: ['openFile', 'multiSelections'], filters: [{ name: 'Android setup archives', extensions: ['zip'] }] });
+  if (choice.canceled) return null;
+  if (choice.filePaths.length > components.length) throw new Error(`Select at most ${components.length} Android setup archives.`);
+  return identifyArchives(choice.filePaths, components);
+});
 handler('setupFeatures', () => openWindowsFeatures(root));
 handler('setupLicense', async () => { const error = await shell.openPath(path.join(app.isPackaged ? process.resourcesPath : directory, 'licenses/android-sdk.txt')); if (error) throw new Error(error); });
 handler('login', async () => { await login(); return syncMeta(); });

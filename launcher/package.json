@@ -12,7 +12,8 @@
     "smoke": "node start.cjs --smoke-test",
     "build": "npm run build:quest && vite build",
     "build:quest": "powershell -NoProfile -ExecutionPolicy Bypass -File device/build.ps1",
-    "dist": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/build/installer.ps1"
+    "dist": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/build/installer.ps1",
+    "dist:portable": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/build/build-launcher.ps1 -Portable"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",

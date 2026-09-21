@@ -2,11 +2,32 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 export class State {
   constructor(directory) { this.directory = directory; this.data = { games: [], jobs: [], settings: {} }; this.writes = Promise.resolve(); }
-  async load() {
+  async load({ portableRoot = '' } = {}) {
     await fs.mkdir(this.directory, { recursive: true });
     try { this.data = { ...this.data, ...JSON.parse(await fs.readFile(path.join(this.directory, 'library.json'), 'utf8')) }; }
     catch (error) { if (error.code !== 'ENOENT') throw new Error('Launcher library could not be read. The original file has been preserved.'); }
     this.data.jobs = this.data.jobs.map(j => ['queued', 'downloading', 'installing', 'patching', 'importing', 'uninstalling'].includes(j.status) ? { ...j, status: 'interrupted', error: 'Interrupted when the launcher closed. Retry to continue.' } : j);
+    if (portableRoot) {
+      const current = path.resolve(portableRoot), previous = this.data.portableRoot;
+      if (previous !== current) {
+        // Only paths carried inside the old portable folder move. External
+        // runtimes and user-selected files remain explicit absolute paths.
+        const rebase = value => {
+          if (!previous || !path.isAbsolute(previous) || typeof value !== 'string' || !path.isAbsolute(value)) return value;
+          const relative = path.relative(previous, value);
+          return relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative) ? value : path.join(current, relative);
+        };
+        for (const key of ['managedDirectory', 'sdk', 'downloadDir', 'ovrportCli']) {
+          if (this.data.settings[key]) this.data.settings[key] = rebase(this.data.settings[key]);
+        }
+        for (const game of this.data.games) {
+          if (game.apk) game.apk = rebase(game.apk);
+          for (const file of game.files || []) file.path = rebase(file.path);
+        }
+        this.data.portableRoot = current;
+        await this.save();
+      }
+    }
   }
   save() {
     const snapshot = JSON.stringify(this.data, null, 2);

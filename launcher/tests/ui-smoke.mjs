@@ -139,14 +139,16 @@ export async function uiSmoke(window, directory, snapshot, errors) {
   setup.phase = 'install';
   wc.send('axrb:changed', { ...snapshot(), setup });
   await check(`Boolean(document.querySelector('#runtime-folder'))`, 'Setup folder missing');
-  await check(`Array.from(document.querySelectorAll('button')).find(b => b.textContent === 'Download and set up')?.disabled`, 'Setup did not require license acceptance');
+  await check(`document.querySelector('[data-setup-start]')?.disabled`, 'Setup did not require license acceptance');
   await click('#setup-license');
-  await check(`!Array.from(document.querySelectorAll('button')).find(b => b.textContent === 'Download and set up')?.disabled`, 'License acceptance did not enable setup');
+  await check(`!document.querySelector('[data-setup-start]')?.disabled`, 'License acceptance did not enable setup');
+  await check(`Boolean(document.querySelector('[data-setup-archives] button'))`, 'New setup does not offer downloaded archives');
   await capture('setup-install');
   setup.current = { directory: 'C:\\Previous AXRB\\AXRB Runtime', storageGB: 64 };
   wc.send('axrb:changed', { ...snapshot(), setup });
   await check(`document.querySelector('#use-current-installation')?.checked && !document.querySelector('#runtime-folder')`, 'Discovered installation did not default to reuse');
   await check(`document.querySelector('#current-installation').textContent.includes(${JSON.stringify(setup.current.directory)}) && document.querySelector('#current-installation').textContent.includes('64 GB')`, 'Current installation path and disk size are missing');
+  await check(`!document.querySelector('[data-setup-archives]')`, 'Existing disk reuse exposes local archive selection');
   await capture('setup-current');
   await click('#use-current-installation');
   await check(`document.querySelector('#runtime-folder')?.value === ''`, 'New installation silently inherited the current folder');
@@ -162,10 +164,15 @@ export async function uiSmoke(window, directory, snapshot, errors) {
   await click('#use-current-installation');
   setup.current = { ...setup.current, storageGB: null };
   wc.send('axrb:changed', { ...snapshot(), setup });
-  await check(`Array.from(document.querySelectorAll('button')).find(b => b.textContent === 'Set up current installation')?.disabled`, 'Setup allowed reuse with an unknown disk size');
+  await check(`document.querySelector('[data-setup-start]')?.disabled`, 'Setup allowed reuse with an unknown disk size');
   setup.current = { ...setup.current, storageGB: 64 };
+  setup.currentNeeds = { directory: setup.current.directory, components: [], downloadBytes: 0, avd: false, moved: true, runtime: true, android: true, licensed: true, ready: false, fresh: false };
   wc.send('axrb:changed', { ...snapshot(), setup });
+  await check(`!document.querySelector('#setup-license') && !document.querySelector('[data-setup-start]')?.disabled`, 'Runtime-only repair unnecessarily requires the SDK license again');
+  await check(`Boolean(document.querySelector('[data-setup-needs]'))`, 'Runtime repair does not describe the work needed');
+  await capture('setup-repair');
   await click('#use-current-installation');
+  await check(`Boolean(document.querySelector('#setup-license'))`, 'A different new target inherited the old runtime license');
   Object.assign(setup, { phase: 'download', active: true, component: 'Android 16 with ARM64 translation', completed: 512, total: 1024 });
   wc.send('axrb:changed', { ...snapshot(), setup });
   await check(`document.querySelector('progress')?.value === 512 && document.body.textContent.includes('50%')`, 'Setup progress missing');
@@ -174,6 +181,9 @@ export async function uiSmoke(window, directory, snapshot, errors) {
   wc.send('axrb:changed', { ...snapshot(), setup });
   await check(`document.querySelector('[role="alert"]')?.textContent.includes('Download interrupted') && document.body.textContent.includes('Retry setup')`, 'Setup retry missing');
   await check(`document.documentElement.scrollWidth <= window.innerWidth`, 'Setup overflows minimum window width');
+  await js(`document.querySelector('[data-setup-start]').scrollIntoView({ block: 'center' })`);
+  await check(`(() => { const box = document.querySelector('[data-setup-start]').getBoundingClientRect(); return box.top >= 0 && box.bottom <= window.innerHeight; })()`, 'Setup action is unreachable at minimum window size');
+  await capture('setup-small');
   if (errors.length) throw new Error(`Renderer errors: ${errors.join('; ')}`);
   console.log(`AXRB React smoke passed: navigation, settings draft, ${count} live Quest results, library add/filter, dialog/menu keyboard focus, download progress, 920px layout`);
 }

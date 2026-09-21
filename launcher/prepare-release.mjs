@@ -10,8 +10,26 @@ const launcher = path.dirname(fileURLToPath(import.meta.url)), root = path.dirna
 const staging = path.join(root, 'out/distribution/resources'), runtime = path.join(staging, 'runtime');
 await fs.rm(staging, { recursive: true, force: true });
 await fs.mkdir(runtime, { recursive: true });
+// Match the OpenXR headers pinned in host/src/CMakeLists.txt. The checksum
+// covers Khronos's complete NuGet artifact, not just the extracted desktop DLL.
+const openxr = {
+  url: 'https://github.com/KhronosGroup/OpenXR-SDK/releases/download/release-1.1.60/OpenXR.Loader.1.1.60.nupkg',
+  size: 1767003, sha256: '93c800cfe3269a19683fe6fef51236c16a164c641a6903eff84c6b2816afe556',
+};
+const loaderArchive = path.join(root, 'out/distribution/OpenXR.Loader.1.1.60.nupkg');
+if (!await verify(loaderArchive, openxr)) await downloadFile({ ...openxr, destination: loaderArchive, validate: value => {
+  const url = new URL(value);
+  if (url.protocol !== 'https:' || url.username || url.password || url.port ||
+    !['github.com', 'release-assets.githubusercontent.com'].includes(url.hostname)) throw new Error('Unexpected Khronos download host');
+} });
+if (!await verify(loaderArchive, openxr)) throw new Error('OpenXR loader package checksum mismatch');
+const loaderStaging = path.join(root, 'out/distribution/openxr-loader');
+const loaderEntry = 'native/x64/release/bin/openxr_loader.dll';
+await fs.rm(loaderStaging, { recursive: true, force: true });
+await extractZip(loaderArchive, loaderStaging, { entries: [loaderEntry] });
 const files = [
   ['out/distribution/build-host/bin/Release/axrb-host-bridge.exe', 'out/host/bin/Release/axrb-host-bridge.exe'],
+  [`out/distribution/openxr-loader/${loaderEntry}`, 'out/host/bin/Release/openxr_loader.dll'],
   ['out/distribution/build-gpu/Release/axrb_gpu_layer.dll', 'out/gpu/Release/axrb_gpu_layer.dll'],
   ['out/distribution/build-clock/Release/axrb_clock_launcher.exe', 'out/clock/Release/axrb_clock_launcher.exe'],
   ['out/distribution/build-clock/Release/axrb_whpx_clock.dll', 'out/clock/Release/axrb_whpx_clock.dll'],

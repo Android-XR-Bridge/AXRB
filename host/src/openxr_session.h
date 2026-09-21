@@ -127,20 +127,58 @@ public:
     bool load()
     {
 #if defined(_WIN32)
-        char loaderPath[1024]{};
-        const DWORD loaderPathSize = GetEnvironmentVariableA("AXRB_OPENXR_LOADER", loaderPath, sizeof(loaderPath));
-        if (loaderPathSize > 0 && loaderPathSize < sizeof(loaderPath)) {
-            library_ = LoadLibraryA(loaderPath);
+        auto try_load = [&](const wchar_t* location, const char* source) {
+            library_ = LoadLibraryW(location);
+            const DWORD error = library_ ? ERROR_SUCCESS : GetLastError();
+            const int size = WideCharToMultiByte(CP_UTF8, 0, location, -1, nullptr, 0, nullptr, nullptr);
+            std::string utf8(size > 0 ? size : 1, '\0');
+            if (size > 0) WideCharToMultiByte(CP_UTF8, 0, location, -1, utf8.data(), size, nullptr, nullptr);
+            std::fprintf(stderr, "AXRB OpenXR: %s loader \"%s\": %s (Windows error %lu)\n",
+                         source, utf8.c_str(), library_ ? "loaded" : "failed", error);
+        };
+        const DWORD overrideSize = GetEnvironmentVariableW(L"AXRB_OPENXR_LOADER", nullptr, 0);
+        if (overrideSize > 0) {
+            std::wstring overridePath(overrideSize, L'\0');
+            const DWORD size = GetEnvironmentVariableW(L"AXRB_OPENXR_LOADER", overridePath.data(), overrideSize);
+            if (size > 0 && size < overrideSize) {
+                try_load(overridePath.c_str(), "AXRB_OPENXR_LOADER");
+            } else {
+                std::fprintf(stderr, "AXRB OpenXR: could not read AXRB_OPENXR_LOADER (Windows error %lu)\n",
+                             size >= overrideSize ? ERROR_INSUFFICIENT_BUFFER : GetLastError());
+            }
         }
         if (library_ == nullptr) {
-            library_ = LoadLibraryA("openxr_loader.dll");
+            std::wstring executablePath(MAX_PATH, L'\0');
+            for (;;) {
+                const DWORD size = GetModuleFileNameW(nullptr, executablePath.data(), static_cast<DWORD>(executablePath.size()));
+                if (size == 0) {
+                    std::fprintf(stderr, "AXRB OpenXR: could not locate host executable (Windows error %lu)\n", GetLastError());
+                    break;
+                }
+                if (size < executablePath.size()) {
+                    executablePath.resize(size);
+                    const auto separator = executablePath.find_last_of(L"\\/");
+                    if (separator == std::wstring::npos) {
+                        std::fprintf(stderr, "AXRB OpenXR: host executable path has no directory\n");
+                        break;
+                    }
+                    executablePath.resize(separator + 1);
+                    executablePath += L"openxr_loader.dll";
+                    try_load(executablePath.c_str(), "adjacent");
+                    break;
+                }
+                if (executablePath.size() >= 32768) {
+                    std::fprintf(stderr, "AXRB OpenXR: host executable path exceeds Windows path limit\n");
+                    break;
+                }
+                executablePath.resize(executablePath.size() > 16384 ? 32768 : executablePath.size() * 2);
+            }
         }
         if (library_ == nullptr) {
-            library_ = LoadLibraryA(
-                "C:\\Program Files (x86)\\Steam\\steamapps\\common\\SteamVR\\bin\\win64\\openxr_loader.dll");
+            try_load(L"openxr_loader.dll", "ordinary DLL lookup");
         }
         if (library_ == nullptr) {
-            std::fprintf(stderr, "AXRB OpenXR: failed to load openxr_loader.dll\n");
+            std::fprintf(stderr, "AXRB OpenXR: no loader could be loaded; see attempted locations above\n");
             return false;
         }
         auto get_symbol = [&](const char* name) -> void* {

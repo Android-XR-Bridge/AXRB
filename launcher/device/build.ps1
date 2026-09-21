@@ -1,8 +1,20 @@
 param(
     [string]$Sdk = "$env:LOCALAPPDATA/Android/Sdk",
-    [string]$Java = "$env:ProgramFiles/Android/Android Studio/jbr"
+    [string]$Java
 )
 $ErrorActionPreference = 'Stop'
+if (!$Java) {
+    # Windows may expose javac through an Oracle javapath shim. Its parent is
+    # not a JDK, so validate candidate roots before selecting one.
+    $candidates = @()
+    if ($env:JAVA_HOME) { $candidates += $env:JAVA_HOME }
+    $candidates += "$env:ProgramFiles\Android\Android Studio\jbr"
+    $candidates += "$env:ProgramFiles\Java\latest"
+    $javac = Get-Command javac.exe -ErrorAction SilentlyContinue
+    if ($javac) { $candidates += (Split-Path (Split-Path $javac.Source -Parent) -Parent) }
+    $Java = $candidates | Where-Object { $_ -and (Test-Path -LiteralPath (Join-Path $_ 'bin\javac.exe')) } | Select-Object -First 1
+}
+if (!$Java -or !(Test-Path -LiteralPath (Join-Path $Java 'bin\javac.exe') -PathType Leaf)) { throw 'A JDK with bin\javac.exe is required. Set JAVA_HOME or pass -Java.' }
 . "$PSScriptRoot/../../scripts/paths.ps1"
 $build = "$AxrbRoot/out/android/quest-catalog"
 $output = "$AxrbRoot/launcher/assets/quest-catalog.jar"
