@@ -123,6 +123,47 @@ test('a slow Android shutdown does not discard a completed install', async t => 
   assert.ok(await fs.access(path.join(avd, 'hardware-qemu.ini.lock')).then(() => true, () => false), 'the lock is left for the emulator to reclaim');
 });
 
+test('forceReinstall is a debug-only option that uninstalls the runtime before reinstalling it', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'axrb-force-reinstall-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  restoreSetupEnvironment(t);
+  await fs.mkdir(path.join(dir, 'out/android/runtime-arm64-v8a'), { recursive: true });
+  await fs.writeFile(path.join(dir, 'out/android/runtime-arm64-v8a/axrb-openxr-runtime-debug.apk'), 'apk');
+  const avd = path.join(dir, 'AXRB Runtime/avd/axrb-managed-api36.avd');
+  await fs.mkdir(avd, { recursive: true });
+  await fs.writeFile(path.join(avd, 'userdata-qemu.img'), 'fixture');
+  await fs.writeFile(path.join(avd, 'config.ini'), 'disk.dataPartition.size=32G\n');
+  const calls = [];
+  const runtime = {
+    settings: { cpuCores: 4, memoryMB: 8192, avd: 'axrb-managed-api36' },
+    online: async () => false,
+    ensure: async () => {},
+    installed: async () => new Set(['com.axrb.openxrruntime']),
+    adb: async args => {
+      calls.push(args.join(' '));
+      if (args[0] === 'emu' && args[1] === 'avd') return 'axrb-managed-api36\nOK';
+      if (args.includes('path')) return 'package:/data/app/base.apk';
+      if (args[0] === 'uninstall') throw new Error('Failure [DELETE_FAILED_INTERNAL_ERROR]');
+      return '';
+    },
+  };
+  const notReady = new Setup({ root: dir, directory: dir, runtime, components: [], save: async () => {}, changed() {} });
+  notReady.status.hardware = { hypervisor: true, supportedGpu: true, x64: true, memoryGB: 16 };
+  notReady.status.current = { directory: path.dirname(path.dirname(avd)), storageGB: 32 };
+  await assert.rejects(notReady.start({ useCurrent: true, accepted: true, forceReinstall: true }), /debug-only/);
+
+  const setup = new Setup({ root: dir, directory: dir, runtime, components: [], save: async () => {}, changed() {}, debug: true });
+  setup.status.hardware = { hypervisor: true, supportedGpu: true, x64: true, memoryGB: 16 };
+  setup.status.current = { directory: path.dirname(path.dirname(avd)), storageGB: 32 };
+  await setup.start({ useCurrent: true, accepted: true, forceReinstall: true });
+  await setup.task;
+  assert.equal(setup.status.phase, 'ready', `setup must complete despite the failed uninstall, got: ${setup.status.error}`);
+  const uninstallIndex = calls.findIndex(c => c === 'uninstall com.axrb.openxrruntime');
+  const installIndex = calls.findIndex(c => c.startsWith('install '));
+  assert.ok(uninstallIndex >= 0, 'the existing runtime must be uninstalled first');
+  assert.ok(installIndex > uninstallIndex, 'the fresh install must run after the uninstall');
+});
+
 async function installationFixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'axrb-destination-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));

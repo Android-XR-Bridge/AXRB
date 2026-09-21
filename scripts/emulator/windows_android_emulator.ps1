@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('Setup', 'Start', 'Verify', 'Install', 'Stop')][string]$Action = 'Verify',
+    [ValidateSet('Setup', 'Start', 'Verify', 'Install', 'Stop', 'Status')][string]$Action = 'Verify',
     [string]$Sdk = "$env:LOCALAPPDATA\Android\Sdk",
     [ValidatePattern('^[a-zA-Z0-9_-]+$')][string]$Avd = 'axrb-nvidia-api34',
     [ValidateRange(5554, 5682)][int]$Port = 5580,
@@ -80,17 +80,25 @@ function Invoke-ExternalWithTimeout([string]$Exe, [string[]]$Arguments, [int]$Ti
         return [string[]]@($output.TrimEnd("`r`n") -split '\r?\n')
     } finally { $process.Dispose() }
 }
-function Stop-StaleManagedEmulator([switch]$RequireCandidate) {
-    # Only touch the requested AVD on the requested ports, launched by this SDK.
-    # Matching a name anywhere in a command line could stop an unrelated process.
-    $patternAvd = '(?i)(?:^|\s)-avd\s+"?' + [regex]::Escape($Avd) + '"?(?=\s|$)'
-    $patternPorts = '(?i)(?:^|\s)-ports\s+"?' + [regex]::Escape("$Port,$($Port + 1)") + '"?(?=\s|$)'
+function Get-ManagedEmulatorProcess {
+    # Only match the requested AVD on the requested ports, launched by this SDK.
+    # Matching a name anywhere in a command line could catch an unrelated process.
+    # Start-Process -ArgumentList quotes every array element individually
+    # ("-avd" "axrb-managed-api36" ...), unlike the plain `-avd axrb-managed-api36`
+    # shape these patterns were written against, so quotes are stripped before
+    # matching instead of trying to model every quoting style in the pattern.
+    $patternAvd = '(?i)(?:^|\s)-avd\s+' + [regex]::Escape($Avd) + '(?=\s|$)'
+    $patternPorts = '(?i)(?:^|\s)-ports\s+' + [regex]::Escape("$Port,$($Port + 1)") + '(?=\s|$)'
     $sdkEmulator = [IO.Path]::GetFullPath((Join-Path $Sdk 'emulator'))
-    $candidates = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-        $_.CommandLine -match $patternAvd -and $_.CommandLine -match $patternPorts -and
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $commandLine = $_.CommandLine -replace '"'
+        $commandLine -match $patternAvd -and $commandLine -match $patternPorts -and
         $_.Name -match '^(qemu-system-x86_64-headless|emulator)\.exe$' -and
         $_.ExecutablePath -and [IO.Path]::GetFullPath($_.ExecutablePath).StartsWith($sdkEmulator + '\', [StringComparison]::OrdinalIgnoreCase)
     }
+}
+function Stop-StaleManagedEmulator([switch]$RequireCandidate) {
+    $candidates = Get-ManagedEmulatorProcess
     if ($RequireCandidate -and !$candidates) { throw 'The unresponsive Android port is not owned by the requested AXRB emulator. Stop it manually before retrying.' }
     if (!$candidates) { return }
     $candidateIds = @($candidates | ForEach-Object { $_.ProcessId })
@@ -426,6 +434,27 @@ switch ($Action) {
         Write-Output "Ready: $serial. Images use adb reverse :38491; native pose stream uses 10.0.2.2:38490."
     }
     Verify { Verify-Gpu; Verify-Abi }
+    Status {
+        # A lightweight, side-effect-free check for the watchdog: never starts,
+        # stops, or reconnects anything, and never throws for a not-yet-set-up
+        # SDK or an unreachable device — those are normal, frequently-polled states.
+        $candidates = @(Get-ManagedEmulatorProcess)
+        $adbState = ''
+        if (Test-Path -LiteralPath $adb) {
+            try { $adbState = ((Invoke-ExternalWithTimeout $adb @('-s', $serial, 'get-state') 5) -join '').Trim() }
+            catch { $adbState = '' }
+        }
+        # Windows PowerShell's ConvertTo-Json renders the pipeline's "Nothing"
+        # result (what -ExpandProperty on an empty collection produces) as {}
+        # rather than null, so pick out the value with a plain index instead.
+        $processId = if ($candidates.Count) { $candidates[0].ProcessId } else { $null }
+        [pscustomobject]@{
+            running = [bool]$candidates.Count
+            processId = $processId
+            count = $candidates.Count
+            adbState = $adbState
+        } | ConvertTo-Json -Compress
+    }
     Install {
         Verify-Gpu
         Verify-Abi

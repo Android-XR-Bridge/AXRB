@@ -96,6 +96,23 @@ export class Runtime {
   constructor(root, settings, onOutput = () => {}) { this.root = root; this.settings = settings; this.onOutput = onOutput; this.child = null; }
   adb(args, options) { return run(path.join(this.settings.sdk, 'platform-tools/adb.exe'), ['-s', `emulator-${this.settings.port}`, ...args], options); }
   async online() { try { return (await this.adb(['get-state'], { timeout: 2500 })).trim() === 'device'; } catch { return false; } }
+  // Side-effect-free process + ADB check for the watchdog. Unlike online(),
+  // this can tell a genuinely stopped emulator apart from one whose OS process
+  // is still alive but unreachable (a stalled boot, a hung shutdown).
+  async status() {
+    const output = await run('powershell.exe', powershellArgs(path.join(this.root, 'scripts/emulator/windows_android_emulator.ps1'), {
+      Action: 'Status', Avd: this.settings.avd, Port: this.settings.port, Sdk: this.settings.sdk
+    }), { timeout: 10000 });
+    const line = output.trim().split(/\r?\n/).filter(Boolean).pop();
+    let parsed;
+    try { parsed = JSON.parse(line ?? ''); } catch { throw new Error('Could not read the Android emulator process status.'); }
+    return {
+      running: Boolean(parsed.running),
+      pid: Number.isInteger(parsed.processId) ? parsed.processId : null,
+      count: Number.isInteger(parsed.count) ? parsed.count : 0,
+      adbState: typeof parsed.adbState === 'string' ? parsed.adbState : '',
+    };
+  }
   async startEmulator({ onOutput, coldBoot = false, recoverUnresponsive = false }) {
     // Allow the script's 180-second graceful shutdown, full boot deadline,
     // and bounded ADB verification retries before timing out its wrapper.
