@@ -1,0 +1,1538 @@
+{
+  "CMakePresets.json": {
+    "mtime": 1789803992.5347376,
+    "seen": 1789992201.896502,
+    "ast_hash": "f7568ac2bbcf5e8df411478488496a49",
+    "semantic_hash": "f7568ac2bbcf5e8df411478488496a49"
+  },
+  "host/clock/clock_hook.cpp": {
+    "mtime": 1789803992.5397427,
+    "seen": 1789992201.896502,
+    "ast_hash": "d186c367a0de8e37f6262937eaf56be2",
+    "semantic_hash": "d186c367a0de8e37f6262937eaf56be2"
+  },
+  "host/clock/filter_test.cpp": {
+    "mtime": 1789803992.5407438,
+    "seen": 1789992201.896502,
+    "ast_hash": "d28fc55def6e6e53ce8b0e07cb4c1d75",
+    "semantic_hash": "d28fc55def6e6e53ce8b0e07cb4c1d75"
+  },
+  "host/clock/launcher.cpp": {
+    "mtime": 1789803992.5407438,
+    "seen": 1789992201.896502,
+    "ast_hash": "a5cb76fbf6b6366170594de9d5f529d2",
+    "semantic_hash": "a5cb76fbf6b6366170594de9d5f529d2"
+  },
+  "host/clock/register_filter.h": {
+    "mtime": 1789803992.5407438,
+    "seen": 1789992201.896502,
+    "ast_hash": "298e7f546d73fb15d2b52814bf294940",
+    "semantic_hash": "298e7f546d73fb15d2b52814bf294940"
+  },
+  "host/gpu/build.ps1": {
+    "mtime": 1789803992.541744,
+    "seen": 1789992201.896502,
+    "ast_hash": "09e9238fde5dbef01aa828410a906a9e",
+    "semantic_hash": "09e9238fde5dbef01aa828410a906a9e"
+  },
+  "host/gpu/capture_shared.cpp": {
+    "mtime": 1789971436.4161294,
+    "seen": 1789992201.896502,
+    "ast_hash": "c5c2b793d3acb4aeab4f4fb4bdcc926c",
+    "semantic_hash": "c5c2b793d3acb4aeab4f4fb4bdcc926c"
+  },
+  "host/gpu/interop_probe.cpp": {
+    "mtime": 1789803992.5427442,
+    "seen": 1789992201.896502,
+    "ast_hash": "4797ea5cf1f715c35b6044e0547a4eef",
+    "semantic_hash": "4797ea5cf1f715c35b6044e0547a4eef"
+  },
+  "host/gpu/layer.cpp": {
+    "mtime": 1789803992.5427442,
+    "seen": 1789992201.896502,
+    "ast_hash": "96de407b0d8812b1a95660dd5d747b23",
+    "semantic_hash": "96de407b0d8812b1a95660dd5d747b23"
+  },
+  "host/gpu/receiver_probe.cpp": {
+    "mtime": 1789803992.5437448,
+    "seen": 1789992201.896502,
+    "ast_hash": "16e5b5d3343784f9a5abf94dff1ece2a",
+    "semantic_hash": "16e5b5d3343784f9a5abf94dff1ece2a"
+  },
+  "host/gpu/shared_texture.h": {
+    "mtime": 1789803992.5437448,
+    "seen": 1789992201.896502,
+    "ast_hash": "5cde4369888646dc2a40e495ff0840e3",
+    "semantic_hash": "5cde4369888646dc2a40e495ff0840e3"
+  },
+  "host/src/debug_frame_capture.h": {
+    "mtime": 1789803992.5457406,
+    "seen": 1789992201.896502,
+    "ast_hash": "d62d7839e1b5fdee8a00632eff55b4b0",
+    "semantic_hash": "d62d7839e1b5fdee8a00632eff55b4b0"
+  },
+  "host/src/equirect_compositor.cpp": {
+    "mtime": 1789803992.5457406,
+    "seen": 1789992201.896502,
+    "ast_hash": "1c21b0fff60e5ec0b77843758c47c722",
+    "semantic_hash": "1c21b0fff60e5ec0b77843758c47c722"
+  },
+  "host/src/equirect_renderer.cpp": {
+    "mtime": 1789803992.546741,
+    "seen": 1789992201.896502,
+    "ast_hash": "a7e5a2480c987f7a441149ff59869f73",
+    "semantic_hash": "a7e5a2480c987f7a441149ff59869f73"
+  },
+  "host/src/equirect_renderer.h": {
+    "mtime": 1789803992.546741,
+    "seen": 1789992201.896502,
+    "ast_hash": "28af5fde3901e196680cc07887ad60cb",
+    "semantic_hash": "28af5fde3901e196680cc07887ad60cb"
+  },
+  "host/src/fps_counter.h": {
+    "mtime": 1789803992.546741,
+    "seen": 1789992201.896502,
+    "ast_hash": "3c351a7efc960ed7d6634ebb68296264",
+    "semantic_hash": "3c351a7efc960ed7d6634ebb68296264"
+  },
+  "host/src/fps_hud.cpp": {
+    "mtime": 1789803992.547741,
+    "seen": 1789992201.896502,
+    "ast_hash": "334dbe2dff2f3dbae00429bd44ee40d1",
+    "semantic_hash": "334dbe2dff2f3dbae00429bd44ee40d1"
+  },
+  "host/src/frame_pool.h": {
+    "mtime": 1789803992.547741,
+    "seen": 1789992201.896502,
+    "ast_hash": "d5e824c1478a000bfb67ebd41db98cb2",
+    "semantic_hash": "d5e824c1478a000bfb67ebd41db98cb2"
+  },
+  "host/src/frame_receiver.cpp": {
+    "mtime": 1789803992.547741,
+    "seen": 1789992201.896502,
+    "ast_hash": "b47c987e0dab4fed6f0d1eaa002c88e0",
+    "semantic_hash": "b47c987e0dab4fed6f0d1eaa002c88e0"
+  },
+  "host/src/gpu_completion.h": {
+    "mtime": 1789803992.547741,
+    "seen": 1789992201.896502,
+    "ast_hash": "f23a8ccf7f7fd703ba130135406daab8",
+    "semantic_hash": "f23a8ccf7f7fd703ba130135406daab8"
+  },
+  "host/src/gpu_frame_batch.h": {
+    "mtime": 1789803992.5487406,
+    "seen": 1789992201.896502,
+    "ast_hash": "a52cbba3dcb82c84305c04dc5ea00154",
+    "semantic_hash": "a52cbba3dcb82c84305c04dc5ea00154"
+  },
+  "host/src/layer_compositor.cpp": {
+    "mtime": 1789971436.417129,
+    "seen": 1789992201.896502,
+    "ast_hash": "71e7d8c1f45dca7c4e4f3a2a9da925bd",
+    "semantic_hash": "71e7d8c1f45dca7c4e4f3a2a9da925bd"
+  },
+  "host/src/main.cpp": {
+    "mtime": 1789803992.5497425,
+    "seen": 1789992201.896502,
+    "ast_hash": "955d2f2d907a4f5ade9be04af1105c2b",
+    "semantic_hash": "955d2f2d907a4f5ade9be04af1105c2b"
+  },
+  "host/src/menu_shortcut.h": {
+    "mtime": 1789803992.5497425,
+    "seen": 1789992201.896502,
+    "ast_hash": "a541298e1f28568832640996882c6fdb",
+    "semantic_hash": "a541298e1f28568832640996882c6fdb"
+  },
+  "host/src/mirror_window.cpp": {
+    "mtime": 1789803992.5497425,
+    "seen": 1789992201.896502,
+    "ast_hash": "b77ca1478e7d9cf07d39f0dcf6de6146",
+    "semantic_hash": "b77ca1478e7d9cf07d39f0dcf6de6146"
+  },
+  "host/src/mirror_window.h": {
+    "mtime": 1789803992.550742,
+    "seen": 1789992201.896502,
+    "ast_hash": "111214b99e2bb4aeacd22895e639501c",
+    "semantic_hash": "111214b99e2bb4aeacd22895e639501c"
+  },
+  "host/src/openxr_host.cpp": {
+    "mtime": 1789971436.417129,
+    "seen": 1789992201.896502,
+    "ast_hash": "3a49ab1d4db3a07ec5fc6163aba36327",
+    "semantic_hash": "3a49ab1d4db3a07ec5fc6163aba36327"
+  },
+  "host/src/openxr_host.h": {
+    "mtime": 1789803992.5517418,
+    "seen": 1789992201.896502,
+    "ast_hash": "e123aff412c4c2ba6f452383bfecf4c5",
+    "semantic_hash": "e123aff412c4c2ba6f452383bfecf4c5"
+  },
+  "host/src/openxr_session.cpp": {
+    "mtime": 1789971436.4181292,
+    "seen": 1789992201.896502,
+    "ast_hash": "3390d1133136cb76f61d4e65615dc852",
+    "semantic_hash": "3390d1133136cb76f61d4e65615dc852"
+  },
+  "host/src/openxr_session.h": {
+    "mtime": 1789971436.4181292,
+    "seen": 1789992201.896502,
+    "ast_hash": "e9cf24c769993d6fb28b8821009b2a9d",
+    "semantic_hash": "e9cf24c769993d6fb28b8821009b2a9d"
+  },
+  "host/src/panel_swapchain.cpp": {
+    "mtime": 1789971436.4181292,
+    "seen": 1789992201.896502,
+    "ast_hash": "0c96da498a9a56400ab942b5e39572f6",
+    "semantic_hash": "0c96da498a9a56400ab942b5e39572f6"
+  },
+  "host/src/presentation.cpp": {
+    "mtime": 1789971436.419129,
+    "seen": 1789992201.896502,
+    "ast_hash": "7324461d923aa0e696aa3ad2759c01de",
+    "semantic_hash": "7324461d923aa0e696aa3ad2759c01de"
+  },
+  "host/src/quad_renderer.cpp": {
+    "mtime": 1789971436.419129,
+    "seen": 1789992201.896502,
+    "ast_hash": "fd4fb59cc1bb74454da6cc2da7bc8f46",
+    "semantic_hash": "fd4fb59cc1bb74454da6cc2da7bc8f46"
+  },
+  "host/src/quad_renderer.h": {
+    "mtime": 1789971436.4201305,
+    "seen": 1789992201.896502,
+    "ast_hash": "fb88a85ab197a9cd1450a6d733eb6b1f",
+    "semantic_hash": "fb88a85ab197a9cd1450a6d733eb6b1f"
+  },
+  "host/src/splash.cpp": {
+    "mtime": 1789803992.553742,
+    "seen": 1789992201.896502,
+    "ast_hash": "f6b1e73ca6c0b8bbd63c31db70e24f17",
+    "semantic_hash": "f6b1e73ca6c0b8bbd63c31db70e24f17"
+  },
+  "host/src/splash.h": {
+    "mtime": 1789803992.5551167,
+    "seen": 1789992201.896502,
+    "ast_hash": "609b6ae613c264867061842de5cb4721",
+    "semantic_hash": "609b6ae613c264867061842de5cb4721"
+  },
+  "host/src/tracking.cpp": {
+    "mtime": 1789971436.4201305,
+    "seen": 1789992201.896502,
+    "ast_hash": "55bdb5b76d58494d9727fd2242ebb5b2",
+    "semantic_hash": "55bdb5b76d58494d9727fd2242ebb5b2"
+  },
+  "host/src/windows_gpu_receiver.h": {
+    "mtime": 1789803992.5561173,
+    "seen": 1789992201.896502,
+    "ast_hash": "07569891ebd69c6cde10b164c2b48005",
+    "semantic_hash": "07569891ebd69c6cde10b164c2b48005"
+  },
+  "launcher/build.ps1": {
+    "mtime": 1789971436.4221292,
+    "seen": 1789992201.896502,
+    "ast_hash": "9df5ae2d351e8e90452abbf169c2effd",
+    "semantic_hash": "9df5ae2d351e8e90452abbf169c2effd"
+  },
+  "launcher/components.json": {
+    "mtime": 1789803992.559117,
+    "seen": 1789992201.896502,
+    "ast_hash": "342e0968b5b38107e780aa6d62bb2575",
+    "semantic_hash": "342e0968b5b38107e780aa6d62bb2575"
+  },
+  "launcher/core/archive.mjs": {
+    "mtime": 1789971436.423132,
+    "seen": 1789992201.896502,
+    "ast_hash": "470103e550999c86760a0bacc808e5c6",
+    "semantic_hash": "470103e550999c86760a0bacc808e5c6"
+  },
+  "launcher/core/artwork.mjs": {
+    "mtime": 1789803992.5611176,
+    "seen": 1789992201.896502,
+    "ast_hash": "28798714dd2f26faadb5232061811392",
+    "semantic_hash": "28798714dd2f26faadb5232061811392"
+  },
+  "launcher/core/compatibility.mjs": {
+    "mtime": 1789971436.423132,
+    "seen": 1789992201.896502,
+    "ast_hash": "21080c852158ccc83543e8b748c7c22a",
+    "semantic_hash": "21080c852158ccc83543e8b748c7c22a"
+  },
+  "launcher/core/components.json": {
+    "mtime": 1789803992.5611176,
+    "seen": 1789992201.896502,
+    "ast_hash": "452f178c22762b5ece51673467000180",
+    "semantic_hash": "452f178c22762b5ece51673467000180"
+  },
+  "launcher/core/diagnostics.mjs": {
+    "mtime": 1789971436.423132,
+    "seen": 1789992201.896502,
+    "ast_hash": "bde111594ad244b88a1e7d1c0993e4ae",
+    "semantic_hash": "bde111594ad244b88a1e7d1c0993e4ae"
+  },
+  "launcher/core/download.mjs": {
+    "mtime": 1790010206.5441704,
+    "seen": 1790024290.7752311,
+    "ast_hash": "a018e522604b28c2b9138a7b303fcfd1",
+    "semantic_hash": "a018e522604b28c2b9138a7b303fcfd1"
+  },
+  "launcher/core/game-compatibility.json": {
+    "mtime": 1789971436.423132,
+    "seen": 1789992201.896502,
+    "ast_hash": "5ace8db54a7c5c3379cb11b83c64a2aa",
+    "semantic_hash": "5ace8db54a7c5c3379cb11b83c64a2aa"
+  },
+  "launcher/core/game-files.mjs": {
+    "mtime": 1789803992.5621164,
+    "seen": 1789992201.896502,
+    "ast_hash": "98b543a2457cc65c49cc173e712c2ebd",
+    "semantic_hash": "98b543a2457cc65c49cc173e712c2ebd"
+  },
+  "launcher/core/live-diagnostics.mjs": {
+    "mtime": 1789971436.424132,
+    "seen": 1789992201.896502,
+    "ast_hash": "3cd6a0f0acd711484d2d2df872d3b767",
+    "semantic_hash": "3cd6a0f0acd711484d2d2df872d3b767"
+  },
+  "launcher/core/meta.mjs": {
+    "mtime": 1789803992.5621164,
+    "seen": 1789992201.896502,
+    "ast_hash": "97a9955a9b9c1b8575862ed29ec35898",
+    "semantic_hash": "97a9955a9b9c1b8575862ed29ec35898"
+  },
+  "launcher/core/ovrport.mjs": {
+    "mtime": 1789971436.424132,
+    "seen": 1789992201.896502,
+    "ast_hash": "30f99d3c91f382c7757ff210ec2ebdad",
+    "semantic_hash": "30f99d3c91f382c7757ff210ec2ebdad"
+  },
+  "launcher/core/permissions.mjs": {
+    "mtime": 1789971436.424132,
+    "seen": 1789992201.896502,
+    "ast_hash": "faacd346896cc0e4ad31725f64684249",
+    "semantic_hash": "faacd346896cc0e4ad31725f64684249"
+  },
+  "launcher/core/portable.mjs": {
+    "mtime": 1790010206.5457196,
+    "seen": 1790024290.7752311,
+    "ast_hash": "9eea170f7885734496fb7859bd12b0ae",
+    "semantic_hash": "9eea170f7885734496fb7859bd12b0ae"
+  },
+  "launcher/core/quest.mjs": {
+    "mtime": 1789803992.5621164,
+    "seen": 1789992201.896502,
+    "ast_hash": "da7d106c8d11d322fd13b4a357a77f36",
+    "semantic_hash": "da7d106c8d11d322fd13b4a357a77f36"
+  },
+  "launcher/core/runtime.mjs": {
+    "mtime": 1790010206.5457196,
+    "seen": 1790024290.7752311,
+    "ast_hash": "b9c8f82b8fd862845ed3a97915ce7597",
+    "semantic_hash": "b9c8f82b8fd862845ed3a97915ce7597"
+  },
+  "launcher/core/session.mjs": {
+    "mtime": 1789971436.425132,
+    "seen": 1789992201.896502,
+    "ast_hash": "577f102fa53bb60eff1d5297a6eba3b2",
+    "semantic_hash": "577f102fa53bb60eff1d5297a6eba3b2"
+  },
+  "launcher/core/setup.mjs": {
+    "mtime": 1790010206.5467234,
+    "seen": 1790024290.7752311,
+    "ast_hash": "9c30bd1306dcd1450df6404a66df640f",
+    "semantic_hash": "9c30bd1306dcd1450df6404a66df640f"
+  },
+  "launcher/core/state.mjs": {
+    "mtime": 1789971436.4261315,
+    "seen": 1789992201.896502,
+    "ast_hash": "6d342eb58293718193065238f08e516e",
+    "semantic_hash": "6d342eb58293718193065238f08e516e"
+  },
+  "launcher/device/QuestCatalog.java": {
+    "mtime": 1789803992.5641158,
+    "seen": 1789992201.896502,
+    "ast_hash": "91580ebb59f81aa43bec7bf216e06f93",
+    "semantic_hash": "91580ebb59f81aa43bec7bf216e06f93"
+  },
+  "launcher/device/build.ps1": {
+    "mtime": 1789971436.4261315,
+    "seen": 1789992201.896502,
+    "ast_hash": "818da0d40c870b85ae9e50ca9d3ec52d",
+    "semantic_hash": "818da0d40c870b85ae9e50ca9d3ec52d"
+  },
+  "launcher/inspect_apk.py": {
+    "mtime": 1789803992.5651157,
+    "seen": 1789992201.896502,
+    "ast_hash": "a7719e006736c8c0c6d6d34d5727f25d",
+    "semantic_hash": "a7719e006736c8c0c6d6d34d5727f25d"
+  },
+  "launcher/jsconfig.json": {
+    "mtime": 1789803992.5651157,
+    "seen": 1789992201.896502,
+    "ast_hash": "5739ad9feb939405cc10a9a78e4cabb1",
+    "semantic_hash": "5739ad9feb939405cc10a9a78e4cabb1"
+  },
+  "launcher/main.mjs": {
+    "mtime": 1790024230.216822,
+    "seen": 1790024290.7752311,
+    "ast_hash": "23b2aae5df1c4a683be61e9aeb0fa4f4",
+    "semantic_hash": "23b2aae5df1c4a683be61e9aeb0fa4f4"
+  },
+  "launcher/package.json": {
+    "mtime": 1789971436.4281323,
+    "seen": 1789992201.896502,
+    "ast_hash": "ca8e225eb12c896698b5cf11867d2af3",
+    "semantic_hash": "ca8e225eb12c896698b5cf11867d2af3"
+  },
+  "launcher/preload.cjs": {
+    "mtime": 1790024230.216822,
+    "seen": 1790024290.7752311,
+    "ast_hash": "b2cbd11402ff099e3324561c4ba5cad8",
+    "semantic_hash": "b2cbd11402ff099e3324561c4ba5cad8"
+  },
+  "launcher/prepare-release.mjs": {
+    "mtime": 1790024230.2178288,
+    "seen": 1790024290.7752311,
+    "ast_hash": "a94b1fffa496e21d5da5d8dbc6d99dbd",
+    "semantic_hash": "a94b1fffa496e21d5da5d8dbc6d99dbd"
+  },
+  "launcher/start.cjs": {
+    "mtime": 1789803992.571117,
+    "seen": 1789992201.896502,
+    "ast_hash": "c9ad62ca2251d7d4a1c561f8793ff853",
+    "semantic_hash": "c9ad62ca2251d7d4a1c561f8793ff853"
+  },
+  "launcher/tests/artwork.test.mjs": {
+    "mtime": 1789803992.5721169,
+    "seen": 1789992201.896502,
+    "ast_hash": "28a3bcad245cf8b8e9c31a3982987e91",
+    "semantic_hash": "28a3bcad245cf8b8e9c31a3982987e91"
+  },
+  "launcher/tests/builds.test.mjs": {
+    "mtime": 1789803992.5721169,
+    "seen": 1789992201.896502,
+    "ast_hash": "cc036a5f7de75827b187935b38f7430f",
+    "semantic_hash": "cc036a5f7de75827b187935b38f7430f"
+  },
+  "launcher/tests/compatibility.test.mjs": {
+    "mtime": 1789971436.430132,
+    "seen": 1789992201.896502,
+    "ast_hash": "bc93b905bba1d8a1e906f4abfc12c282",
+    "semantic_hash": "bc93b905bba1d8a1e906f4abfc12c282"
+  },
+  "launcher/tests/core.test.mjs": {
+    "mtime": 1789971436.430132,
+    "seen": 1789992201.896502,
+    "ast_hash": "b6a31b5394861df69f28ed35244c15cd",
+    "semantic_hash": "b6a31b5394861df69f28ed35244c15cd"
+  },
+  "launcher/tests/diagnostics.test.mjs": {
+    "mtime": 1789971436.4311292,
+    "seen": 1789992201.896502,
+    "ast_hash": "de34af1f858cf4c3c092fee62e639be5",
+    "semantic_hash": "de34af1f858cf4c3c092fee62e639be5"
+  },
+  "launcher/tests/emulator-startup.test.mjs": {
+    "mtime": 1790010206.5487237,
+    "seen": 1790024290.7752311,
+    "ast_hash": "d01731ade5abcad94a8cd9d078c706f3",
+    "semantic_hash": "d01731ade5abcad94a8cd9d078c706f3"
+  },
+  "launcher/tests/imports.test.mjs": {
+    "mtime": 1789803992.5731175,
+    "seen": 1789992201.896502,
+    "ast_hash": "1d8ef9c1c0e6fa424c1126faeb24f71c",
+    "semantic_hash": "1d8ef9c1c0e6fa424c1126faeb24f71c"
+  },
+  "launcher/tests/library-actions-smoke.mjs": {
+    "mtime": 1790010206.5487237,
+    "seen": 1790024290.7752311,
+    "ast_hash": "c590dec4fa60fcdffd7eb68618b9e4ba",
+    "semantic_hash": "c590dec4fa60fcdffd7eb68618b9e4ba"
+  },
+  "launcher/tests/live-diagnostics.test.mjs": {
+    "mtime": 1789971436.4321299,
+    "seen": 1789992201.896502,
+    "ast_hash": "0f4ceae03cb7895b82ac4c7ee77b0f11",
+    "semantic_hash": "0f4ceae03cb7895b82ac4c7ee77b0f11"
+  },
+  "launcher/tests/ovrport.test.mjs": {
+    "mtime": 1789971436.4321299,
+    "seen": 1789992201.896502,
+    "ast_hash": "986bcc6d2cb747c6e3902a3a1cc43aad",
+    "semantic_hash": "986bcc6d2cb747c6e3902a3a1cc43aad"
+  },
+  "launcher/tests/permissions.test.mjs": {
+    "mtime": 1789971436.4321299,
+    "seen": 1789992201.896502,
+    "ast_hash": "75390aa9c1e46ddc42ecd0a5dd619b6c",
+    "semantic_hash": "75390aa9c1e46ddc42ecd0a5dd619b6c"
+  },
+  "launcher/tests/portable.test.mjs": {
+    "mtime": 1790010206.5487237,
+    "seen": 1790024290.7752311,
+    "ast_hash": "fc8d6213a4e89f325123055d395ca56e",
+    "semantic_hash": "fc8d6213a4e89f325123055d395ca56e"
+  },
+  "launcher/tests/runtime-launch.test.mjs": {
+    "mtime": 1790010206.5497234,
+    "seen": 1790024290.7752311,
+    "ast_hash": "2c1c42e37a1645f9eb167de5cbf7cbbd",
+    "semantic_hash": "2c1c42e37a1645f9eb167de5cbf7cbbd"
+  },
+  "launcher/tests/session.test.mjs": {
+    "mtime": 1789971436.4331288,
+    "seen": 1789992201.896502,
+    "ast_hash": "a9aaf3a09613dcf843597bc5d6c162cf",
+    "semantic_hash": "a9aaf3a09613dcf843597bc5d6c162cf"
+  },
+  "launcher/tests/setup.test.mjs": {
+    "mtime": 1790010206.5497234,
+    "seen": 1790024290.7752311,
+    "ast_hash": "290267d66800b1498a19c984c476a3e8",
+    "semantic_hash": "290267d66800b1498a19c984c476a3e8"
+  },
+  "launcher/tests/storage.test.mjs": {
+    "mtime": 1789971436.4341283,
+    "seen": 1789992201.896502,
+    "ast_hash": "ad4dc1865cc98ff72e1fa823cb1db737",
+    "semantic_hash": "ad4dc1865cc98ff72e1fa823cb1db737"
+  },
+  "launcher/tests/ui-smoke.mjs": {
+    "mtime": 1789971436.4341283,
+    "seen": 1789992201.896502,
+    "ast_hash": "deda5b43978b2968c5cf3a84d127f877",
+    "semantic_hash": "deda5b43978b2968c5cf3a84d127f877"
+  },
+  "launcher/tests/uninstall.test.mjs": {
+    "mtime": 1789803992.5751183,
+    "seen": 1789992201.896502,
+    "ast_hash": "9638f09a3211ba1924781c5a90e1ebf0",
+    "semantic_hash": "9638f09a3211ba1924781c5a90e1ebf0"
+  },
+  "launcher/ui/common.jsx": {
+    "mtime": 1790010206.5507264,
+    "seen": 1790024290.7752311,
+    "ast_hash": "8795443fd59cc4f61a7b39d8df87136a",
+    "semantic_hash": "8795443fd59cc4f61a7b39d8df87136a"
+  },
+  "launcher/ui/components/ui/button.jsx": {
+    "mtime": 1789803992.5761185,
+    "seen": 1789992201.896502,
+    "ast_hash": "00049850efe935d6ca7f5ff61481987f",
+    "semantic_hash": "00049850efe935d6ca7f5ff61481987f"
+  },
+  "launcher/ui/components/ui/dialog.jsx": {
+    "mtime": 1789803992.5771177,
+    "seen": 1789992201.896502,
+    "ast_hash": "18e9cc50e1185d0e4cc92f155dd03b74",
+    "semantic_hash": "18e9cc50e1185d0e4cc92f155dd03b74"
+  },
+  "launcher/ui/components/ui/dropdown-menu.jsx": {
+    "mtime": 1789803992.5771177,
+    "seen": 1789992201.896502,
+    "ast_hash": "6dd10abbbcc42d6bfee0e9aa8ef6ecc6",
+    "semantic_hash": "6dd10abbbcc42d6bfee0e9aa8ef6ecc6"
+  },
+  "launcher/ui/components/ui/input.jsx": {
+    "mtime": 1789803992.5771177,
+    "seen": 1789992201.896502,
+    "ast_hash": "8cb455ed1bf63a6e82ab569645c74ed1",
+    "semantic_hash": "8cb455ed1bf63a6e82ab569645c74ed1"
+  },
+  "launcher/ui/components/ui/select.jsx": {
+    "mtime": 1789803992.578118,
+    "seen": 1789992201.896502,
+    "ast_hash": "0ee5fd7fe41274a95c3770b7670c738c",
+    "semantic_hash": "0ee5fd7fe41274a95c3770b7670c738c"
+  },
+  "launcher/ui/diagnostics.jsx": {
+    "mtime": 1789971436.4341283,
+    "seen": 1789992201.896502,
+    "ast_hash": "4a0c2938be906862112db35227f125a9",
+    "semantic_hash": "4a0c2938be906862112db35227f125a9"
+  },
+  "launcher/ui/downloads.jsx": {
+    "mtime": 1789803992.578118,
+    "seen": 1789992201.896502,
+    "ast_hash": "079124b40bbae00ce56bf9491af004c8",
+    "semantic_hash": "079124b40bbae00ce56bf9491af004c8"
+  },
+  "launcher/ui/game-details.jsx": {
+    "mtime": 1789971436.4351282,
+    "seen": 1789992201.896502,
+    "ast_hash": "31f833b2ca605e8a35e75741626a8d0d",
+    "semantic_hash": "31f833b2ca605e8a35e75741626a8d0d"
+  },
+  "launcher/ui/lib/utils.js": {
+    "mtime": 1789803992.5791178,
+    "seen": 1789992201.896502,
+    "ast_hash": "266fd27f2c53fc31358c9edb0e5bdcb8",
+    "semantic_hash": "266fd27f2c53fc31358c9edb0e5bdcb8"
+  },
+  "launcher/ui/main.jsx": {
+    "mtime": 1790010206.5517268,
+    "seen": 1790024290.7752311,
+    "ast_hash": "ce8d32590f28a6ccf1919aff60f21a4c",
+    "semantic_hash": "ce8d32590f28a6ccf1919aff60f21a4c"
+  },
+  "launcher/ui/quest.jsx": {
+    "mtime": 1789803992.5801167,
+    "seen": 1789992201.896502,
+    "ast_hash": "91e289677cb909c87bfb513a6b0188a9",
+    "semantic_hash": "91e289677cb909c87bfb513a6b0188a9"
+  },
+  "launcher/ui/settings.jsx": {
+    "mtime": 1790024230.218829,
+    "seen": 1790024290.7752311,
+    "ast_hash": "5bc3814f66fb656acf95e19d3e8a344a",
+    "semantic_hash": "5bc3814f66fb656acf95e19d3e8a344a"
+  },
+  "launcher/ui/setup.jsx": {
+    "mtime": 1790010206.5527277,
+    "seen": 1790024290.7752311,
+    "ast_hash": "9f2c41dadfaad9059606f8d4af6d38f3",
+    "semantic_hash": "9f2c41dadfaad9059606f8d4af6d38f3"
+  },
+  "launcher/ui/toasts.jsx": {
+    "mtime": 1789803992.5821166,
+    "seen": 1789992201.896502,
+    "ast_hash": "35d2ed5330a603e9f59163859dcecca6",
+    "semantic_hash": "35d2ed5330a603e9f59163859dcecca6"
+  },
+  "launcher/verify-meta.mjs": {
+    "mtime": 1789803992.5821166,
+    "seen": 1789992201.896502,
+    "ast_hash": "9261bca3b2a3c17dc57d6da96ea1d6df",
+    "semantic_hash": "9261bca3b2a3c17dc57d6da96ea1d6df"
+  },
+  "launcher/verify-release.cjs": {
+    "mtime": 1789803992.583119,
+    "seen": 1789992201.896502,
+    "ast_hash": "184648ce34114bcfadec0ed30691402b",
+    "semantic_hash": "184648ce34114bcfadec0ed30691402b"
+  },
+  "launcher/vite.config.mjs": {
+    "mtime": 1789803992.583119,
+    "seen": 1789992201.896502,
+    "ast_hash": "bc2134f89726c5666056b26ef0352795",
+    "semantic_hash": "bc2134f89726c5666056b26ef0352795"
+  },
+  "protocol/controller_input.h": {
+    "mtime": 1789803992.5861168,
+    "seen": 1789992201.896502,
+    "ast_hash": "6ddaf530b20f5ec9e138e4066b7b76e5",
+    "semantic_hash": "6ddaf530b20f5ec9e138e4066b7b76e5"
+  },
+  "protocol/gpu_frame.h": {
+    "mtime": 1789803992.5861168,
+    "seen": 1789992201.896502,
+    "ast_hash": "104390a031c82ef4a4d234438c1362fd",
+    "semantic_hash": "104390a031c82ef4a4d234438c1362fd"
+  },
+  "protocol/gpu_frame_packet.h": {
+    "mtime": 1789803992.5871167,
+    "seen": 1789992201.896502,
+    "ast_hash": "319164ee1f16203cb82a5e6b373ba006",
+    "semantic_hash": "319164ee1f16203cb82a5e6b373ba006"
+  },
+  "protocol/gpu_transport.cpp": {
+    "mtime": 1789803992.5871167,
+    "seen": 1789992201.896502,
+    "ast_hash": "717f2906dc3c468192ebf2c4e29f5a79",
+    "semantic_hash": "717f2906dc3c468192ebf2c4e29f5a79"
+  },
+  "protocol/gpu_transport.h": {
+    "mtime": 1789803992.5881164,
+    "seen": 1789992201.896502,
+    "ast_hash": "531b3f0dadcde2b230b3cd70422da98f",
+    "semantic_hash": "531b3f0dadcde2b230b3cd70422da98f"
+  },
+  "protocol/image_frame.h": {
+    "mtime": 1789971436.4371283,
+    "seen": 1789992201.896502,
+    "ast_hash": "09de8e8e393b97c257779308ec484111",
+    "semantic_hash": "09de8e8e393b97c257779308ec484111"
+  },
+  "protocol/image_transport.cpp": {
+    "mtime": 1789803992.5891168,
+    "seen": 1789992201.896502,
+    "ast_hash": "7c37337d9ce3f87b68341afa2862ba6b",
+    "semantic_hash": "7c37337d9ce3f87b68341afa2862ba6b"
+  },
+  "protocol/image_transport.h": {
+    "mtime": 1789803992.5891168,
+    "seen": 1789992201.896502,
+    "ast_hash": "19c46c192a93a249a5d4776549db1774",
+    "semantic_hash": "19c46c192a93a249a5d4776549db1774"
+  },
+  "protocol/perf_stats.h": {
+    "mtime": 1789803992.5891168,
+    "seen": 1789992201.896502,
+    "ast_hash": "0869738b1aade3644c0bb11658fb3a62",
+    "semantic_hash": "0869738b1aade3644c0bb11658fb3a62"
+  },
+  "protocol/pose_frame.h": {
+    "mtime": 1789971436.4371283,
+    "seen": 1789992201.896502,
+    "ast_hash": "3d6cad74cd052a249ee2a1170946acb8",
+    "semantic_hash": "3d6cad74cd052a249ee2a1170946acb8"
+  },
+  "protocol/pose_stream_decoder.h": {
+    "mtime": 1789971436.4381292,
+    "seen": 1789992201.896502,
+    "ast_hash": "031e1d8e7ca46c0f256032ce28ee95f6",
+    "semantic_hash": "031e1d8e7ca46c0f256032ce28ee95f6"
+  },
+  "protocol/transport_tcp.cpp": {
+    "mtime": 1789803992.5901175,
+    "seen": 1789992201.896502,
+    "ast_hash": "550470c90ed15a1727bda0fdfb4d7483",
+    "semantic_hash": "550470c90ed15a1727bda0fdfb4d7483"
+  },
+  "protocol/transport_tcp.h": {
+    "mtime": 1789803992.5911164,
+    "seen": 1789992201.896502,
+    "ast_hash": "086af0a403705eec22921a49db7003c1",
+    "semantic_hash": "086af0a403705eec22921a49db7003c1"
+  },
+  "protocol/video_packet.h": {
+    "mtime": 1789803992.5911164,
+    "seen": 1789992201.896502,
+    "ast_hash": "3bf61bbba01015c8201926fcd4cba1e9",
+    "semantic_hash": "3bf61bbba01015c8201926fcd4cba1e9"
+  },
+  "protocol/video_transport.cpp": {
+    "mtime": 1789803992.5911164,
+    "seen": 1789992201.896502,
+    "ast_hash": "971da21d6f60c9caf23550ead28d7e5f",
+    "semantic_hash": "971da21d6f60c9caf23550ead28d7e5f"
+  },
+  "protocol/video_transport.h": {
+    "mtime": 1789803992.5921168,
+    "seen": 1789992201.896502,
+    "ast_hash": "4824a4cd9568fd571e3a48604640cd30",
+    "semantic_hash": "4824a4cd9568fd571e3a48604640cd30"
+  },
+  "protocol/windows_gpu_frame.h": {
+    "mtime": 1789803992.5921168,
+    "seen": 1789992201.896502,
+    "ast_hash": "2a7f058433ff3876c06a348831b612f0",
+    "semantic_hash": "2a7f058433ff3876c06a348831b612f0"
+  },
+  "runtime/apk/build_apk.ps1": {
+    "mtime": 1790010206.5527277,
+    "seen": 1790024290.7752311,
+    "ast_hash": "3019acb6cc5487f3270a6f6f4a3f625d",
+    "semantic_hash": "3019acb6cc5487f3270a6f6f4a3f625d"
+  },
+  "runtime/apk/build_apk.sh": {
+    "mtime": 1790010206.553727,
+    "seen": 1790024290.7752311,
+    "ast_hash": "e77044bed69118793162014be2df0df9",
+    "semantic_hash": "e77044bed69118793162014be2df0df9"
+  },
+  "runtime/apk/src/com/axrb/openxrruntime/ImageProxy.java": {
+    "mtime": 1789803992.5961165,
+    "seen": 1789992201.896502,
+    "ast_hash": "e5696ebe7c0befa1248f4df86bd04109",
+    "semantic_hash": "e5696ebe7c0befa1248f4df86bd04109"
+  },
+  "runtime/apk/src/com/axrb/openxrruntime/RuntimeBrokerProvider.java": {
+    "mtime": 1789971436.4391298,
+    "seen": 1789992201.896502,
+    "ast_hash": "2bf9b2d15e557d8617b2135b279ecd04",
+    "semantic_hash": "2bf9b2d15e557d8617b2135b279ecd04"
+  },
+  "runtime/apk/src/com/axrb/openxrruntime/SurfaceFrameSignal.java": {
+    "mtime": 1789803992.5971174,
+    "seen": 1789992201.896502,
+    "ast_hash": "92c14c00461301dd51d30cb021163d75",
+    "semantic_hash": "92c14c00461301dd51d30cb021163d75"
+  },
+  "runtime/audio/pcm_recovery.h": {
+    "mtime": 1789803992.5971174,
+    "seen": 1789992201.896502,
+    "ast_hash": "abb226c4c1f79b4b63cdeb33a13f3e78",
+    "semantic_hash": "abb226c4c1f79b4b63cdeb33a13f3e78"
+  },
+  "runtime/audio/ranchu_audio_compat.cpp": {
+    "mtime": 1789803992.5981169,
+    "seen": 1789992201.896502,
+    "ast_hash": "919d91a6ac1d10e091c6e4a5b1f17751",
+    "semantic_hash": "919d91a6ac1d10e091c6e4a5b1f17751"
+  },
+  "runtime/src/android_surface.cpp": {
+    "mtime": 1789803992.599117,
+    "seen": 1789992201.896502,
+    "ast_hash": "26d697de3ba044e9f89c33926b7cb04a",
+    "semantic_hash": "26d697de3ba044e9f89c33926b7cb04a"
+  },
+  "runtime/src/android_surface.h": {
+    "mtime": 1789803992.599117,
+    "seen": 1789992201.896502,
+    "ast_hash": "c52fd94419554383cf6eb33e0b35f753",
+    "semantic_hash": "c52fd94419554383cf6eb33e0b35f753"
+  },
+  "runtime/src/android_surface_swapchain.cpp": {
+    "mtime": 1789803992.600116,
+    "seen": 1789992201.896502,
+    "ast_hash": "fd89a5f7d9034f5f4f6521d574893296",
+    "semantic_hash": "fd89a5f7d9034f5f4f6521d574893296"
+  },
+  "runtime/src/dispatch.cpp": {
+    "mtime": 1789803992.600116,
+    "seen": 1789992201.896502,
+    "ast_hash": "d96aebbd4edd9e272b2eadbb8a79c38d",
+    "semantic_hash": "d96aebbd4edd9e272b2eadbb8a79c38d"
+  },
+  "runtime/src/frame_loop.cpp": {
+    "mtime": 1789803992.6011174,
+    "seen": 1789992201.896502,
+    "ast_hash": "d34543badb00303a4c275f5c4e27a35a",
+    "semantic_hash": "d34543badb00303a4c275f5c4e27a35a"
+  },
+  "runtime/src/frame_transport.cpp": {
+    "mtime": 1789971436.4401288,
+    "seen": 1789992201.896502,
+    "ast_hash": "3c9d4af881e7c7d05ace951f94ed1b9b",
+    "semantic_hash": "3c9d4af881e7c7d05ace951f94ed1b9b"
+  },
+  "runtime/src/hand_tracking.cpp": {
+    "mtime": 1789803992.6021166,
+    "seen": 1789992201.896502,
+    "ast_hash": "74e807ba92d8ed602c7b2e574e64a517",
+    "semantic_hash": "74e807ba92d8ed602c7b2e574e64a517"
+  },
+  "runtime/src/input.cpp": {
+    "mtime": 1789803992.6021166,
+    "seen": 1789992201.896502,
+    "ast_hash": "aedf2cd88899e6f059dc3f87e729b908",
+    "semantic_hash": "aedf2cd88899e6f059dc3f87e729b908"
+  },
+  "runtime/src/instance.cpp": {
+    "mtime": 1789971436.4401288,
+    "seen": 1789992201.896502,
+    "ast_hash": "ff7d58351f703c69d3d8d0e22dabb93d",
+    "semantic_hash": "ff7d58351f703c69d3d8d0e22dabb93d"
+  },
+  "runtime/src/openxr_dispatch/hand_tracking_types.h": {
+    "mtime": 1789803992.6031168,
+    "seen": 1789992201.896502,
+    "ast_hash": "d3c919f5ac5cea5f479085dd095340bf",
+    "semantic_hash": "d3c919f5ac5cea5f479085dd095340bf"
+  },
+  "runtime/src/openxr_dispatch/openxr_minimal.h": {
+    "mtime": 1789971436.441132,
+    "seen": 1789992201.896502,
+    "ast_hash": "b3655dec27aa21d613c970225770f7a8",
+    "semantic_hash": "b3655dec27aa21d613c970225770f7a8"
+  },
+  "runtime/src/openxr_dispatch/runtime_entry.cpp": {
+    "mtime": 1789803992.6041162,
+    "seen": 1789992201.896502,
+    "ast_hash": "d17809fa929b2a6717b54486ba42cdee",
+    "semantic_hash": "d17809fa929b2a6717b54486ba42cdee"
+  },
+  "runtime/src/pose_client.cpp": {
+    "mtime": 1789803992.6041162,
+    "seen": 1789992201.896502,
+    "ast_hash": "c4a031bcdcaaf503bec2789843b0e2e2",
+    "semantic_hash": "c4a031bcdcaaf503bec2789843b0e2e2"
+  },
+  "runtime/src/pose_client.h": {
+    "mtime": 1789803992.6051166,
+    "seen": 1789992201.896502,
+    "ast_hash": "5b18afb22549e6893e42f2116fcd486f",
+    "semantic_hash": "5b18afb22549e6893e42f2116fcd486f"
+  },
+  "runtime/src/runtime_internal.h": {
+    "mtime": 1789971436.441132,
+    "seen": 1789992201.896502,
+    "ast_hash": "07554251c5ffb4be36628b9377bcc343",
+    "semantic_hash": "07554251c5ffb4be36628b9377bcc343"
+  },
+  "runtime/src/runtime_manifest/active_runtime.json": {
+    "mtime": 1789803992.6061182,
+    "seen": 1789992201.896502,
+    "ast_hash": "dba0244066f8e74c7fccffbe1df6b082",
+    "semantic_hash": "dba0244066f8e74c7fccffbe1df6b082"
+  },
+  "runtime/src/session.cpp": {
+    "mtime": 1789803992.6061182,
+    "seen": 1789992201.896502,
+    "ast_hash": "b3d2d176c9ff00427c7600990cad1483",
+    "semantic_hash": "b3d2d176c9ff00427c7600990cad1483"
+  },
+  "runtime/src/session.h": {
+    "mtime": 1789803992.6071172,
+    "seen": 1789992201.896502,
+    "ast_hash": "13d884326221c313f68867b06499f6c2",
+    "semantic_hash": "13d884326221c313f68867b06499f6c2"
+  },
+  "runtime/src/spaces.cpp": {
+    "mtime": 1789971436.4421318,
+    "seen": 1789992201.896502,
+    "ast_hash": "83a13430a11d9ee930d56e06b9047206",
+    "semantic_hash": "83a13430a11d9ee930d56e06b9047206"
+  },
+  "runtime/src/state.cpp": {
+    "mtime": 1789971436.4421318,
+    "seen": 1789992201.896502,
+    "ast_hash": "790c2119058b5f493d63b81f09b97ada",
+    "semantic_hash": "790c2119058b5f493d63b81f09b97ada"
+  },
+  "runtime/src/swapchain.cpp": {
+    "mtime": 1789803992.6081164,
+    "seen": 1789992201.896502,
+    "ast_hash": "6cf542a082e10dbcd3981f7eea6945de",
+    "semantic_hash": "6cf542a082e10dbcd3981f7eea6945de"
+  },
+  "runtime/src/vulkan_backend.cpp": {
+    "mtime": 1789803992.6081164,
+    "seen": 1789992201.896502,
+    "ast_hash": "e1640e3df50adf3e9375df08c00d7cfd",
+    "semantic_hash": "e1640e3df50adf3e9375df08c00d7cfd"
+  },
+  "runtime/src/vulkan_backend.h": {
+    "mtime": 1789803992.6081164,
+    "seen": 1789992201.896502,
+    "ast_hash": "9ff331979b71c3def9d563eb2d777c6c",
+    "semantic_hash": "9ff331979b71c3def9d563eb2d777c6c"
+  },
+  "runtime/src/vulkan_surface.cpp": {
+    "mtime": 1789803992.609117,
+    "seen": 1789992201.896502,
+    "ast_hash": "a4c28a74e010ff1ab249277734795610",
+    "semantic_hash": "a4c28a74e010ff1ab249277734795610"
+  },
+  "runtime/vulkan/android_vulkan_layer.cpp": {
+    "mtime": 1789803992.610116,
+    "seen": 1789992201.896502,
+    "ast_hash": "c5b28a34151a69aaf2ce9b7da81a5f18",
+    "semantic_hash": "c5b28a34151a69aaf2ce9b7da81a5f18"
+  },
+  "runtime/vulkan/vulkan_descriptor_template.h": {
+    "mtime": 1789803992.610116,
+    "seen": 1789992201.896502,
+    "ast_hash": "0ec0a2feba64552d3e90796da3793493",
+    "semantic_hash": "0ec0a2feba64552d3e90796da3793493"
+  },
+  "scripts/emulator/android_runtime_policy.py": {
+    "mtime": 1789803992.614117,
+    "seen": 1789992201.896502,
+    "ast_hash": "03686e9cb2e924465d714ce876dabd3c",
+    "semantic_hash": "03686e9cb2e924465d714ce876dabd3c"
+  },
+  "scripts/emulator/audio_policy.py": {
+    "mtime": 1789803992.6151168,
+    "seen": 1789992201.896502,
+    "ast_hash": "d274a746a05edc00ca6136bcbd8de1e4",
+    "semantic_hash": "d274a746a05edc00ca6136bcbd8de1e4"
+  },
+  "scripts/emulator/check_windows.ps1": {
+    "mtime": 1789971436.4441314,
+    "seen": 1789992201.896502,
+    "ast_hash": "c94beaa0f7340d7e8ed48994528a5f92",
+    "semantic_hash": "c94beaa0f7340d7e8ed48994528a5f92"
+  },
+  "scripts/emulator/distribution.py": {
+    "mtime": 1789803992.6161168,
+    "seen": 1789992201.896502,
+    "ast_hash": "c9e275236961c5154dbd4ccb70e1907d",
+    "semantic_hash": "c9e275236961c5154dbd4ccb70e1907d"
+  },
+  "scripts/emulator/gpu_validation.ps1": {
+    "mtime": 1789803992.6161168,
+    "seen": 1789992201.896502,
+    "ast_hash": "ef68a1e6b70d3066fc29acfce2c37a95",
+    "semantic_hash": "ef68a1e6b70d3066fc29acfce2c37a95"
+  },
+  "scripts/emulator/storage_policy.py": {
+    "mtime": 1789803992.6161168,
+    "seen": 1789992201.896502,
+    "ast_hash": "1413bdf660cf89d96bf0b8e25cc5b437",
+    "semantic_hash": "1413bdf660cf89d96bf0b8e25cc5b437"
+  },
+  "scripts/emulator/unreal_memory_policy.py": {
+    "mtime": 1789971436.4441314,
+    "seen": 1789992201.896502,
+    "ast_hash": "a421dd96c7b493a1e2dc73345de7ac2e",
+    "semantic_hash": "a421dd96c7b493a1e2dc73345de7ac2e"
+  },
+  "scripts/emulator/windows_android_emulator.ps1": {
+    "mtime": 1790024230.219828,
+    "seen": 1790024290.7752311,
+    "ast_hash": "410fdf9bf45264287b4459a96425ea99",
+    "semantic_hash": "410fdf9bf45264287b4459a96425ea99"
+  },
+  "scripts/emulator/windows_gpu.py": {
+    "mtime": 1789803992.618119,
+    "seen": 1789992201.896502,
+    "ast_hash": "9c65da5870bf432ba731b0bd7199d328",
+    "semantic_hash": "9c65da5870bf432ba731b0bd7199d328"
+  },
+  "scripts/paths.ps1": {
+    "mtime": 1790010206.5557292,
+    "seen": 1790024290.7752311,
+    "ast_hash": "5c359d3572d2362a7c8f23deb2b83bff",
+    "semantic_hash": "5c359d3572d2362a7c8f23deb2b83bff"
+  },
+  "scripts/run/android_app_label.py": {
+    "mtime": 1789803992.6191168,
+    "seen": 1789992201.896502,
+    "ast_hash": "ed2190fa5887911d0345cc349a01688b",
+    "semantic_hash": "ed2190fa5887911d0345cc349a01688b"
+  },
+  "scripts/run/fps_hud.ps1": {
+    "mtime": 1789971436.445131,
+    "seen": 1789992201.896502,
+    "ast_hash": "c4b6e106c492cd1ae55dfae303043914",
+    "semantic_hash": "c4b6e106c492cd1ae55dfae303043914"
+  },
+  "scripts/run/open_windows_features.ps1": {
+    "mtime": 1789971436.445131,
+    "seen": 1789992201.896502,
+    "ast_hash": "d54b8a20052df7f4a7abab88e80f3e58",
+    "semantic_hash": "d54b8a20052df7f4a7abab88e80f3e58"
+  },
+  "scripts/run/run_launcher.ps1": {
+    "mtime": 1789803992.6191168,
+    "seen": 1789992201.896502,
+    "ast_hash": "a9d14b4a41ec5de48c5cb45b0aaa24d7",
+    "semantic_hash": "a9d14b4a41ec5de48c5cb45b0aaa24d7"
+  },
+  "scripts/run/run_windows_game.ps1": {
+    "mtime": 1790010206.5557292,
+    "seen": 1790024290.7752311,
+    "ast_hash": "4af7cafa7ed6094241d2dbdd22eeb0e6",
+    "semantic_hash": "4af7cafa7ed6094241d2dbdd22eeb0e6"
+  },
+  "scripts/run/steamvr_app_identity.py": {
+    "mtime": 1789803992.620118,
+    "seen": 1789992201.896502,
+    "ast_hash": "61a32dfaa5880a27a3139b9a935b74fe",
+    "semantic_hash": "61a32dfaa5880a27a3139b9a935b74fe"
+  },
+  "scripts/run/stop_game.ps1": {
+    "mtime": 1789971436.4461315,
+    "seen": 1789992201.896502,
+    "ast_hash": "b037482388cbb7b725fc3c7854e48aa8",
+    "semantic_hash": "b037482388cbb7b725fc3c7854e48aa8"
+  },
+  "tests/android/SurfaceSmoke.java": {
+    "mtime": 1789803992.6211166,
+    "seen": 1789992201.896502,
+    "ast_hash": "9892c973a5d661f09ff5f98a3639d998",
+    "semantic_hash": "9892c973a5d661f09ff5f98a3639d998"
+  },
+  "tests/android/android_clock_probe.cpp": {
+    "mtime": 1789803992.6221178,
+    "seen": 1789992201.896502,
+    "ast_hash": "b9d7ca8f8412a0a516b318fa943cce12",
+    "semantic_hash": "b9d7ca8f8412a0a516b318fa943cce12"
+  },
+  "tests/android/android_loader_probe/build_apk.sh": {
+    "mtime": 1789803992.6231165,
+    "seen": 1789992201.896502,
+    "ast_hash": "9b052e923618c7402696bab36cffc5d0",
+    "semantic_hash": "9b052e923618c7402696bab36cffc5d0"
+  },
+  "tests/android/android_loader_probe/native/loader_probe.cpp": {
+    "mtime": 1789803992.624118,
+    "seen": 1789992201.896502,
+    "ast_hash": "6dc7f093c56002ea5e50d1cc98e00fd2",
+    "semantic_hash": "6dc7f093c56002ea5e50d1cc98e00fd2"
+  },
+  "tests/android/android_loader_probe/src/com/axrb/loaderprobe/MainActivity.java": {
+    "mtime": 1789803992.626118,
+    "seen": 1789992201.896502,
+    "ast_hash": "b56b10470754381c660cc277204a9c1d",
+    "semantic_hash": "b56b10470754381c660cc277204a9c1d"
+  },
+  "tests/android/android_openxr_loader_probe/build_apk.sh": {
+    "mtime": 1789803992.627117,
+    "seen": 1789992201.896502,
+    "ast_hash": "3b67b16623ba86bd84359c77a81184ee",
+    "semantic_hash": "3b67b16623ba86bd84359c77a81184ee"
+  },
+  "tests/android/android_openxr_loader_probe/native/openxr_loader_probe.cpp": {
+    "mtime": 1789803992.6281166,
+    "seen": 1789992201.896502,
+    "ast_hash": "5f12908538045f9d048f9ac7115a6184",
+    "semantic_hash": "5f12908538045f9d048f9ac7115a6184"
+  },
+  "tests/android/android_openxr_loader_probe/src/com/axrb/openxrloaderprobe/MainActivity.java": {
+    "mtime": 1789803992.631116,
+    "seen": 1789992201.896502,
+    "ast_hash": "8f40d5b84bae7be488d0de2bb306e6de",
+    "semantic_hash": "8f40d5b84bae7be488d0de2bb306e6de"
+  },
+  "tests/android/android_openxr_loader_probe/src/com/axrb/openxrloaderprobe/RuntimeBrokerProvider.java": {
+    "mtime": 1789803992.631116,
+    "seen": 1789992201.896502,
+    "ast_hash": "bb901043eeaf2146fb3c7257ede51082",
+    "semantic_hash": "bb901043eeaf2146fb3c7257ede51082"
+  },
+  "tests/android/android_time_domains.cpp": {
+    "mtime": 1789803992.631116,
+    "seen": 1789992201.896502,
+    "ast_hash": "3b9ab712ba4dab6937d09d6c8a733f34",
+    "semantic_hash": "3b9ab712ba4dab6937d09d6c8a733f34"
+  },
+  "tests/android/android_translation_probe/MainActivity.java": {
+    "mtime": 1789803992.6321175,
+    "seen": 1789992201.896502,
+    "ast_hash": "876c4825ea034e5fa16933f29376bdcb",
+    "semantic_hash": "876c4825ea034e5fa16933f29376bdcb"
+  },
+  "tests/android/android_translation_probe/benchmark.cpp": {
+    "mtime": 1789803992.6321175,
+    "seen": 1789992201.896502,
+    "ast_hash": "9b76d705b6827ad4f0805141f931f8a0",
+    "semantic_hash": "9b76d705b6827ad4f0805141f931f8a0"
+  },
+  "tests/android/arm64_atomic_probe.cpp": {
+    "mtime": 1789803992.6331162,
+    "seen": 1789992201.896502,
+    "ast_hash": "5ec25b01c8052441ca7e6b624e217e71",
+    "semantic_hash": "5ec25b01c8052441ca7e6b624e217e71"
+  },
+  "tests/android/hello_xr/build_emulator.ps1": {
+    "mtime": 1790010206.55673,
+    "seen": 1790024290.7752311,
+    "ast_hash": "e825fe164742cede03bf755b519e7862",
+    "semantic_hash": "e825fe164742cede03bf755b519e7862"
+  },
+  "tests/android/pose_client_concurrent_android.cpp": {
+    "mtime": 1789803992.6351166,
+    "seen": 1789992201.896502,
+    "ast_hash": "2f17ac637ddd9ce263dd411d3f173774",
+    "semantic_hash": "2f17ac637ddd9ce263dd411d3f173774"
+  },
+  "tests/android/storage_read_probe.cpp": {
+    "mtime": 1789803992.6351166,
+    "seen": 1789992201.896502,
+    "ast_hash": "eee53605bd491503918c4aa571918b41",
+    "semantic_hash": "eee53605bd491503918c4aa571918b41"
+  },
+  "tests/android/surface_smoke.cpp": {
+    "mtime": 1789803992.6361172,
+    "seen": 1789992201.896502,
+    "ast_hash": "8f47d1598b5024c34e695da952582d78",
+    "semantic_hash": "8f47d1598b5024c34e695da952582d78"
+  },
+  "tests/android/vulkan_android_smoke.cpp": {
+    "mtime": 1789971436.4471312,
+    "seen": 1789992201.896502,
+    "ast_hash": "7eb5626b3ee0305f6a06d91d59e0435e",
+    "semantic_hash": "7eb5626b3ee0305f6a06d91d59e0435e"
+  },
+  "tests/android/vulkan_astc_android.cpp": {
+    "mtime": 1789803992.6371162,
+    "seen": 1789992201.896502,
+    "ast_hash": "6a907f414e7a3a9a6ed21dddb89badd0",
+    "semantic_hash": "6a907f414e7a3a9a6ed21dddb89badd0"
+  },
+  "tests/android/vulkan_multiview_android.cpp": {
+    "mtime": 1789803992.6371162,
+    "seen": 1789992201.896502,
+    "ast_hash": "2e5f397327dd5a02b43fe04e6a974226",
+    "semantic_hash": "2e5f397327dd5a02b43fe04e6a974226"
+  },
+  "tests/integration/test_android_pose_concurrency.py": {
+    "mtime": 1789971436.4471312,
+    "seen": 1789992201.896502,
+    "ast_hash": "d852e40bd3b501cab9ed5fab2f1e8c0f",
+    "semantic_hash": "d852e40bd3b501cab9ed5fab2f1e8c0f"
+  },
+  "tests/integration/test_android_runtime_policy.py": {
+    "mtime": 1789803992.6381164,
+    "seen": 1789992201.896502,
+    "ast_hash": "76eb6ade189a51046ffd80bccfd8fcc5",
+    "semantic_hash": "76eb6ade189a51046ffd80bccfd8fcc5"
+  },
+  "tests/integration/test_android_translation.py": {
+    "mtime": 1790010206.55673,
+    "seen": 1790024290.7752311,
+    "ast_hash": "56a135ee3b78f1b92b9e47fdcc791c25",
+    "semantic_hash": "56a135ee3b78f1b92b9e47fdcc791c25"
+  },
+  "tests/integration/test_arm64_emulator.ps1": {
+    "mtime": 1789803992.6391222,
+    "seen": 1789992201.896502,
+    "ast_hash": "00ac98fc3c53321cb8fb653e6df1aef9",
+    "semantic_hash": "00ac98fc3c53321cb8fb653e6df1aef9"
+  },
+  "tests/integration/test_audio_policy.py": {
+    "mtime": 1789803992.6391222,
+    "seen": 1789992201.896502,
+    "ast_hash": "ef8040918f62d652f25031b87c430b06",
+    "semantic_hash": "ef8040918f62d652f25031b87c430b06"
+  },
+  "tests/integration/test_distribution.py": {
+    "mtime": 1790010206.5577295,
+    "seen": 1790024290.7752311,
+    "ast_hash": "6f5c0a3b76f470ead17d0c5dabbc1a68",
+    "semantic_hash": "6f5c0a3b76f470ead17d0c5dabbc1a68"
+  },
+  "tests/integration/test_gpu_validation.ps1": {
+    "mtime": 1789803992.6401224,
+    "seen": 1789992201.896502,
+    "ast_hash": "9b5dd408541b79e44e2904e81d5e03f8",
+    "semantic_hash": "9b5dd408541b79e44e2904e81d5e03f8"
+  },
+  "tests/integration/test_inspect_apk.py": {
+    "mtime": 1789803992.6401224,
+    "seen": 1789992201.896502,
+    "ast_hash": "51353c05498a756d53fdd73468161a64",
+    "semantic_hash": "51353c05498a756d53fdd73468161a64"
+  },
+  "tests/integration/test_storage_policy.py": {
+    "mtime": 1789803992.6401224,
+    "seen": 1789992201.896502,
+    "ast_hash": "449d93d5532a19118abd14630543cf29",
+    "semantic_hash": "449d93d5532a19118abd14630543cf29"
+  },
+  "tests/integration/test_unreal_memory_policy.py": {
+    "mtime": 1789971436.4481318,
+    "seen": 1789992201.896502,
+    "ast_hash": "d06e860d1dff5662aa55142f9ec62e6d",
+    "semantic_hash": "d06e860d1dff5662aa55142f9ec62e6d"
+  },
+  "tests/integration/test_vulkan_descriptors.py": {
+    "mtime": 1789803992.6411204,
+    "seen": 1789992201.896502,
+    "ast_hash": "ff6d1bee00668aa4c09ab159026b2982",
+    "semantic_hash": "ff6d1bee00668aa4c09ab159026b2982"
+  },
+  "tests/integration/test_vulkan_emulator.ps1": {
+    "mtime": 1789803992.6411204,
+    "seen": 1789992201.896502,
+    "ast_hash": "5c4eaa98e7dd8751441d82d5d6629c3d",
+    "semantic_hash": "5c4eaa98e7dd8751441d82d5d6629c3d"
+  },
+  "tests/native/equirect_renderer_smoke.cpp": {
+    "mtime": 1789803992.6421194,
+    "seen": 1789992201.896502,
+    "ast_hash": "2744c350c286abc8e1dd507df52ea83d",
+    "semantic_hash": "2744c350c286abc8e1dd507df52ea83d"
+  },
+  "tests/native/fps_counter_smoke.cpp": {
+    "mtime": 1789803992.6421194,
+    "seen": 1789992201.896502,
+    "ast_hash": "11e7c8769bc3e5c4013be11967574000",
+    "semantic_hash": "11e7c8769bc3e5c4013be11967574000"
+  },
+  "tests/native/frame_pool_smoke.cpp": {
+    "mtime": 1789803992.6431208,
+    "seen": 1789992201.896502,
+    "ast_hash": "157adf11bef264f4361767da9806e1b3",
+    "semantic_hash": "157adf11bef264f4361767da9806e1b3"
+  },
+  "tests/native/gpu_completion_smoke.cpp": {
+    "mtime": 1789803992.6431208,
+    "seen": 1789992201.896502,
+    "ast_hash": "3330635405bb1ac3a08f09b9d357b4d7",
+    "semantic_hash": "3330635405bb1ac3a08f09b9d357b4d7"
+  },
+  "tests/native/gpu_transport_smoke.cpp": {
+    "mtime": 1789803992.6441205,
+    "seen": 1789992201.896502,
+    "ast_hash": "eebc2ad9661e53f641d23d2b06aa1d71",
+    "semantic_hash": "eebc2ad9661e53f641d23d2b06aa1d71"
+  },
+  "tests/native/menu_shortcut_smoke.cpp": {
+    "mtime": 1789803992.6441205,
+    "seen": 1789992201.896502,
+    "ast_hash": "de79cf971b6241f414914fb3e5b370ae",
+    "semantic_hash": "de79cf971b6241f414914fb3e5b370ae"
+  },
+  "tests/native/pcm_recovery_smoke.cpp": {
+    "mtime": 1789803992.6441205,
+    "seen": 1789992201.896502,
+    "ast_hash": "37d86d7921055df7171a749024a714e9",
+    "semantic_hash": "37d86d7921055df7171a749024a714e9"
+  },
+  "tests/native/pose_stream_decoder_smoke.cpp": {
+    "mtime": 1789971436.4481318,
+    "seen": 1789992201.896502,
+    "ast_hash": "dab253c8ce1a0bb96443ac3dbee66420",
+    "semantic_hash": "dab253c8ce1a0bb96443ac3dbee66420"
+  },
+  "tests/native/quad_renderer_smoke.cpp": {
+    "mtime": 1789971436.4491313,
+    "seen": 1789992201.896502,
+    "ast_hash": "4a7dbb102bba9383a079aada439df179",
+    "semantic_hash": "4a7dbb102bba9383a079aada439df179"
+  },
+  "tests/native/runtime_input_fixture.cpp": {
+    "mtime": 1789803992.6451218,
+    "seen": 1789992201.896502,
+    "ast_hash": "eef21fde7e715f2d2aca998aca0cf996",
+    "semantic_hash": "eef21fde7e715f2d2aca998aca0cf996"
+  },
+  "tests/native/runtime_smoke.cpp": {
+    "mtime": 1789971436.4491313,
+    "seen": 1789992201.896502,
+    "ast_hash": "76de2ae315fd3c9c7a29f1a4d15043b8",
+    "semantic_hash": "76de2ae315fd3c9c7a29f1a4d15043b8"
+  },
+  "tests/native/splash_smoke.cpp": {
+    "mtime": 1789803992.64612,
+    "seen": 1789992201.896502,
+    "ast_hash": "5d0e735ff2106eda233ff72d913f39b8",
+    "semantic_hash": "5d0e735ff2106eda233ff72d913f39b8"
+  },
+  "tests/native/video_transport_smoke.cpp": {
+    "mtime": 1789803992.6471207,
+    "seen": 1789992201.896502,
+    "ast_hash": "5c080461dd171ef937f12c936b3e6a28",
+    "semantic_hash": "5c080461dd171ef937f12c936b3e6a28"
+  },
+  "tests/native/vulkan_descriptor_layer_smoke.cpp": {
+    "mtime": 1789803992.6471207,
+    "seen": 1789992201.896502,
+    "ast_hash": "1664548deaa5532a898e0b345af3e0b5",
+    "semantic_hash": "1664548deaa5532a898e0b345af3e0b5"
+  },
+  "tests/native/vulkan_descriptor_template_smoke.cpp": {
+    "mtime": 1789803992.6471207,
+    "seen": 1789992201.896502,
+    "ast_hash": "759393fa0a6dffa96f70a7c6b24df773",
+    "semantic_hash": "759393fa0a6dffa96f70a7c6b24df773"
+  },
+  "tests/native/vulkan_memory_report.cpp": {
+    "mtime": 1789803992.6471207,
+    "seen": 1789992201.896502,
+    "ast_hash": "bebce0514835ae43ad638532bf4d74e5",
+    "semantic_hash": "bebce0514835ae43ad638532bf4d74e5"
+  },
+  "tests/native/windows_gpu_batch_probe.cpp": {
+    "mtime": 1789803992.6481216,
+    "seen": 1789992201.896502,
+    "ast_hash": "7864e00aa092a2d8b28e74b74cc83709",
+    "semantic_hash": "7864e00aa092a2d8b28e74b74cc83709"
+  },
+  "tests/native/windows_gpu_transport_smoke.cpp": {
+    "mtime": 1789971436.4501314,
+    "seen": 1789992201.896502,
+    "ast_hash": "96f22d3381f2568dd6d7aa0726c2fe0f",
+    "semantic_hash": "96f22d3381f2568dd6d7aa0726c2fe0f"
+  },
+  "tools/benchmark_android_storage.py": {
+    "mtime": 1789803992.649123,
+    "seen": 1789992201.896502,
+    "ast_hash": "4a4f6cd19949fad481d53296d1e1238f",
+    "semantic_hash": "4a4f6cd19949fad481d53296d1e1238f"
+  },
+  "tools/benchmark_windows_clock.py": {
+    "mtime": 1789803992.649123,
+    "seen": 1789992201.896502,
+    "ast_hash": "1d3635e255f31408d3b1b6a16cf3f61a",
+    "semantic_hash": "1d3635e255f31408d3b1b6a16cf3f61a"
+  },
+  "tools/capture_android_frame.py": {
+    "mtime": 1789971436.4511342,
+    "seen": 1789992201.896502,
+    "ast_hash": "1f292c273f5f6a7db8e2766e15ec757c",
+    "semantic_hash": "1f292c273f5f6a7db8e2766e15ec757c"
+  },
+  "CMakeLists.txt": {
+    "mtime": 1789803992.5347376,
+    "seen": 1789992201.896502,
+    "ast_hash": "cb6f9a65f9d8b6c68dd5a1faec91df8f",
+    "semantic_hash": "cb6f9a65f9d8b6c68dd5a1faec91df8f"
+  },
+  "DISCLAIMER.md": {
+    "mtime": 1789803992.5357373,
+    "seen": 1789992201.896502,
+    "ast_hash": "0c5ad20c46f8c7ea5c3526925d9a7862",
+    "semantic_hash": "0c5ad20c46f8c7ea5c3526925d9a7862"
+  },
+  "README.md": {
+    "mtime": 1789971436.414131,
+    "seen": 1789992201.896502,
+    "ast_hash": "f198e70d473d1615529d5e6184c5d7d1",
+    "semantic_hash": "f198e70d473d1615529d5e6184c5d7d1"
+  },
+  "docs/performance_backlog.md": {
+    "mtime": 1789803992.5367367,
+    "seen": 1789992201.896502,
+    "ast_hash": "27471a3362259817770497496e32e6ba",
+    "semantic_hash": "27471a3362259817770497496e32e6ba"
+  },
+  "docs/runtime_resolution.md": {
+    "mtime": 1789971436.4151301,
+    "seen": 1789992201.896502,
+    "ast_hash": "3ee2daccc051df5c320201ef8bb6590d",
+    "semantic_hash": "3ee2daccc051df5c320201ef8bb6590d"
+  },
+  "docs/windows_controller_hands.md": {
+    "mtime": 1789803992.5377376,
+    "seen": 1789992201.896502,
+    "ast_hash": "47d86b9b4d5a7d0471ddb834ddd3ed0c",
+    "semantic_hash": "47d86b9b4d5a7d0471ddb834ddd3ed0c"
+  },
+  "docs/windows_gpu_texture_transfer.md": {
+    "mtime": 1789971436.4151301,
+    "seen": 1789992201.896502,
+    "ast_hash": "45c1a43f2b2e589f3e07bd1ce264fea4",
+    "semantic_hash": "45c1a43f2b2e589f3e07bd1ce264fea4"
+  },
+  "docs/windows_guest_clock.md": {
+    "mtime": 1789803992.5377376,
+    "seen": 1789992201.896502,
+    "ast_hash": "9156c8f3934d66704ef66f7fabe26bc9",
+    "semantic_hash": "9156c8f3934d66704ef66f7fabe26bc9"
+  },
+  "docs/windows_nvidia_emulator.md": {
+    "mtime": 1789803992.5387373,
+    "seen": 1789992201.896502,
+    "ast_hash": "205df129754af98c65019f450bf26b41",
+    "semantic_hash": "205df129754af98c65019f450bf26b41"
+  },
+  "docs/windows_unreal_memory.md": {
+    "mtime": 1789803992.5387373,
+    "seen": 1789992201.896502,
+    "ast_hash": "42f4da55c4e1492a3143c39764e504ac",
+    "semantic_hash": "42f4da55c4e1492a3143c39764e504ac"
+  },
+  "host/clock/CMakeLists.txt": {
+    "mtime": 1789803992.5397427,
+    "seen": 1789992201.896502,
+    "ast_hash": "470fdcd7e5495b5fc71293601c525174",
+    "semantic_hash": "470fdcd7e5495b5fc71293601c525174"
+  },
+  "host/gpu/CMakeLists.txt": {
+    "mtime": 1789803992.541744,
+    "seen": 1789992201.896502,
+    "ast_hash": "0b7c5675268415557aad8faac0f15a3d",
+    "semantic_hash": "0b7c5675268415557aad8faac0f15a3d"
+  },
+  "host/src/CMakeLists.txt": {
+    "mtime": 1789971436.4161294,
+    "seen": 1789992201.896502,
+    "ast_hash": "7b814be909da13af3e064d2f281da79d",
+    "semantic_hash": "7b814be909da13af3e064d2f281da79d"
+  },
+  "launcher/README.md": {
+    "mtime": 1790010206.5441704,
+    "seen": 1790024290.7752311,
+    "ast_hash": "88d6daabba4adce5cd53b26327bdbccd",
+    "semantic_hash": "88d6daabba4adce5cd53b26327bdbccd"
+  },
+  "launcher/THIRD_PARTY_NOTICES.md": {
+    "mtime": 1789971436.4211297,
+    "seen": 1789992201.896502,
+    "ast_hash": "8811b476fff452222df661f7e66240af",
+    "semantic_hash": "8811b476fff452222df661f7e66240af"
+  },
+  "launcher/licenses/Apache-2.0.txt": {
+    "mtime": 1789803992.566117,
+    "seen": 1789992201.896502,
+    "ast_hash": "267c6990e7d19e6e6c8f6cc83340836a",
+    "semantic_hash": "267c6990e7d19e6e6c8f6cc83340836a"
+  },
+  "launcher/licenses/JsonCpp.txt": {
+    "mtime": 1789971436.427132,
+    "seen": 1789992201.896502,
+    "ast_hash": "5d73c165a0f9e86a1342f32d19ec5926",
+    "semantic_hash": "5d73c165a0f9e86a1342f32d19ec5926"
+  },
+  "launcher/licenses/LLVM-NDK.txt": {
+    "mtime": 1789803992.5681176,
+    "seen": 1789992201.896502,
+    "ast_hash": "66b2ba93d5dcc5312d496db6e2f22721",
+    "semantic_hash": "66b2ba93d5dcc5312d496db6e2f22721"
+  },
+  "launcher/licenses/android-sdk.txt": {
+    "mtime": 1789803992.5681176,
+    "seen": 1789992201.896502,
+    "ast_hash": "5a93d8afa28ecc10b9f242a76eae33c1",
+    "semantic_hash": "5a93d8afa28ecc10b9f242a76eae33c1"
+  },
+  "launcher/licenses/shadcn-ui.txt": {
+    "mtime": 1789803992.5691173,
+    "seen": 1789992201.896502,
+    "ast_hash": "9f105662f30667e1325f917cff4cfeb6",
+    "semantic_hash": "9f105662f30667e1325f917cff4cfeb6"
+  },
+  "launcher/ui/index.html": {
+    "mtime": 1789803992.5791178,
+    "seen": 1789992201.896502,
+    "ast_hash": "01b6994261867eb5c7db40ab6bc5069d",
+    "semantic_hash": "01b6994261867eb5c7db40ab6bc5069d"
+  },
+  "protocol/CMakeLists.txt": {
+    "mtime": 1789803992.5861168,
+    "seen": 1789992201.896502,
+    "ast_hash": "6d350fd278ad7aeb8fcbd71d2ef8f565",
+    "semantic_hash": "6d350fd278ad7aeb8fcbd71d2ef8f565"
+  },
+  "runtime/src/CMakeLists.txt": {
+    "mtime": 1789971436.4391298,
+    "seen": 1789992201.896502,
+    "ast_hash": "b91f4b6200b6658cec91bf0210b146c2",
+    "semantic_hash": "b91f4b6200b6658cec91bf0210b146c2"
+  },
+  "tests/CMakeLists.txt": {
+    "mtime": 1789803992.6211166,
+    "seen": 1789992201.896502,
+    "ast_hash": "c8ae9ddae28e6fcf8262bbf73ebbf5f8",
+    "semantic_hash": "c8ae9ddae28e6fcf8262bbf73ebbf5f8"
+  },
+  "tests/android/android_loader_probe/README.md": {
+    "mtime": 1789803992.6231165,
+    "seen": 1789992201.896502,
+    "ast_hash": "e278b7167ef9b275ee098966290f5fd9",
+    "semantic_hash": "e278b7167ef9b275ee098966290f5fd9"
+  },
+  "tests/android/android_loader_probe/native/CMakeLists.txt": {
+    "mtime": 1789803992.624118,
+    "seen": 1789992201.896502,
+    "ast_hash": "f9f3c6ea8aa424bcbacb2298de82a8b4",
+    "semantic_hash": "f9f3c6ea8aa424bcbacb2298de82a8b4"
+  },
+  "tests/android/android_openxr_loader_probe/README.md": {
+    "mtime": 1789803992.627117,
+    "seen": 1789992201.896502,
+    "ast_hash": "45edb3056aaac8c114102105ee01beea",
+    "semantic_hash": "45edb3056aaac8c114102105ee01beea"
+  },
+  "tests/android/android_openxr_loader_probe/native/CMakeLists.txt": {
+    "mtime": 1789803992.6281166,
+    "seen": 1789992201.896502,
+    "ast_hash": "f239965443b38e25cec141303b2a9111",
+    "semantic_hash": "f239965443b38e25cec141303b2a9111"
+  },
+  "tests/android/hello_xr/README.md": {
+    "mtime": 1789803992.6331162,
+    "seen": 1789992201.896502,
+    "ast_hash": "24a1f75004f73b9b2b7613da1db91c88",
+    "semantic_hash": "24a1f75004f73b9b2b7613da1db91c88"
+  },
+  "logo_axrb.png": {
+    "mtime": 1789803992.5851173,
+    "seen": 1789992201.896502,
+    "ast_hash": "6876fdd00c261d9256e676590e083903",
+    "semantic_hash": "6876fdd00c261d9256e676590e083903"
+  },
+  "launcher/core/watchdog.mjs": {
+    "mtime": 1790010206.5467234,
+    "seen": 1790024290.7752311,
+    "ast_hash": "a7aa77e76031eed40a219240092c29d0",
+    "semantic_hash": "a7aa77e76031eed40a219240092c29d0"
+  },
+  "launcher/tests/watchdog.test.mjs": {
+    "mtime": 1790010206.5507264,
+    "seen": 1790024290.7752311,
+    "ast_hash": "39eddec126518e299ac80579af3fde0e",
+    "semantic_hash": "39eddec126518e299ac80579af3fde0e"
+  },
+  "main.mjs": {
+    "mtime": 1790010458.2624464,
+    "seen": 1790024290.7752311,
+    "ast_hash": "748ea1e6089a237c23fab67985b2e736",
+    "semantic_hash": "748ea1e6089a237c23fab67985b2e736"
+  }
+}

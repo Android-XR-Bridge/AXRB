@@ -66,3 +66,8 @@ launcher/dist/
 # Meta account sessions, including custom profiles inside the checkout
 meta-session.txt
 meta-session.bin
+
+# graphify: machine-local interpreter/root pointers and extraction cache
+graphify-out/.graphify_python
+graphify-out/.graphify_root
+graphify-out/cache/
