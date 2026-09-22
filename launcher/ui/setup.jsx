@@ -75,9 +75,14 @@ export function SetupScreen({ setup }) {
     </> : setup.active || setup.phase === 'checking' ? <>
       <div className="flex items-center gap-3" role="status"><Loader2 className="size-4 animate-spin" /><span>{labels[setup.phase] || setup.phase}{setup.component ? ` · ${setup.component}` : ''}</span>{setup.active && <span className="ml-auto tabular-nums text-sm text-muted-foreground" aria-label="Elapsed time">{elapsedText}</span>}</div>
       {setup.total > 0 && <><progress aria-label="Setup progress" value={setup.completed} max={setup.total} className="h-2 w-full accent-primary" /><div className="flex justify-between text-sm text-muted-foreground"><span>{setup.phase === 'download' ? `${(setup.completed / 1024 ** 2).toFixed(0)} / ${(setup.total / 1024 ** 2).toFixed(0)} MB` : 'Files'}</span><span>{percent}%</span></div></>}
-      {setup.phase === 'boot' && <p className="text-sm text-muted-foreground">First boot can take a few minutes.</p>}
-      {setup.phase === 'boot' && setup.logs?.length > 0 && <pre aria-label="Android startup log" className="max-h-56 overflow-auto rounded-md bg-muted p-3 text-[11px] leading-4 text-muted-foreground whitespace-pre-wrap">{setup.logs.join('\n')}</pre>}
-      {setup.active && <Button variant="outline" disabled={setup.cancelling} onClick={() => invoke('setupCancel')}>{setup.cancelling ? 'Stopping setup?' : 'Cancel'}</Button>}
+      {setup.phase === 'boot' && <p className="text-sm text-muted-foreground">First boot usually takes a few minutes. Setup reports a problem here if one needs your attention.</p>}
+      {/* The startup transcript quotes adb's transient "offline" and "failed"
+          checks, which read as failures to anyone not debugging a boot. */}
+      {setup.phase === 'boot' && setup.logs?.length > 0 && <details open={setup.debug} className="text-xs text-muted-foreground">
+        <summary className="cursor-pointer">Technical details (retries and errors here are normal while Android starts)</summary>
+        <pre aria-label="Android startup log" className="mt-2 max-h-56 overflow-auto rounded-md bg-muted p-3 text-[11px] leading-4 whitespace-pre-wrap">{setup.logs.join('\n')}</pre>
+      </details>}
+      {setup.active && <Button variant="outline" disabled={setup.cancelling} onClick={() => invoke('setupCancel')}>{setup.cancelling ? 'Stopping setup…' : 'Cancel'}</Button>}
     </> : <>
       <p>{useCurrent ? 'Set up AXRB using your existing Android disk.' : 'Set up Android 16 and the emulator.'}</p>
       <div className="grid gap-6 md:grid-cols-2"><div className="space-y-4">
