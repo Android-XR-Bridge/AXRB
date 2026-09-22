@@ -27,6 +27,12 @@ VkPhysicalDevice VulkanBackend::choose_device(VkInstance instance) {
     for (auto device : devices) {
         VkPhysicalDeviceProperties props{};
         vkGetPhysicalDeviceProperties(device, &props);
+        // An engine that picked a different device than this one abandons the
+        // graphics binding without saying so; the candidate list is the only
+        // way to see whether there was ever a choice to get wrong.
+        __android_log_print(ANDROID_LOG_INFO, "AXRB.VkBind", "candidate %p: %s vendor=0x%x type=%u api=%u.%u",
+            static_cast<void*>(device), props.deviceName, props.vendorID, props.deviceType,
+            VK_VERSION_MAJOR(props.apiVersion), VK_VERSION_MINOR(props.apiVersion));
         if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU) continue;
         if (props.vendorID == 0x10de) return device;
         if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ||

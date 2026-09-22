@@ -1,5 +1,14 @@
 #include "runtime_internal.h"
 
+// The graphics handshake is where engines give up without saying why, and
+// log_call is compiled out of release builds, so these few steps report
+// themselves unconditionally.
+#if defined(__ANDROID__)
+#define AXRB_VKBIND(...) __android_log_print(ANDROID_LOG_INFO, "AXRB.VkBind", __VA_ARGS__)
+#else
+#define AXRB_VKBIND(...) ((void)0)
+#endif
+
 namespace axrb::runtime::detail {
 
 XrResult XRAPI_CALL xrCreateInstance_impl(const XrInstanceCreateInfo* createInfo, XrInstance* instance)
@@ -11,7 +20,11 @@ XrResult XRAPI_CALL xrCreateInstance_impl(const XrInstanceCreateInfo* createInfo
     if (createInfo->type != XR_TYPE_INSTANCE_CREATE_INFO) {
         return XR_ERROR_VALIDATION_FAILURE;
     }
-    if (createInfo->applicationInfo.apiVersion > XR_MAKE_VERSION(1, 1, 0)) {
+    // Compare the API level, not the packed value: the patch field occupies
+    // the low 32 bits, so an ordinary 1.1.x application asks for a number
+    // larger than 1.1.0 and a straight comparison turns it away.
+    if (XR_VERSION_MAJOR(createInfo->applicationInfo.apiVersion) != 1 ||
+        XR_VERSION_MINOR(createInfo->applicationInfo.apiVersion) > 1) {
         return XR_ERROR_API_VERSION_UNSUPPORTED;
     }
 
@@ -240,8 +253,23 @@ XrResult XRAPI_CALL xrGetVulkanGraphicsRequirementsKHR_impl(
     }
 
     graphicsRequirements->minApiVersionSupported = XR_MAKE_VERSION(1, 0, 0);
+    // Applications clamp their VkInstance to this ceiling, so reporting a
+    // fixed 1.1 held every engine to Vulkan 1.1 no matter what the guest
+    // driver offers. Report what the loader actually implements.
     graphicsRequirements->maxApiVersionSupported = XR_MAKE_VERSION(1, 1, 0);
 #if defined(__ANDROID__)
+    uint32_t instanceVersion = 0;
+    auto enumerateVersion = reinterpret_cast<PFN_vkEnumerateInstanceVersion>(
+        vkGetInstanceProcAddr(VK_NULL_HANDLE, "vkEnumerateInstanceVersion"));
+    if (enumerateVersion && enumerateVersion(&instanceVersion) == VK_SUCCESS &&
+        VK_VERSION_MAJOR(instanceVersion) == 1 && VK_VERSION_MINOR(instanceVersion) > 1) {
+        graphicsRequirements->maxApiVersionSupported =
+            XR_MAKE_VERSION(VK_VERSION_MAJOR(instanceVersion), VK_VERSION_MINOR(instanceVersion), 0);
+    }
+    AXRB_VKBIND("requirements min=1.0.0 max=%u.%u.%u",
+        static_cast<unsigned>(XR_VERSION_MAJOR(graphicsRequirements->maxApiVersionSupported)),
+        static_cast<unsigned>(XR_VERSION_MINOR(graphicsRequirements->maxApiVersionSupported)),
+        static_cast<unsigned>(XR_VERSION_PATCH(graphicsRequirements->maxApiVersionSupported)));
     g_vulkanRequirementsQueried = true;
 #endif
     return XR_SUCCESS;
@@ -255,6 +283,7 @@ XrResult XRAPI_CALL xrGetVulkanExtensionsKHR_impl(XrInstance instance, XrSystemI
     if (!count || (capacity && !buffer)) return XR_ERROR_VALIDATION_FAILURE;
     *count = 1; // No runtime-specific Vulkan extensions are needed for CPU readback.
     if (capacity) buffer[0] = '\0';
+    AXRB_VKBIND("instance extensions: capacity=%u count=%u", capacity, *count);
     return XR_SUCCESS;
 }
 XrResult XRAPI_CALL xrGetVulkanDeviceExtensionsKHR_impl(XrInstance instance, XrSystemId systemId,
@@ -264,9 +293,11 @@ XrResult XRAPI_CALL xrGetVulkanDeviceExtensionsKHR_impl(XrInstance instance, XrS
     if (!count || (capacity && !buffer)) return XR_ERROR_VALIDATION_FAILURE;
     constexpr char extensions[] = "VK_ANDROID_external_memory_android_hardware_buffer VK_EXT_queue_family_foreign";
     *count = sizeof(extensions);
-    if (!capacity) return XR_SUCCESS;
-    if (capacity < sizeof(extensions)) return XR_ERROR_SIZE_INSUFFICIENT;
-    std::memcpy(buffer, extensions, sizeof(extensions)); return XR_SUCCESS;
+    if (!capacity) { AXRB_VKBIND("device extensions: sizing, count=%u", *count); return XR_SUCCESS; }
+    if (capacity < sizeof(extensions)) { AXRB_VKBIND("device extensions: capacity %u too small for %u", capacity, *count); return XR_ERROR_SIZE_INSUFFICIENT; }
+    std::memcpy(buffer, extensions, sizeof(extensions));
+    AXRB_VKBIND("device extensions: capacity=%u count=%u delivered", capacity, *count);
+    return XR_SUCCESS;
 }
 XrResult XRAPI_CALL xrGetVulkanGraphicsDeviceKHR_impl(XrInstance instance, XrSystemId systemId,
                                                     VkInstance vkInstance, VkPhysicalDevice* device) {
@@ -275,6 +306,7 @@ XrResult XRAPI_CALL xrGetVulkanGraphicsDeviceKHR_impl(XrInstance instance, XrSys
     if (!vkInstance || !device) return XR_ERROR_VALIDATION_FAILURE;
     *device = VulkanBackend::choose_device(vkInstance);
     g_vulkanInstance = vkInstance;
+    AXRB_VKBIND("graphics device: instance=%p -> physical=%p", static_cast<void*>(vkInstance), static_cast<void*>(*device));
     return *device ? XR_SUCCESS : XR_ERROR_GRAPHICS_DEVICE_INVALID;
 }
 XrResult XRAPI_CALL xrGetVulkanGraphicsDevice2KHR_impl(XrInstance instance,
@@ -292,15 +324,29 @@ XrResult XRAPI_CALL xrCreateVulkanInstanceKHR_impl(XrInstance instance, const Xr
     if (!create) return XR_ERROR_RUNTIME_FAILURE;
     *result = create(info->vulkanCreateInfo, info->vulkanAllocator, vkInstance);
     if (*result == VK_SUCCESS) g_vulkanInstance = *vkInstance;
+    AXRB_VKBIND("create instance: app api=%u.%u result=%d handle=%p",
+        info->vulkanCreateInfo->pApplicationInfo ? VK_VERSION_MAJOR(info->vulkanCreateInfo->pApplicationInfo->apiVersion) : 0u,
+        info->vulkanCreateInfo->pApplicationInfo ? VK_VERSION_MINOR(info->vulkanCreateInfo->pApplicationInfo->apiVersion) : 0u,
+        static_cast<int>(*result), static_cast<void*>(*vkInstance));
     return XR_SUCCESS;
 }
 XrResult XRAPI_CALL xrCreateVulkanDeviceKHR_impl(XrInstance instance, const XrVulkanDeviceCreateInfoKHR* info,
                                               VkDevice* device, VkResult* result) {
-    if (!is_valid_instance(instance)) return XR_ERROR_HANDLE_INVALID;
+    if (!is_valid_instance(instance)) { AXRB_VKBIND("create device: rejected, instance handle invalid"); return XR_ERROR_HANDLE_INVALID; }
     if (!info || info->type != XR_TYPE_VULKAN_DEVICE_CREATE_INFO_KHR || !device || !result ||
-        !info->vulkanCreateInfo || !info->pfnGetInstanceProcAddr || info->createFlags) return XR_ERROR_VALIDATION_FAILURE;
-    if (info->systemId != kSystemId) return XR_ERROR_SYSTEM_INVALID;
-    if (!g_vulkanInstance || info->vulkanPhysicalDevice != VulkanBackend::choose_device(g_vulkanInstance)) return XR_ERROR_GRAPHICS_DEVICE_INVALID;
+        !info->vulkanCreateInfo || !info->pfnGetInstanceProcAddr || info->createFlags) {
+        AXRB_VKBIND("create device: rejected, validation (type=%d flags=%llu)",
+            info ? static_cast<int>(info->type) : -1,
+            info ? static_cast<unsigned long long>(info->createFlags) : 0ull);
+        return XR_ERROR_VALIDATION_FAILURE;
+    }
+    if (info->systemId != kSystemId) { AXRB_VKBIND("create device: rejected, system id"); return XR_ERROR_SYSTEM_INVALID; }
+    if (!g_vulkanInstance || info->vulkanPhysicalDevice != VulkanBackend::choose_device(g_vulkanInstance)) {
+        AXRB_VKBIND("create device: rejected, physical device %p is not the one chosen for instance %p (%p)",
+            static_cast<void*>(info->vulkanPhysicalDevice), static_cast<void*>(g_vulkanInstance),
+            static_cast<void*>(g_vulkanInstance ? VulkanBackend::choose_device(g_vulkanInstance) : VK_NULL_HANDLE));
+        return XR_ERROR_GRAPHICS_DEVICE_INVALID;
+    }
     auto create = reinterpret_cast<PFN_vkCreateDevice>(info->pfnGetInstanceProcAddr(g_vulkanInstance, "vkCreateDevice"));
     if (!create) return XR_ERROR_RUNTIME_FAILURE;
     auto deviceInfo = *info->vulkanCreateInfo;
@@ -310,6 +356,8 @@ XrResult XRAPI_CALL xrCreateVulkanDeviceKHR_impl(XrInstance instance, const XrVu
         if (std::none_of(extensions.begin(), extensions.end(), [name](const char* value){ return std::strcmp(value,name)==0; })) extensions.push_back(name);
     deviceInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size()); deviceInfo.ppEnabledExtensionNames = extensions.data();
     *result = create(info->vulkanPhysicalDevice, &deviceInfo, info->vulkanAllocator, device);
+    AXRB_VKBIND("create device: extensions=%u result=%d handle=%p",
+        deviceInfo.enabledExtensionCount, static_cast<int>(*result), static_cast<void*>(*device));
     return XR_SUCCESS;
 }
 #endif

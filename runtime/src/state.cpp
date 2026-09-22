@@ -103,7 +103,7 @@ void query_render_extent() {
 }
 void log_call(const char* name)
 {
-#if defined(__ANDROID__) && defined(NDEBUG)
+#if defined(__ANDROID__) && defined(NDEBUG) && !defined(AXRB_TRACE_CALLS)
     (void)name; // Keep release frame loops free of per-entry-point log traffic.
 #elif defined(__ANDROID__)
     __android_log_print(ANDROID_LOG_INFO, "AXRB.Runtime", "%s", name);

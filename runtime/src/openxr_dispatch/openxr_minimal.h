@@ -17,6 +17,11 @@
 
 #define XR_MAKE_VERSION(major, minor, patch) \
     ((((major) & 0xffffULL) << 48) | (((minor) & 0xffffULL) << 32) | ((patch) & 0xffffffffULL))
+// Reading a version back needs the same field layout the spec defines:
+// comparing packed values instead treats any patch release as a newer API.
+#define XR_VERSION_MAJOR(version) (uint16_t)(((uint64_t)(version) >> 48) & 0xffffULL)
+#define XR_VERSION_MINOR(version) (uint16_t)(((uint64_t)(version) >> 32) & 0xffffULL)
+#define XR_VERSION_PATCH(version) (uint32_t)((uint64_t)(version) & 0xffffffffULL)
 
 #define XR_CURRENT_LOADER_RUNTIME_VERSION 1
 #define XR_LOADER_INFO_STRUCT_VERSION 1
