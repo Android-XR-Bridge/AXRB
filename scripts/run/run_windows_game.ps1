@@ -211,6 +211,8 @@ try {
     }
     # Closing the host window sets the close event first, so a host that exits
     # without one ended on its own. Checked here, before cleanup closes it.
+    # The loop may have seen the exit before the event, so ask the event again.
+    if (!$closeRequested -and $closeRequest.WaitOne(0)) { $closeRequested = $true }
     if (!$closeRequested -and !$gameLost -and $bridgeProcess.HasExited) { $hostLost = $true }
 } finally {
     if ($gameStarted) {
