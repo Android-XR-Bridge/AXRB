@@ -300,7 +300,9 @@ switch ($Action) {
         New-Item -ItemType Directory -Force $logs | Out-Null
         # Declare both ports explicitly. This avoids the emulator frontend and
         # raw QEMU clock launcher disagreeing about the ADB port.
-        $arguments = @('-avd', $Avd, '-ports', "$Port,$adbPort", '-gpu', 'host', '-accel', 'on', '-no-boot-anim', '-memory', "$MemoryMB")
+        # -no-metrics answers the metrics question up front: the emulator warns
+        # that it will otherwise become a blocking prompt nobody can answer here.
+        $arguments = @('-avd', $Avd, '-ports', "$Port,$adbPort", '-gpu', 'host', '-accel', 'on', '-no-boot-anim', '-no-metrics', '-memory', "$MemoryMB")
         if ($PSBoundParameters.ContainsKey('CpuCores')) { $arguments += @('-cores', "$CpuCores") }
         if (!$ShowWindow) { $arguments += '-no-window' }
         if ($ColdBoot -and $GuestClock -ne 'TscCorrected') { $arguments += '-no-snapshot-load' }

@@ -17,7 +17,7 @@ const logcatLine = /^(\d\d-\d\d\s+\d\d:\d\d:\d\d\.\d+)\s+(\d+)\s+\d+\s+([VDIWEF]
 // other facilities (binder, binder_alloc, …) report real guest failures and
 // keep their severity.
 const kernelTimestamp = /^\[?\s*\d+\.\d+\]?\s*/;
-const bootChatterFacility = /^(?:init:|ueventd:|vold:|selinux:|apexd:|servicemanager:|libprocessgroup:|cutils-trace:|logd:|cfg80211:|UprobeStatsBpfLoad:|NetBpfLoad:)/;
+const bootChatterFacility = /^(?:init:|ueventd:|vold:|selinux:|apexd:|servicemanager:|libprocessgroup:|cutils-trace:|logd:|cfg80211:|UprobeStatsBpfLoad:|NetBpfLoad:|ACPI:|platform regulatory\.\d+:|Speculative Return Stack Overflow:|capability:)/;
 const isBootChatter = text => bootChatterFacility.test(text) || (kernelTimestamp.test(text) && bootChatterFacility.test(text.replace(kernelTimestamp, '')));
 const emulatorSeverity = /^(VERBOSE|DEBUG|INFO|WARNING|ERROR|FATAL)\s+\|/;
 const EMULATOR_LEVELS = { VERBOSE: 'V', DEBUG: 'D', INFO: 'I', WARNING: 'W', ERROR: 'E', FATAL: 'F' };
@@ -395,7 +395,8 @@ export class LiveDiagnostics {
         mismatches.push(`${device.serial} did not report its AVD name: ${name.error}`);
         continue;
       }
-      const reported = name.output.trim().split(/\r?\n/)[0];
+      // The emulator console ends lines with "\r\r\n", so trim the line itself.
+      const reported = name.output.split(/\r?\n/)[0].trim();
       if (reported === config.avd) {
         if (device.serial === preferred) { this.missListing = null; return device.serial; }
         matches.push(device.serial);

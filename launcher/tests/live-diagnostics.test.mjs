@@ -39,7 +39,8 @@ function simulatedAdb(devices) {
         if (args.includes('logcat')) {
           streams.set(serial, child);
           child.stdout.write(`09-21 03:04:05.678  123  456 I ${device.name}: stream for ${device.name}\n`);
-        } else finish(`${device.name}\nOK\n`);
+        // The real emulator console ends each line with \r\r\n.
+        } else finish(`${device.name}\r\r\nOK\r\r\n`);
       }
     });
     return child;
@@ -303,11 +304,15 @@ test('kernel boot chatter is demoted to debug while real guest failures keep sev
   capture.append('emulator', "init: warning: could not parse /vendor/etc/public.libraries.txt");
   capture.append('emulator', '[   88.290614] cfg80211: failed to load regulatory.db');
   capture.append('emulator', "[    7.367971] init: Command 'setprop debug.stagefright.ccodec' failed: property doesn't exist");
+  capture.append('emulator', '[    0.365469] ACPI: _OSC evaluation for CPUs failed, trying _PDC');
+  capture.append('emulator', '[   11.676575] platform regulatory.0: Direct firmware load for regulatory.db failed with error -2');
+  capture.append('emulator', '[    0.039569] Speculative Return Stack Overflow: WARNING: See https://kernel.org/doc/html/latest/admin-guide/hw-vuln/srso.html for mitigation options.');
+  capture.append('emulator', "[   98.282931] capability: warning: `wpa_supplicant' uses 32-bit capabilities (legacy support in use)");
   capture.append('emulator', '[  101.553416] audio: error - unable to handle stream (call trace dumped)');
   capture.append('emulator', 'binder: 1873:1873 transaction failed 29189/-3, size 0-0 line 3134');
   capture.append('emulator', '[   38.869677] binder_alloc: 2674: binder_alloc_buf size 1056768 failed, no address space');
   capture.append('emulator', '[   12.553416] Kernel panic - not syncing: attempted to kill init');
-  assert.deepEqual(capture.snapshot().entries.map(entry => entry.level), ['D', 'D', 'D', 'D', 'E', 'E', 'E', 'F']);
+  assert.deepEqual(capture.snapshot().entries.map(entry => entry.level), ['D', 'D', 'D', 'D', 'D', 'D', 'D', 'D', 'E', 'E', 'E', 'F']);
 });
 
 test("the emulator's own severity label outranks keywords in its message", () => {
