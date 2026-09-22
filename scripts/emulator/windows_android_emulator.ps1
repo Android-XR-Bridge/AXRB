@@ -49,8 +49,6 @@ $serial = "emulator-$Port"
 if (!$RuntimeApk) { $RuntimeApk = "$AxrbAssets/android/runtime-$Abi/axrb-openxr-runtime-debug.apk" }
 $image = "system-images;android-$ApiLevel;google_apis;x86_64"
 $logs = Join-Path $AxrbOut 'logs/emulator'
-$avdHome = if ($env:ANDROID_AVD_HOME) { $env:ANDROID_AVD_HOME } else { Join-Path $HOME '.android\avd' }
-$xrFeatureMarker = Join-Path $avdHome "$Avd.avd\.axrb-xr-features"
 # Store titles refuse to start unless the device advertises the headset
 # features their manifests require, and a stock emulator image advertises
 # none of them. PackageManager reads feature declarations only from the
@@ -169,16 +167,21 @@ function Invoke-Adb([string[]]$Arguments, [int]$TimeoutSeconds = 60, [int]$Attem
         try { return Invoke-ExternalWithTimeout $adb $Arguments $TimeoutSeconds }
         catch {
             $failure = $_.Exception.Message
+            # A protocol fault means the server went away mid-command: either a
+            # second ADB build of a different version restarted the server it
+            # did not start, or a client was killed while the server it forked
+            # was still coming up.
+            $transient = $failure -match 'protocol fault|connection reset|failed to check server version|cannot connect to daemon|daemon not running'
             if ($attempt -ge $Attempts) {
-                # A protocol fault means the server went away mid-command, which
-                # is what a second ADB build of a different version does when it
-                # shares this port: it restarts the server it did not start.
-                if ($failure -match 'protocol fault|connection reset') {
-                    throw "$failure. Another ADB version is restarting the server on 127.0.0.1:5038. Close other Android tools (Android Studio, scrcpy, phone suites) and try again."
+                if ($transient) {
+                    throw "$failure. The ADB server on 127.0.0.1:5038 keeps restarting. Close other Android tools (Android Studio, scrcpy, phone suites) and any second AXRB window, then try again."
                 }
                 throw
             }
             Write-Host "Android startup diagnostic: adb $($Arguments -join ' ') failed ($failure); retry $attempt of $($Attempts - 1)."
+            # Bring the server back deliberately instead of letting the next
+            # command race another client into forking one.
+            if ($transient) { try { Invoke-ExternalWithTimeout $adb @('start-server') 30 | Out-Null } catch { } }
             Start-Sleep -Seconds 3
         }
     }
@@ -218,13 +221,24 @@ function Get-GuestFeatures {
     return @(Invoke-Adb @('-s', $serial, 'shell', 'pm', 'list', 'features') 60 |
         ForEach-Object { ($_ -replace '^feature:', '').Trim() } | Where-Object { $_ })
 }
+# sys.boot_completed flips before PackageManager will answer, and a game
+# launched in that window fails to resolve its own activity, so wait for the
+# service that the launch actually depends on.
 function Wait-BootCompleted([int]$TimeoutSeconds) {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $booted = $false
     do {
         Start-Sleep -Seconds 2
-        [string]$state = ''
-        try { $state = ((Invoke-ExternalWithTimeout $adb @('-s', $serial, 'shell', 'getprop', 'sys.boot_completed') 10) -join '').Trim() } catch { }
-        if ($state -eq '1') { return $true }
+        if (!$booted) {
+            [string]$state = ''
+            try { $state = ((Invoke-ExternalWithTimeout $adb @('-s', $serial, 'shell', 'getprop', 'sys.boot_completed') 10) -join '').Trim() } catch { }
+            $booted = $state -eq '1'
+        }
+        if ($booted) {
+            [string]$packages = ''
+            try { $packages = ((Invoke-ExternalWithTimeout $adb @('-s', $serial, 'shell', 'cmd', 'package', 'list', 'packages', '-3') 15) -join '') } catch { }
+            if ($packages -match 'package:') { return $true }
+        }
     } while ((Get-Date) -lt $deadline)
     return $false
 }
@@ -270,21 +284,15 @@ function Ensure-XrFeatures {
         $present = Get-GuestFeatures
         $missing = @($xrFeatures | Where-Object { $_ -notin $present })
         if (!$missing.Count) {
-            if (!(Test-Path -LiteralPath $xrFeatureMarker)) { New-Item -ItemType File -Force -Path $xrFeatureMarker | Out-Null }
-            Write-Output "Headset features: all $($xrFeatures.Count) declared by the guest."
+            Write-Output "Headset features: all $($xrFeatures.Count) already declared by the guest."
             return
         }
-        # The marker exists but the guest lost the declarations, so the next
-        # launch has to ask for a writable system again.
-        Remove-Item -LiteralPath $xrFeatureMarker -Force -ErrorAction SilentlyContinue
         Install-XrFeatures
         $present = Get-GuestFeatures
         $missing = @($xrFeatures | Where-Object { $_ -notin $present })
         if ($missing.Count) { throw "the guest still does not advertise: $($missing -join ', ')" }
-        New-Item -ItemType File -Force -Path $xrFeatureMarker | Out-Null
         Write-Output "Headset features: declared $($xrFeatures.Count) in the guest."
     } catch {
-        Remove-Item -LiteralPath $xrFeatureMarker -Force -ErrorAction SilentlyContinue
         Write-Output "Android startup diagnostic: warning: could not declare headset features ($($_.Exception.Message -replace '\s+', ' ')). Games that require them will refuse to start."
     }
 }
@@ -401,10 +409,11 @@ switch ($Action) {
         $arguments = @('-avd', $Avd, '-ports', "$Port,$adbPort", '-gpu', 'host', '-accel', 'on', '-no-boot-anim', '-memory', "$MemoryMB")
         if ($PSBoundParameters.ContainsKey('CpuCores')) { $arguments += @('-cores', "$CpuCores") }
         if (!$ShowWindow) { $arguments += '-no-window' }
-        # A writable system costs this launch its quick-boot snapshot, so ask
-        # for one only until the headset features are in place; the edit lives
-        # in the AVD's own system overlay and survives later read-only starts.
-        if (!(Test-Path -LiteralPath $xrFeatureMarker)) { $arguments += '-writable-system' }
+        # Always, not once: the emulator serves /system from a scratch overlay
+        # that it discards on the next launch without this flag, so a guest
+        # booted read-only comes up with the headset features gone and no way
+        # to put them back.
+        $arguments += '-writable-system'
         if ($ColdBoot -and $GuestClock -ne 'TscCorrected') { $arguments += '-no-snapshot-load' }
         if ($GuestClock -eq 'TscCorrected') {
             # The clock-correction launcher cannot safely combine its host clock
