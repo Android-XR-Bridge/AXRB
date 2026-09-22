@@ -298,6 +298,19 @@ test('emulator console floods evict boot chatter before launcher and failing gue
   assert.equal(capture.snapshot().dropped, 7);
 });
 
+test('android logcat floods evict routine lines before setup history, AXRB lines and failures', () => {
+  const capture = new LiveDiagnostics({ directory: '.', getConfig: () => ({}), maxEntries: 5, maxBytes: 64 * 1024 });
+  capture.append('launcher', 'Setup: download · Android Emulator', { tag: 'setup' });
+  capture.append('android', '09-22 23:43:31.628  812  812 E AndroidRuntime: FATAL EXCEPTION: main');
+  capture.append('android', '09-22 23:43:31.700  901  930 I AXRB.Image: connected to local image proxy');
+  for (let index = 0; index < 10; index++) capture.append('android', `09-22 23:43:32.${100 + index}  700  700 D PstnIncomingCallNotifier: Registering: [${index}]`);
+  const texts = capture.snapshot().entries.map(entry => entry.text);
+  assert.ok(texts.includes('Setup: download · Android Emulator'));
+  assert.ok(texts.includes('FATAL EXCEPTION: main'));
+  assert.ok(texts.includes('connected to local image proxy'));
+  assert.deepEqual(texts.filter(text => text.startsWith('Registering')), ['Registering: [8]', 'Registering: [9]']);
+});
+
 test('kernel boot chatter is demoted to debug while real guest failures keep severity', () => {
   const capture = new LiveDiagnostics({ directory: '.', getConfig: () => ({}), maxEntries: 64, maxBytes: 64 * 1024 });
   capture.append('emulator', '[    9.412037] ueventd: firmware_load: error -2 opening file');
@@ -458,6 +471,30 @@ test('a logcat that keeps failing before any output reports one episode, not eve
   output = '';
   await attach();
   assert.deepEqual(logcatLines().slice(7).map(([level]) => level), ['I', 'I', 'W', 'E'], 'a failure after recovery is a new episode, reported in full');
+});
+
+test('a streaming logcat that ends because Android shut down is a disconnect, not an error', async t => {
+  const directory = await temporary(t);
+  await fs.mkdir(path.join(directory, 'platform-tools'));
+  await fs.writeFile(path.join(directory, 'platform-tools', process.platform === 'win32' ? 'adb.exe' : 'adb'), '');
+  const spawnProcess = (_file, args) => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => {};
+    queueMicrotask(() => {
+      if (args.includes('devices')) child.stdout.end('List of devices attached\nemulator-5584\tdevice model:test\n');
+      else { child.stdout.write('09-22 23:43:40.000  123  456 I test: shutting down\n'); child.stderr.write('error: device offline\n'); }
+      child.stdout.end(); child.stderr.end();
+      setTimeout(() => child.emit('close', args.includes('logcat') ? 1 : 0), 5);
+    });
+    return child;
+  };
+  const capture = new LiveDiagnostics({ directory, getConfig: () => ({}), spawnProcess });
+  capture.active = true;
+  await capture.connect({ sdk: directory, port: 5584 }, capture.generation);
+  await until(() => !capture.stream);
+  assert.equal(capture.snapshot().android.state, 'disconnected');
+  assert.deepEqual(capture.snapshot().entries.filter(entry => entry.text.startsWith('emulator-5584: error'))
+    .map(entry => entry.level), ['W']);
 });
 
 test('perf counters keep bounded windows, render one line each and warn on sustained slow frames', () => {

@@ -36,10 +36,13 @@ function streamKey(source, metadata) {
   return `${source}:${metadata.stream || ''}:${metadata.tag || ''}:${metadata.level || ''}`;
 }
 
-// Retention classes: guest console chatter (emulator V/D/I) is sacrificed
-// first; launcher, host and android lines plus every W/E/F entry survive floods.
+// Retention classes: routine guest output (emulator V/D/I, and android V/D/I
+// outside AXRB's own tags) is sacrificed first; launcher and host lines, AXRB
+// runtime lines and every W/E/F entry survive floods. A booting Android emits
+// thousands of routine lines a minute, enough to push setup out of the log.
 function isClassB(entry) {
-  return entry.source === 'emulator' && 'VDI'.includes(entry.level);
+  if (!'VDI'.includes(entry.level)) return false;
+  return entry.source === 'emulator' || (entry.source === 'android' && !entry.tag.startsWith('AXRB'));
 }
 
 // Keyword inference alone misreads two measured cases: stock guest boot chatter
@@ -450,9 +453,12 @@ export class LiveDiagnostics {
         this.flush('android', { tag: 'logcat' }); this.flush('launcher', { tag: 'logcat', level: 'W' });
         this.stream = null; this.nextConnect = Date.now() + 3000;
         if (child.stalled) return;
-        const state = code ? 'error' : 'disconnected', detail = error.trim() || 'Logcat disconnected; waiting to reconnect.';
-        if (produced) this.setAndroid(state, detail);
-        else this.attachFailed(state, detail);
+        const detail = error.trim() || 'Logcat disconnected; waiting to reconnect.';
+        // A stream that was delivering logs ended because the device went away,
+        // usually Android shutting down; adb's non-zero exit does not make that
+        // an error. Failing before any output is still reported as one.
+        if (produced) this.setAndroid('disconnected', detail);
+        else this.attachFailed(code ? 'error' : 'disconnected', detail);
       });
     } catch (error) {
       if (!this.active || generation !== this.generation) return;
