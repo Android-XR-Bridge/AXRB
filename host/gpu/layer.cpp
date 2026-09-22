@@ -128,7 +128,7 @@ VKAPI_ATTR void VKAPI_CALL updateBuffer(VkCommandBuffer cmd, VkBuffer buffer, Vk
     auto discard = [&](uint64_t session) {
         auto old = d->exports.find(session);
         if (old != d->exports.end()) {
-            if (old->second) for (auto& eye : old->second->eyes) d->shared.destroy(eye);
+            if (old->second) for (auto& buf : old->second->eyes) for (auto& eye : buf) d->shared.destroy(eye);
             d->exports.erase(old);
         }
     };
