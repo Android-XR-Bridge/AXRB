@@ -63,13 +63,15 @@ bool VulkanBackend::initialize(const XrGraphicsBindingVulkanKHR& binding) {
     pool.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     pool.queueFamilyIndex = binding.queueFamilyIndex;
     VkCommandBufferAllocateInfo alloc{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; alloc.commandBufferCount = 1;
+    alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; alloc.commandBufferCount = kCommandBufferCount;
     VkFenceCreateInfo fence{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     if (!ok(vkCreateCommandPool(device_, &pool, nullptr, &pool_), "create pool")) { shutdown(); return false; }
     alloc.commandPool = pool_;
-    if (!ok(vkAllocateCommandBuffers(device_, &alloc, &cmd_), "allocate commands") ||
-        !ok(vkCreateFence(device_, &fence, nullptr, &fence_), "create fence") ||
-        !ensure_buffer(sizeof(gpuMarker_))) { shutdown(); return false; }
+    if (!ok(vkAllocateCommandBuffers(device_, &alloc, cmd_), "allocate commands")) { shutdown(); return false; }
+    for (uint32_t i = 0; i < kCommandBufferCount; ++i) {
+        if (!ok(vkCreateFence(device_, &fence, nullptr, &fence_[i]), "create fence")) { shutdown(); return false; }
+    }
+    if (!ensure_buffer(sizeof(gpuMarker_))) { shutdown(); return false; }
     VkPhysicalDeviceProperties props{}; vkGetPhysicalDeviceProperties(physical_, &props);
     __android_log_print(ANDROID_LOG_INFO, "AXRB.GPU", "Vulkan device=%s vendor=0x%x type=%u", props.deviceName, props.vendorID, props.deviceType);
     char gpuMode[PROP_VALUE_MAX]{};
@@ -115,7 +117,9 @@ void VulkanBackend::shutdown() {
         if (scaled.image) vkDestroyImage(device_, scaled.image, nullptr);
         if (scaled.memory) vkFreeMemory(device_, scaled.memory, nullptr);
     }
-    if (fence_) vkDestroyFence(device_, fence_, nullptr);
+    for (uint32_t i = 0; i < kCommandBufferCount; ++i) {
+        if (fence_[i]) vkDestroyFence(device_, fence_[i], nullptr);
+    }
     if (pool_) vkDestroyCommandPool(device_, pool_, nullptr);
     *this = {};
 }
@@ -135,16 +139,29 @@ bool VulkanBackend::allocate_image(VkImage& image, VkDeviceMemory& memory, VkFor
         ok(vkBindImageMemory(device_, image, memory, 0), "bind image memory");
 }
 bool VulkanBackend::begin() {
-    if (!ok(vkResetCommandBuffer(cmd_, 0), "reset commands")) return false;
+    // Wait for the PREVIOUS frame's fence before recording new commands.
+    // This allows the GPU to process frame N-1 while the CPU records frame N.
+    const uint32_t prevIndex = cmdIndex_ ^ 1;
+    if (fence_[prevIndex] != VK_NULL_HANDLE) {
+        VkResult waitResult = vkWaitForFences(device_, 1, &fence_[prevIndex], VK_TRUE, UINT64_MAX);
+        if (waitResult != VK_SUCCESS) return false;
+    }
+    if (!ok(vkResetCommandBuffer(cmd_[cmdIndex_], 0), "reset commands")) return false;
     VkCommandBufferBeginInfo info{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    return ok(vkBeginCommandBuffer(cmd_, &info), "begin commands");
+    return ok(vkBeginCommandBuffer(cmd_[cmdIndex_], &info), "begin commands");
 }
 bool VulkanBackend::finish() {
-    if (!ok(vkEndCommandBuffer(cmd_), "end commands") || !ok(vkResetFences(device_, 1, &fence_), "reset fence")) return false;
-    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO}; submit.commandBufferCount = 1; submit.pCommandBuffers = &cmd_;
-    return ok(vkQueueSubmit(queue_, 1, &submit, fence_), "submit") &&
-        ok(vkWaitForFences(device_, 1, &fence_, VK_TRUE, UINT64_MAX), "wait fence");
+    // Submit current command buffer and advance to the next one.
+    // The fence will be waited on at the start of the NEXT begin() call,
+    // allowing the GPU to process this frame while the CPU starts recording.
+    if (!ok(vkEndCommandBuffer(cmd_[cmdIndex_]), "end commands") ||
+        !ok(vkResetFences(device_, 1, &fence_[cmdIndex_]), "reset fence")) return false;
+    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO}; submit.commandBufferCount = 1; submit.pCommandBuffers = &cmd_[cmdIndex_];
+    if (!ok(vkQueueSubmit(queue_, 1, &submit, fence_[cmdIndex_]), "submit")) return false;
+    // Advance to next command buffer (ping-pong)
+    cmdIndex_ ^= 1;
+    return true;
 }
 void VulkanBackend::barrier(VkImage image, uint32_t layers, VkImageLayout before, VkImageLayout after,
                             VkAccessFlags src, VkAccessFlags dst, VkImageAspectFlags aspect, uint32_t mips) {
@@ -152,7 +169,7 @@ void VulkanBackend::barrier(VkImage image, uint32_t layers, VkImageLayout before
     b.oldLayout = before; b.newLayout = after; b.srcAccessMask = src; b.dstAccessMask = dst;
     b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.image = image; b.subresourceRange = {aspect, 0, mips, 0, layers};
-    vkCmdPipelineBarrier(cmd_, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+    vkCmdPipelineBarrier(cmd_[cmdIndex_], VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
 }
 std::vector<int64_t> VulkanBackend::formats() const {
     std::vector<int64_t> result;
@@ -267,8 +284,12 @@ bool VulkanBackend::export_batch(const std::vector<VulkanExportRequest>& request
         marker.width = request.width; marker.height = request.height;
         marker.formats[0] = formats[0]; marker.formats[1] = formats[1];
         marker.status = 0; ++marker.sequence;
-        marker.reserved[0] = i; marker.reserved[1] = static_cast<uint32_t>(requests.size()); marker.reserved[4] = axrb::protocol::kGpuBatchSlotTag;
-        vkCmdUpdateBuffer(cmd_, buffer_, i * sizeof(marker), sizeof(marker), &marker);
+        // reserved[2] carries the ping-pong buffer index (0 or 1) so the host
+        // knows which texture set was written and can read the other one.
+        marker.reserved[0] = i; marker.reserved[1] = static_cast<uint32_t>(requests.size());
+        marker.reserved[2] = marker.sequence & 1; // Alternate buffer index
+        marker.reserved[4] = axrb::protocol::kGpuBatchSlotTag;
+        vkCmdUpdateBuffer(cmd_[cmdIndex_], buffer_, i * sizeof(marker), sizeof(marker), &marker);
         for (uint32_t eye = 0; eye < (request.mono() ? 1u : 2u); ++eye) {
             const auto& sc = *request.swapchains[eye]; const auto& sub = request.subimages[eye];
             auto& scaled = scaled_[formats[eye] == VK_FORMAT_R8G8B8A8_SRGB ? 1 : 0][eye];
@@ -284,7 +305,7 @@ bool VulkanBackend::export_batch(const std::vector<VulkanExportRequest>& request
             if (request.verticalFlip[eye]) std::swap(blit.srcOffsets[0].y, blit.srcOffsets[1].y);
             blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
             blit.dstOffsets[1] = {static_cast<int32_t>(request.width), static_cast<int32_t>(request.height), 1};
-            vkCmdBlitImage(cmd_, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, scaled.image,
+            vkCmdBlitImage(cmd_[cmdIndex_], image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, scaled.image,
                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
             barrier(scaled.image, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                     VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
@@ -297,7 +318,7 @@ bool VulkanBackend::export_batch(const std::vector<VulkanExportRequest>& request
     host.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; host.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
     host.srcQueueFamilyIndex = host.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     host.buffer = buffer_; host.size = VK_WHOLE_SIZE;
-    vkCmdPipelineBarrier(cmd_, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &host, 0, nullptr);
+    vkCmdPipelineBarrier(cmd_[cmdIndex_], VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &host, 0, nullptr);
     if (!finish()) { batchFailed_ = true; return false; }
     for (uint32_t i = 0; i < requests.size(); ++i) {
         axrb::protocol::WindowsGpuMarker reply{};
@@ -317,7 +338,7 @@ bool VulkanBackend::release_batch() {
     if (batchInFlight_ || batchFailed_ || !ensure_buffer(sizeof(gpuMarker_)) || !begin()) return false;
     axrb::protocol::WindowsGpuMarker retire{};
     retire.reserved[4] = axrb::protocol::kGpuBatchSlotTag;
-    vkCmdUpdateBuffer(cmd_, buffer_, 0, sizeof(retire), &retire);
+    vkCmdUpdateBuffer(cmd_[cmdIndex_], buffer_, 0, sizeof(retire), &retire);
     if (!finish()) { batchFailed_ = true; return false; }
     batchSlots_.clear(); gpuMarker_.session = 0;
     return true;
@@ -363,7 +384,7 @@ bool VulkanBackend::readback(const VulkanSwapchain* const swapchains[2], const u
     if (!gpuExportEnabled_ && (eyeBytes * 2 > 128ull * 1024 * 1024 || !ensure_buffer(eyeBytes * 2))) return false;
     if (!begin()) return false;
     if (gpuExportEnabled_) {
-        vkCmdUpdateBuffer(cmd_, buffer_, 0, sizeof(gpuMarker_), &gpuMarker_);
+        vkCmdUpdateBuffer(cmd_[cmdIndex_], buffer_, 0, sizeof(gpuMarker_), &gpuMarker_);
     }
     for (uint32_t eye = 0; eye < (gpuExportEnabled_ && mono ? 1u : 2u); ++eye) {
         const auto& sc = *swapchains[eye]; const auto& sub = *subimages[eye];
@@ -378,11 +399,11 @@ bool VulkanBackend::readback(const VulkanSwapchain* const swapchains[2], const u
         blit.srcOffsets[1] = {sub.imageRect.offset.x + sub.imageRect.extent.width, sub.imageRect.offset.y + sub.imageRect.extent.height, 1};
         if (verticalFlip && verticalFlip[eye]) std::swap(blit.srcOffsets[0].y, blit.srcOffsets[1].y);
         blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; blit.dstOffsets[1] = {static_cast<int32_t>(w), static_cast<int32_t>(h), 1};
-        vkCmdBlitImage(cmd_, sc.images[index], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, scaled.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+        vkCmdBlitImage(cmd_[cmdIndex_], sc.images[index], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, scaled.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
         barrier(scaled.image, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
         VkBufferImageCopy copy{}; copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; copy.imageExtent = {w, h, 1};
         copy.bufferOffset = eye * eyeBytes;
-        if (!gpuExportEnabled_) vkCmdCopyImageToBuffer(cmd_, scaled.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer_, 1, &copy);
+        if (!gpuExportEnabled_) vkCmdCopyImageToBuffer(cmd_[cmdIndex_], scaled.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer_, 1, &copy);
         barrier(sc.images[index], sc.layers, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
     }
@@ -390,7 +411,7 @@ bool VulkanBackend::readback(const VulkanSwapchain* const swapchains[2], const u
     host.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; host.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
     host.srcQueueFamilyIndex = host.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     host.buffer = buffer_; host.size = VK_WHOLE_SIZE;
-    vkCmdPipelineBarrier(cmd_, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &host, 0, nullptr);
+    vkCmdPipelineBarrier(cmd_[cmdIndex_], VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &host, 0, nullptr);
     if (!finish()) return false;
     for (uint32_t eye = 0; eye < (gpuExportEnabled_ && mono ? 1u : 2u); ++eye) scratch[eye]->initialized = true;
     if (gpuExportEnabled_) {

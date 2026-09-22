@@ -12,7 +12,10 @@ using axrb::protocol::WindowsGpuMarker;
 namespace {
 void* key(const void* h) { return h ? *reinterpret_cast<void* const*>(h) : nullptr; }
 struct Instance { VkInstance instance; PFN_vkGetInstanceProcAddr gipa; };
-struct Export { axrb::SharedTexture eyes[2]; uint32_t width, height, formats[2]; };
+// Double-buffered export: two texture sets (ping-pong) so the guest can write
+// to one while the host reads from the other, eliminating the ACK wait.
+// reserved[2] in the marker carries the buffer index (0 or 1).
+struct Export { axrb::SharedTexture eyes[2][2]; uint32_t width, height, formats[2]; uint32_t activeBuffer = 0; };
 struct Command { VkCommandPool pool{}; WindowsGpuMarker marker; VkBuffer buffer{}; VkDeviceSize offset{}; uint32_t eye = 2, family = 0; };
 struct Device {
     VkDevice device; PFN_vkSetDeviceLoaderData setLoaderData = nullptr; Instance instance; PFN_vkGetDeviceProcAddr gdpa;
@@ -80,7 +83,7 @@ VKAPI_ATTR void VKAPI_CALL destroyDevice(VkDevice device, const VkAllocationCall
     std::lock_guard lock(mutex); auto* d = state(device); if (!d) return;
     auto destroy = fn<PFN_vkDestroyDevice>(d, "vkDestroyDevice");
     fn<PFN_vkDeviceWaitIdle>(d, "vkDeviceWaitIdle")(device);
-    for (auto& [id, images] : d->exports) for (auto& eye : images->eyes) d->shared.destroy(eye);
+    for (auto& [id, images] : d->exports) for (auto& buf : images->eyes) for (auto& eye : buf) d->shared.destroy(eye);
     devices.erase(key(device)); destroy(device, alloc);
 }
 VKAPI_ATTR VkResult VKAPI_CALL createCommandPool(VkDevice device, const VkCommandPoolCreateInfo* info, const VkAllocationCallbacks* alloc, VkCommandPool* out) {
@@ -155,19 +158,26 @@ VKAPI_ATTR void VKAPI_CALL blitImage(VkCommandBuffer cmd, VkImage source, VkImag
     auto& exported = d->exports[c.marker.session];
     if (!exported) {
         exported = std::make_unique<Export>(); exported->width = c.marker.width; exported->height = c.marker.height;
-        for (uint32_t eye = 0; eye < eyeCount; ++eye) {
-            exported->formats[eye] = c.marker.formats[eye];
-            wchar_t name[96]; swprintf_s(name, L"Local\\AXRB_GPU_%016llx_%u", c.marker.session, eye);
-            if (!d->shared.create(exported->eyes[eye], c.marker.width, c.marker.height, static_cast<VkFormat>(c.marker.formats[eye]), name)) {
-                for (auto& image : exported->eyes) d->shared.destroy(image);
-                exported.reset(); c.eye = 2; original(); return;
+        // Create both buffer sets (ping-pong) for double-buffering.
+        for (uint32_t buf = 0; buf < 2; ++buf) {
+            for (uint32_t eye = 0; eye < eyeCount; ++eye) {
+                exported->formats[eye] = c.marker.formats[eye];
+                wchar_t name[96]; swprintf_s(name, L"Local\\AXRB_GPU_%016llx_%u_%u", c.marker.session, buf, eye);
+                if (!d->shared.create(exported->eyes[buf][eye], c.marker.width, c.marker.height, static_cast<VkFormat>(c.marker.formats[eye]), name)) {
+                    // Fall back to single-buffer if double-buffer creation fails
+                    for (auto& b : exported->eyes) for (auto& image : b) d->shared.destroy(image);
+                    exported.reset(); c.eye = 2; original(); return;
+                }
             }
         }
     }
     if (exported->width != c.marker.width || exported->height != c.marker.height || exported->formats[c.eye] != c.marker.formats[c.eye]) { c.eye = 2; original(); return; }
+    // Use the buffer index from the marker (reserved[2]) to select which
+    // texture set to write to. The host reads from the opposite buffer.
+    const uint32_t bufferIndex = c.marker.reserved[2] & 1;
     // A validated AXRB export consumes the source directly. The guest's scaled
     // destination is only needed for pixel fallback, which records a new pass.
-    VkImage image = exported->eyes[c.eye].image;
+    VkImage image = exported->eyes[bufferIndex][c.eye].image;
     auto pipelineBarrier = fn<PFN_vkCmdPipelineBarrier>(d, "vkCmdPipelineBarrier");
     VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER}; barrier.image = image;
     // Previous frame was fully consumed and acknowledged before recording this one.

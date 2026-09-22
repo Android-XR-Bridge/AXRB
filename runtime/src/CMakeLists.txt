@@ -27,7 +27,7 @@ target_link_libraries(openxr_runtime
 )
 
 if(ANDROID)
-  target_link_libraries(openxr_runtime PRIVATE log GLESv3 EGL android vulkan)
+  target_link_libraries(openxr_runtime PRIVATE log GLESv3 EGL android vulkan rt)
   option(AXRB_BUILD_VULKAN_SMOKE "Build the on-device Vulkan readback regression" OFF)
   if(AXRB_BUILD_VULKAN_SMOKE)
     add_executable(axrb_vulkan_smoke ${PROJECT_SOURCE_DIR}/tests/android/vulkan_android_smoke.cpp

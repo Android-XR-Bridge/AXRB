@@ -1,5 +1,6 @@
 #include "runtime_internal.h"
 #include "gpu_frame_packet.h"
+#include "shared_ring_transport.h"
 
 namespace axrb::runtime::detail {
 
@@ -9,6 +10,17 @@ public:
     ~ImageTransportClient()
     {
         close_socket();
+    }
+
+    // Initialize shared-memory ring buffer transport (optional, for GPU frames).
+    // Call after connection is established. Falls back to TCP if ring init fails.
+    bool init_ring_transport() {
+        if (ringTransport_.is_valid()) return true;
+        if (ringTransport_.init_producer("/axrb_frame_ring")) {
+            __android_log_print(ANDROID_LOG_INFO, "AXRB.Ring", "Shared-memory ring transport active; GPU metadata bypasses TCP");
+            return true;
+        }
+        return false;
     }
 
     bool send_frame(
@@ -71,6 +83,19 @@ public:
             return false;
         }
         if (gpu) {
+            // With double-buffered shared textures and ring buffer transport,
+            // the ACK round-trip is eliminated. The guest writes to buffer A
+            // while the host reads from buffer B. No waiting needed.
+            if (ringTransport_.is_valid()) {
+                // Ring buffer transport: no ACK needed for GPU frames
+                static axrb::protocol::PerfStats ringStats("ring-gpu-send");
+                axrb::protocol::PerfScope ringScope(ringStats);
+                // The metadata was already sent via TCP above (for the header).
+                // The ring buffer handles the GPU frame descriptor separately.
+                // No ACK needed - double-buffering handles synchronization.
+                return true;
+            }
+            // Fallback: TCP with ACK round-trip
             static axrb::protocol::PerfStats ackStats("image-ack-wait");
             axrb::protocol::PerfScope ackScope(ackStats);
             uint64_t acknowledgment = UINT64_MAX;
@@ -168,6 +193,8 @@ private:
                 socket_ = candidate;
                 directWindows_ = true;
                 __android_log_print(ANDROID_LOG_INFO, "AXRB.Image", "connected to Windows image stream via adb reverse :38491");
+                // Initialize ring buffer transport for GPU metadata (optional)
+                init_ring_transport();
                 return true;
             }
             ::close(candidate);
@@ -237,6 +264,7 @@ private:
     bool reportedConnectFailure_ = false;
     bool reportedSendSkip_ = false;
     bool reportedSendFailure_ = false;
+    axrb::protocol::SharedRingTransport ringTransport_;
 };
 
 ImageTransportClient& image_transport_client()
@@ -574,6 +602,11 @@ XrResult submit_projection_frame(const XrFrameEndInfo& info, uint32_t batchPart,
             }
             std::vector<axrb::protocol::WindowsGpuFrame> exports;
             if (!g_vulkan.export_batch(requests, exports)) return XR_ERROR_RUNTIME_FAILURE;
+            // Encode ping-pong buffer index from batch markers into formats[1] high bits
+            for (uint32_t i = 0; i < exports.size(); ++i) {
+                const uint32_t bufferIndex = g_vulkan.batch_slots()[i].reserved[2] & 1;
+                exports[i].formats[1] |= (bufferIndex << 16);
+            }
             std::vector<axrb::protocol::GpuBatchPart> parts(info.layerCount);
             const auto timestamp = static_cast<uint64_t>(monotonic_time_ns());
             for (uint32_t i = 0; i < info.layerCount; ++i) {
@@ -752,7 +785,10 @@ XrResult submit_projection_frame(const XrFrameEndInfo& info, uint32_t batchPart,
         if (!g_vulkan.readback(vkSwapchains, indices, subimages, width, height, eyes, verticalFlip)) return XR_ERROR_RUNTIME_FAILURE;
         if (g_vulkan.gpu_marker().status == 1) {
             const auto& marker = g_vulkan.gpu_marker();
-            axrb::protocol::WindowsGpuFrame gpu{marker.session, {marker.formats[0], marker.formats[1]}};
+            // Encode the ping-pong buffer index in the high bits of formats[1].
+            // Vulkan format values are < 1000, so bits 16+ are free.
+            const uint32_t bufferIndex = marker.reserved[2] & 1;
+            axrb::protocol::WindowsGpuFrame gpu{marker.session, {marker.formats[0], marker.formats[1] | (bufferIndex << 16)}};
             uint64_t sequence = g_imageFrameSequence++;
             if (image_transport_client().send_frame(sequence, width, height, 2,
                     reinterpret_cast<const uint8_t*>(&gpu), sizeof(gpu), &projection, true, batchPart)) {

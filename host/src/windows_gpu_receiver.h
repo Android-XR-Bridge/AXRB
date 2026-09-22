@@ -16,20 +16,34 @@ public:
     ~WindowsGpuReceiver() { if (cacheHandle_) CloseHandle(cacheHandle_); }
     // Keep a host-owned GPU copy so the guest can reuse shared images as soon
     // as this copy finishes, even when OpenXR rotates through swapchain images.
+    // The frame.formats[2] field is extended to carry the ping-pong buffer index
+    // in the high bits of formats[1] when double-buffering is active.
     bool enqueue_receive(ID3D11Device* device, ID3D11DeviceContext* context,
                  const protocol::WindowsGpuFrame& frame, uint64_t sequence,
                  UINT width, UINT height, DXGI_FORMAT targetFormat) {
         if (session_ == frame.session && sequence_ == sequence && cached_) return true;
         if (!frame.session || (frame.formats[1] && frame.formats[0] != frame.formats[1])) return false;
         const UINT eyeCount = frame.formats[1] ? 2u : 1u;
-        if (session_ != frame.session || width_ != width || height_ != height || eyeCount_ != eyeCount) {
+        // Extract buffer index from the marker's reserved[2] field.
+        // The WindowsGpuFrame carries this in formats[1] high bits when
+        // double-buffering is active (bit 16 = buffer index).
+        const UINT bufferIndex = (frame.formats[1] >> 16) & 1;
+        const UINT cleanFormats1 = frame.formats[1] & 0xFFFF;
+        if (session_ != frame.session || width_ != width || height_ != height || eyeCount_ != eyeCount || bufferIndex_ != bufferIndex) {
             cached_.Reset(); renderCache_.Reset(); shared_[0].Reset(); shared_[1].Reset();
             if (cacheHandle_) { CloseHandle(cacheHandle_); cacheHandle_ = nullptr; }
             Microsoft::WRL::ComPtr<ID3D11Device1> device1;
             if (FAILED(device->QueryInterface(IID_PPV_ARGS(&device1)))) return false;
+            // Double-buffered names: Local\AXRB_GPU_%016llx_%u_%u (session, buffer, eye)
             for (UINT eye = 0; eye < eyeCount; ++eye) {
-                wchar_t name[96]; swprintf_s(name, L"Local\\AXRB_GPU_%016llx_%u", frame.session, eye);
-                if (FAILED(device1->OpenSharedResourceByName(name, DXGI_SHARED_RESOURCE_READ, IID_PPV_ARGS(&shared_[eye])))) return false;
+                wchar_t name[96]; swprintf_s(name, L"Local\\AXRB_GPU_%016llx_%u_%u", frame.session, bufferIndex, eye);
+                HRESULT hr = device1->OpenSharedResourceByName(name, DXGI_SHARED_RESOURCE_READ, IID_PPV_ARGS(&shared_[eye]));
+                if (FAILED(hr)) {
+                    // Fall back to single-buffer name for backward compatibility
+                    swprintf_s(name, L"Local\\AXRB_GPU_%016llx_%u", frame.session, eye);
+                    hr = device1->OpenSharedResourceByName(name, DXGI_SHARED_RESOURCE_READ, IID_PPV_ARGS(&shared_[eye]));
+                    if (FAILED(hr)) return false;
+                }
                 D3D11_TEXTURE2D_DESC source{}; shared_[eye]->GetDesc(&source);
                 if (source.Width != width || source.Height != height || source.ArraySize != 1 || source.SampleDesc.Count != 1) return false;
                 bool rgba = source.Format == DXGI_FORMAT_R8G8B8A8_UNORM || source.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
@@ -46,7 +60,7 @@ public:
             Microsoft::WRL::ComPtr<IDXGIResource1> resource;
             if (FAILED(cached_.As(&resource)) || FAILED(resource->CreateSharedHandle(nullptr,
                     DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, nullptr, &cacheHandle_))) return false;
-            session_ = frame.session; width_ = width; height_ = height; eyeCount_ = eyeCount;
+            session_ = frame.session; width_ = width; height_ = height; eyeCount_ = eyeCount; bufferIndex_ = bufferIndex;
             static bool reportedMono = false;
             if (eyeCount == 1 && !reportedMono) {
                 std::fprintf(stderr, "AXRB GPU: mono layers use one shared image and one receive copy\n");
@@ -92,7 +106,7 @@ public:
     }
 private:
     uint64_t session_ = 0, sequence_ = UINT64_MAX;
-    UINT width_ = 0, height_ = 0, eyeCount_ = 2;
+    UINT width_ = 0, height_ = 0, eyeCount_ = 2, bufferIndex_ = UINT_MAX;
     HANDLE cacheHandle_ = nullptr;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> shared_[2], cached_, renderCache_;
     GpuCompletion receiveCompletion_, renderCompletion_;
