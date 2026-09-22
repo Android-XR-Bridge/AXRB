@@ -375,3 +375,19 @@ test('failed launch retains session ownership until emulator cleanup completes',
   assert.equal(runtime.child, null);
   assert.equal(runtime.game, null);
 });
+
+test('quitting stops the ADB server only when no game or emulator still needs it', async t => {
+  const sdk = await fs.mkdtemp(path.join(os.tmpdir(), 'axrb-adb-'));
+  t.after(() => fs.rm(sdk, { recursive: true, force: true }));
+  const runtime = new Runtime('', { avd: 'axrb-managed-api36', port: 5584, sdk });
+  let running = false;
+  runtime.status = async () => ({ running, pid: null, count: running ? 1 : 0, adbState: '' });
+  assert.equal(await runtime.adbServerIdle(), false, 'no adb is installed yet');
+  await fs.mkdir(path.join(sdk, 'platform-tools'));
+  await fs.writeFile(path.join(sdk, 'platform-tools', 'adb.exe'), '');
+  assert.equal(await runtime.adbServerIdle(), true);
+  running = true;
+  assert.equal(await runtime.adbServerIdle(), false, 'the emulator still runs');
+  running = false; runtime.child = {};
+  assert.equal(await runtime.adbServerIdle(), false, 'a game session still streams through adb reverse');
+});

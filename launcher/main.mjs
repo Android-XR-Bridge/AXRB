@@ -58,7 +58,14 @@ app.on('before-quit', event => {
   shutdown.abort();
   if (!liveDiagnostics || quitting) return;
   event.preventDefault(); quitting = true;
-  Promise.all([liveDiagnostics.stop(), emulatorWatchdog?.stop()]).finally(() => app.quit());
+  (async () => {
+    await emulatorWatchdog?.stop();
+    const idle = await runtime.adbServerIdle().catch(() => false);
+    liveDiagnostics.append('launcher', idle ? 'Stopping the ADB server; Android is not running.' : 'Leaving the ADB server running for Android or a game session.', { tag: 'runtime' });
+    // Capture stops first so its logcat children end quietly with the launcher.
+    await liveDiagnostics.stop();
+    if (idle) await runtime.stopAdbServer();
+  })().finally(() => app.quit());
 });
 const controllers = new Map();
 const searchResults = new Map();

@@ -95,6 +95,18 @@ function parseInstalledIdentity(output, packageName) {
 export class Runtime {
   constructor(root, settings, onOutput = () => {}) { this.root = root; this.settings = settings; this.onOutput = onOutput; this.child = null; }
   adb(args, options) { return run(path.join(this.settings.sdk, 'platform-tools/adb.exe'), ['-s', `emulator-${this.settings.port}`, ...args], options); }
+  // AXRB's private ADB server (port 5038) otherwise outlives the launcher,
+  // holding the port and, in portable mode, an adb.exe inside the folder. It
+  // stays while a game or the emulator still runs: the game's image stream
+  // rides that server's adb reverse, and sessions can outlive the launcher.
+  async adbServerIdle() {
+    if (this.child || !this.settings.sdk) return false;
+    try { await fs.access(path.join(this.settings.sdk, 'platform-tools/adb.exe')); } catch { return false; }
+    return !(await this.status()).running;
+  }
+  stopAdbServer() {
+    return run(path.join(this.settings.sdk, 'platform-tools/adb.exe'), ['-P', '5038', 'kill-server'], { timeout: 5000 }).catch(() => {});
+  }
   async online() { try { return (await this.adb(['get-state'], { timeout: 2500 })).trim() === 'device'; } catch { return false; } }
   // Side-effect-free process + ADB check for the watchdog. Unlike online(),
   // this can tell a genuinely stopped emulator apart from one whose OS process
