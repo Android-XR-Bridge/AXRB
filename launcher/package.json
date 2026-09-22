@@ -73,6 +73,16 @@
     "portable": {
       "unpackDirName": false
     },
+    "nsis": {
+      "artifactName": "AXRB-Setup-${version}.${ext}",
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "deleteAppDataOnUninstall": false,
+      "createDesktopShortcut": true,
+      "shortcutName": "AXRB",
+      "runAfterFinish": true
+    },
     "beforePack": "./verify-release.cjs"
   }
 }

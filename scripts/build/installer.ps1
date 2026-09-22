@@ -1,5 +1,6 @@
-param([switch]$SkipBuild, [switch]$Portable)
+param([switch]$SkipBuild, [switch]$Portable, [switch]$Setup)
 $ErrorActionPreference = 'Stop'
+if ($Portable -and $Setup) { throw 'Choose either -Portable or -Setup, not both.' }
 . "$PSScriptRoot/../paths.ps1"
 function Run([string]$Exe, [string[]]$Arguments) {
     & $Exe @Arguments
@@ -40,6 +41,9 @@ try {
             Add-Type -AssemblyName System.IO.Compression.FileSystem
             [IO.Compression.ZipFile]::CreateFromDirectory($unpacked, $archive, [IO.Compression.CompressionLevel]::Optimal, $false)
         }
+        # The installed app keeps its profile in %APPDATA%, so the direct-launch
+        # marker has to stay out of an installed copy as much as a packed one.
+        elseif ($Setup) { Run npm.cmd @('exec', '--', 'electron-builder', '--win', 'nsis', '--x64', '--publish', 'never') }
         else { Run npm.cmd @('exec', '--', 'electron-builder', '--win', 'portable', '--x64', '--publish', 'never') }
     } finally { Pop-Location }
     Run python @('scripts/build/source_archive.py')

@@ -2,7 +2,8 @@ param(
     [switch]$SkipNative,
     [switch]$SkipTests,
     [switch]$KeepUnpacked,
-    [switch]$Portable
+    [switch]$Portable,
+    [switch]$Setup
 )
 
 $ErrorActionPreference = 'Stop'
@@ -14,11 +15,11 @@ if ([string]::IsNullOrWhiteSpace($version)) { throw 'launcher/package.json has n
 Push-Location $AxrbRoot
 try {
     if ($SkipTests) { $env:AXRB_SKIP_LAUNCHER_TESTS = '1' }
-    & "$PSScriptRoot/installer.ps1" -SkipBuild:$SkipNative -Portable:$Portable
+    & "$PSScriptRoot/installer.ps1" -SkipBuild:$SkipNative -Portable:$Portable -Setup:$Setup
     if ($LASTEXITCODE -ne 0) { throw "Installer build failed ($LASTEXITCODE)." }
 
     $release = Join-Path $AxrbRoot 'out/releases'
-    $installer = Join-Path $release $(if ($Portable) { "AXRB-Portable-$version.zip" } else { "AXRB-$version.exe" })
+    $installer = Join-Path $release $(if ($Portable) { "AXRB-Portable-$version.zip" } elseif ($Setup) { "AXRB-Setup-$version.exe" } else { "AXRB-$version.exe" })
     $source = Join-Path $release "AXRB-$version-source.zip"
     foreach ($file in @($installer, $source)) {
         if (!(Test-Path -LiteralPath $file -PathType Leaf)) { throw "Expected build artifact is missing: $file" }
@@ -27,7 +28,7 @@ try {
         $unpacked = Join-Path $release 'win-unpacked'
         if (Test-Path -LiteralPath $unpacked) { Remove-Item -LiteralPath $unpacked -Recurse -Force }
     }
-    foreach ($file in @($installer, $source, (Join-Path $release "SHA256SUMS-$version$(if ($Portable) { '-portable' }).txt"))) {
+    foreach ($file in @($installer, $source, (Join-Path $release "SHA256SUMS-$version$(if ($Portable) { '-portable' } elseif ($Setup) { '-setup' }).txt"))) {
         Get-Item -LiteralPath $file | Select-Object Name, Length, LastWriteTime
     }
 }

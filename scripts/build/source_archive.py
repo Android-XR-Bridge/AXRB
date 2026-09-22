@@ -38,7 +38,7 @@ def sha256(file):
 # Both modes share this source ZIP. Refresh every available package's manifest
 # only after the archive is closed, including the mode not rebuilt this time.
 source_entry = f'{sha256(output)}  {output.name}\n'
-for name, suffix in ((f'AXRB-{version}.exe', ''), (f'AXRB-Portable-{version}.zip', '-portable')):
+for name, suffix in ((f'AXRB-{version}.exe', ''), (f'AXRB-Portable-{version}.zip', '-portable'), (f'AXRB-Setup-{version}.exe', '-setup')):
     package = output.parent / name
     manifest = output.parent / f'SHA256SUMS-{version}{suffix}.txt'
     if package.is_file():
