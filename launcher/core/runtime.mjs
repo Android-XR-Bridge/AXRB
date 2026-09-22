@@ -5,14 +5,19 @@ import path from 'node:path';
 import { installFiles } from './game-files.mjs';
 import { describePermissionFailure, parsePermissionPrompt, parseRuntimePermissions, validPermission } from './permissions.mjs';
 
-export function run(executable, args, { timeout = 120000, onOutput = () => {}, signal, requireCompleteOutput = false, rejectStderr = false } = {}) {
+// Package-manager queries wait behind background compilation after an
+// install, which is measured in minutes rather than seconds.
+const PACKAGE_QUERY_TIMEOUT = 180000;
+const PACKAGE_QUERY_TIMEOUT_MESSAGE = 'Android did not answer a package query in time.';
+
+export function run(executable, args, { timeout = 120000, onOutput = () => {}, signal, requireCompleteOutput = false, rejectStderr = false, timeoutMessage = 'Operation timed out. Check the Android runtime and try again.' } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(new Error('Cancelled')); return; }
     const child = spawn(executable, args, { windowsHide: true, shell: false });
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
     const stdout = { stream: `${child.pid}:stdout` }, stderr = { stream: `${child.pid}:stderr` };
     let output = '', errors = '', settled = false, truncated = false, drain = null;
-    const timer = setTimeout(() => { child.kill(); finish(new Error('Operation timed out. Check the Android runtime and try again.')); }, timeout);
+    const timer = setTimeout(() => { child.kill(); finish(new Error(timeoutMessage)); }, timeout);
     const abort = () => { child.kill(); };
     signal?.addEventListener('abort', abort, { once: true });
     function finish(error) { if (settled) return; settled = true; clearTimeout(timer); clearTimeout(drain); signal?.removeEventListener('abort', abort); child.stdout.destroy(); child.stderr.destroy(); error ? reject(error) : resolve(output); }
@@ -215,7 +220,7 @@ export class Runtime {
       ['shell', 'cmd', 'package', 'resolve-activity', '--brief', '-a', 'android.intent.action.MAIN', '-c', 'com.oculus.intent.category.VR', packageName],
     ];
     for (const args of queries) {
-      const output = await this.adb(args, { timeout: 20000 });
+      const output = await this.adb(args, { timeout: PACKAGE_QUERY_TIMEOUT, timeoutMessage: PACKAGE_QUERY_TIMEOUT_MESSAGE });
       const activity = String(output ?? '').split(/\r?\n/).map(line => line.trim()).find(line => line.startsWith(prefix));
       if (activity) return activity;
     }
@@ -226,6 +231,14 @@ export class Runtime {
   // game is a copy; the caller's record is never rewritten and nothing is
   // cached. ownsEmulator reports whether this call booted Android, so the
   // session script keeps its shutdown ownership after preparation.
+  // Android compiles a freshly installed game in the background, and both
+  // queries below take the package-manager lock that the compiler holds.
+  // Measured at 159 seconds for one title, so a budget in tens of seconds
+  // turns "still working" into "the runtime is broken".
+  async optimising() {
+    try { return (await this.adb(['shell', 'getprop', 'init.svc.artd'], { timeout: 5000 })).trim() === 'running'; }
+    catch { return false; }
+  }
   async prepareLaunch(game) {
     if (this.child) throw new Error('A game is already running.');
     validPackage(game?.package);
@@ -233,14 +246,18 @@ export class Runtime {
     await this.ensure();
     const ownsEmulator = !wasOnline;
     try {
-      const identity = parseInstalledIdentity(await this.adb(['shell', 'dumpsys', 'package', game.package], { timeout: 20000, requireCompleteOutput: true }), game.package);
+      const identity = parseInstalledIdentity(await this.adb(['shell', 'dumpsys', 'package', game.package], { timeout: PACKAGE_QUERY_TIMEOUT, requireCompleteOutput: true, timeoutMessage: PACKAGE_QUERY_TIMEOUT_MESSAGE }), game.package);
       const activity = await this.installedActivity(game.package);
       return { game: { ...game, package: identity.package, version: identity.version, versionCode: identity.versionCode, activity }, ownsEmulator };
     } catch (error) {
+      // Ask before tearing anything down: the answer is lost once the
+      // emulator is gone, and "still optimising" is the difference between
+      // waiting a minute and hunting a fault that is not there.
+      const busy = error.message === PACKAGE_QUERY_TIMEOUT_MESSAGE && await this.optimising();
       // A newly booted emulator is torn down; a pre-existing runtime is never
       // touched. Startup failures from ensure() above keep its own contract.
       if (ownsEmulator) await this.adb(['emu', 'kill']).catch(() => {});
-      throw error;
+      throw busy ? new Error(`Android is still optimising ${game.package} after installation. That runs once per install and can take several minutes; start the game again when it finishes.`) : error;
     }
   }
   async install(game, update = () => {}) {

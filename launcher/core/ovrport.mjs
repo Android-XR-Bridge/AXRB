@@ -1,6 +1,11 @@
 import { run } from './runtime.mjs';
 
 const patchName = /^patch_[a-z0-9_]+$/;
+// A cold JVM, or a self-extracting build unpacking to a scanned temp folder,
+// takes far longer than a warm run on the maintainer's machine. This is a
+// host-side tool, so a timeout here must not read as an Android fault.
+const CLI_TIMEOUT = 120000;
+const CLI_TIMEOUT_MESSAGE = 'The ovrport CLI did not respond. Check the path in Settings, and that Java is installed if it is a JAR.';
 
 export class Ovrport {
   constructor(execute = run) { this.execute = execute; this.help = new Map(); }
@@ -8,11 +13,11 @@ export class Ovrport {
     return this.execute(/\.jar$/i.test(cli) ? 'java' : cli, /\.jar$/i.test(cli) ? ['-jar', cli, ...args] : args, options);
   }
   async requireProfiles(cli) {
-    if (!this.help.has(cli)) this.help.set(cli, await this.run(cli, ['patch'], { timeout: 30000, requireCompleteOutput: true }));
+    if (!this.help.has(cli)) this.help.set(cli, await this.run(cli, ['patch'], { timeout: CLI_TIMEOUT, requireCompleteOutput: true, timeoutMessage: CLI_TIMEOUT_MESSAGE }));
     if (!this.help.get(cli).includes('--extra-patches=<value>')) throw new Error('This game requires a newer ovrport CLI with compatibility-profile support.');
   }
   async patches(cli) {
-    const output = await this.run(cli, ['patches', '--json'], { timeout: 30000, requireCompleteOutput: true });
+    const output = await this.run(cli, ['patches', '--json'], { timeout: CLI_TIMEOUT, requireCompleteOutput: true, timeoutMessage: CLI_TIMEOUT_MESSAGE });
     let patches;
     try { patches = JSON.parse(output); } catch { throw new Error('Update the ovrport CLI to choose patch options in AXRB.'); }
     const names = new Set();

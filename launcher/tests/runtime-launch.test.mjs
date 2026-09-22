@@ -375,3 +375,44 @@ test('failed launch retains session ownership until emulator cleanup completes',
   assert.equal(runtime.child, null);
   assert.equal(runtime.game, null);
 });
+
+test('a package query blocked by post-install optimisation is reported as optimisation, not a broken runtime', async () => {
+  const calls = [];
+  const runtime = new Runtime('C:\root', { sdk: 'C:\sdk', port: 5584, avd: 'axrb-managed-api36', cpuCores: 4 });
+  runtime.online = async () => true;
+  runtime.ensure = async () => {};
+  runtime.adb = async (args, options = {}) => {
+    calls.push(args.join(' '));
+    if (args.includes('dumpsys')) throw new Error(options.timeoutMessage ?? 'timeout');
+    if (args.includes('getprop') && args.includes('init.svc.artd')) return 'running\n';
+    return '';
+  };
+  await assert.rejects(
+    () => runtime.prepareLaunch({ package: 'com.example.game', installed: true }),
+    /still optimising com\.example\.game after installation/);
+  assert.ok(calls.some(call => call.includes('init.svc.artd')), 'the optimisation state is checked before giving up');
+});
+
+test('a package query that fails for another reason keeps its own error', async () => {
+  const runtime = new Runtime('C:\root', { sdk: 'C:\sdk', port: 5584, avd: 'axrb-managed-api36', cpuCores: 4 });
+  runtime.online = async () => true;
+  runtime.ensure = async () => {};
+  runtime.adb = async args => {
+    if (args.includes('dumpsys')) throw new Error('device offline');
+    if (args.includes('getprop')) return 'stopped\n';
+    return '';
+  };
+  await assert.rejects(() => runtime.prepareLaunch({ package: 'com.example.game', installed: true }), /device offline/);
+});
+
+test('an idle device does not blame optimisation for a timeout', async () => {
+  const runtime = new Runtime('C:\root', { sdk: 'C:\sdk', port: 5584, avd: 'axrb-managed-api36', cpuCores: 4 });
+  runtime.online = async () => true;
+  runtime.ensure = async () => {};
+  runtime.adb = async (args, options = {}) => {
+    if (args.includes('dumpsys')) throw new Error(options.timeoutMessage ?? 'timeout');
+    if (args.includes('getprop')) return 'stopped\n';
+    return '';
+  };
+  await assert.rejects(() => runtime.prepareLaunch({ package: 'com.example.game', installed: true }), /did not answer a package query in time/);
+});
