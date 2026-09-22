@@ -115,10 +115,11 @@ function Invoke-ExternalWithTimeout([string]$Exe, [string[]]$Arguments, [int]$Ti
 function Get-ManagedEmulatorProcess {
     # Only match the requested AVD on the requested ports, launched by this SDK.
     # Matching a name anywhere in a command line could catch an unrelated process.
-    # Start-Process -ArgumentList quotes every array element individually
-    # ("-avd" "axrb-managed-api36" ...), unlike the plain `-avd axrb-managed-api36`
-    # shape these patterns were written against, so quotes are stripped before
-    # matching instead of trying to model every quoting style in the pattern.
+    # The clock launcher rebuilds QEMU's command line by quoting every argument
+    # individually ("-avd" "axrb-managed-api36" ...), unlike the plain
+    # `-avd axrb-managed-api36` shape these patterns were written against, so
+    # quotes are stripped before matching instead of trying to model every
+    # quoting style in the pattern.
     $patternAvd = '(?i)(?:^|\s)-avd\s+' + [regex]::Escape($Avd) + '(?=\s|$)'
     $patternPorts = '(?i)(?:^|\s)-ports\s+' + [regex]::Escape("$Port,$($Port + 1)") + '(?=\s|$)'
     $sdkEmulator = [IO.Path]::GetFullPath((Join-Path $Sdk 'emulator'))
@@ -448,7 +449,12 @@ switch ($Action) {
                 # aggressive: disable HPET entirely to eliminate all HPET overhead.
                 $tscOptions += ' nohpet'
             }
-            $arguments += @('-show-kernel', '-qemu', '-append', $tscOptions)
+            # Start-Process -ArgumentList joins the array with spaces and does
+            # not quote the elements, so a multi-word value has to carry its own
+            # quotes. Without them the kernel options after the first arrive as
+            # separate arguments, QEMU treats them as disk images, and the guest
+            # dies at startup with "Could not open 'tsc=reliable'".
+            $arguments += @('-show-kernel', '-qemu', '-append', ('"' + $tscOptions + '"'))
         }
         $oldLayerPath = $env:VK_LAYER_PATH
         $oldLayers = $env:VK_INSTANCE_LAYERS
