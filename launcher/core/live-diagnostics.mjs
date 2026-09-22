@@ -56,6 +56,10 @@ function reportsWindowsSuccess(text) {
   return text.endsWith('loaded (Windows error 0)') || !/\b(?:fatal|panic|error|failed|exception)\b/i.test(remainder);
 }
 
+function freshAttach() {
+  return { argv: null, failure: null, retries: 0 };
+}
+
 // Frame-pipeline counters whose sustained p95 means the captured experience degraded.
 function tracksFramePipeline(counter) {
   return counter === 'host-selected-frame-age' || counter.endsWith('end-frame');
@@ -69,7 +73,7 @@ export class LiveDiagnostics {
     this.entries = []; this.head = 0; this.bytes = 0; this.lastId = 0; this.dropped = 0; this.classB = 0;
     this.evictions = []; this.evictionSeq = 0; this.replaying = false;
     this.partials = new Map(); this.files = new Map(); this.children = new Set();
-    this.perf = new Map(); this.perfWarnedAt = new Map(); this.missListing = null; this.logcatArgv = null;
+    this.perf = new Map(); this.perfWarnedAt = new Map(); this.missListing = null; this.attach = freshAttach();
     this.startedAt = new Date().toISOString();
     this.android = { state: 'waiting', detail: 'Waiting for Android.', serial: '', lastReceivedAt: null };
     this.active = false; this.generation = 0; this.nextConnect = 0; this.dirty = false;
@@ -174,11 +178,31 @@ export class LiveDiagnostics {
     this.updateTimer = setTimeout(() => { this.updateTimer = null; this.onUpdate(); }, 250);
     this.updateTimer.unref?.();
   }
-  setAndroid(state, detail, serial = this.android.serial) {
+  setAndroid(state, detail, serial = this.android.serial, { quiet = false } = {}) {
     detail = redact(detail);
     if (this.android.state === state && this.android.detail === detail && this.android.serial === serial) return;
     this.android = { ...this.android, state, detail, serial };
-    this.append('launcher', `${serial || 'Android'}: ${detail}`, { tag: 'logcat', level: state === 'error' ? 'E' : state === 'disconnected' ? 'W' : 'I' });
+    if (!quiet) this.append('launcher', `${serial || 'Android'}: ${detail}`, { tag: 'logcat', level: state === 'error' ? 'E' : state === 'disconnected' ? 'W' : 'I' });
+  }
+  // An attach episode runs from the first logcat attempt until one produces
+  // output. Its first failure is reported in full; identical retries only move
+  // the panel state and are counted, so a logcat failing every few seconds
+  // cannot fill the flood-proof launcher lines with copies of one error.
+  attachFailed(state, detail) {
+    detail = redact(detail);
+    const repeat = detail === this.attach.failure;
+    if (repeat) this.attach.retries++;
+    else { this.reportRetries(); this.attach.failure = detail; }
+    this.setAndroid(state, detail, this.android.serial, { quiet: repeat });
+  }
+  reportRetries() {
+    const { failure, retries } = this.attach;
+    if (retries) this.append('launcher', `Logcat failure repeated ${retries} more time${retries === 1 ? '' : 's'}: ${failure}`, { level: 'W', tag: 'logcat' });
+    this.attach.retries = 0;
+  }
+  endAttachEpisode() {
+    this.reportRetries();
+    this.attach = freshAttach();
   }
   // afterEviction is the evictionSeq a reader last saw. evicted lists ids removed
   // from the middle since then; when that log no longer reaches back far
@@ -193,7 +217,8 @@ export class LiveDiagnostics {
       android: { ...this.android }, startedAt: this.startedAt };
   }
   text() {
-    return `Android capture: ${this.android.state} — ${this.android.detail}\n${this.dropped ? `[${this.dropped} entries omitted by capture limits]\n` : ''}${this.entries.slice(this.head).map(({ entry }) => format(entry)).join('\n')}`;
+    const repeats = this.attach.retries ? ` (repeated ${this.attach.retries} more time${this.attach.retries === 1 ? '' : 's'})` : '';
+    return `Android capture: ${this.android.state} — ${this.android.detail}${repeats}\n${this.dropped ? `[${this.dropped} entries omitted by capture limits]\n` : ''}${this.entries.slice(this.head).map(({ entry }) => format(entry)).join('\n')}`;
   }
   recordPerf(counter, receivedAt, match) {
     let series = this.perf.get(counter);
@@ -230,6 +255,7 @@ export class LiveDiagnostics {
       const signature = JSON.stringify([config.sdk, config.avd, config.port, config.dataHome]);
       if (signature !== this.configSignature) {
         this.configSignature = signature; this.generation++;
+        this.endAttachEpisode();
         for (const child of this.children) child.kill();
         this.stream = null; this.nextConnect = 0;
         for (const cursor of this.files.values()) this.write(cursor.source, cursor.decoder.end(), { tag: cursor.label, end: true });
@@ -244,7 +270,10 @@ export class LiveDiagnostics {
         this.connectTask = this.connect(config, this.generation).finally(() => { this.connectTask = null; });
       }
       if (this.stream && this.android.state === 'connecting' && Date.now() - this.streamStarted > 10000) {
-        this.setAndroid('error', 'ADB is online but logcat has not produced output. Android may be stalled.');
+        // The stall is the failure; the close that follows the kill is not
+        // reported again as a disconnect.
+        this.stream.stalled = true;
+        this.attachFailed('error', 'ADB is online but logcat has not produced output. Android may be stalled.');
         this.stream.kill();
       }
       if (this.dirty && Date.now() - this.lastPersist >= 2000) await this.persist();
@@ -370,7 +399,8 @@ export class LiveDiagnostics {
       const serial = await this.discover(executable, config, generation);
       if (!this.active || generation !== this.generation || !serial) return;
       const args = ['-P', '5038', '-s', serial];
-      this.setAndroid('connecting', `ADB is online${config.avd ? ` (${config.avd})` : ''}; waiting for logcat output.`, serial);
+      const retrying = this.attach.failure !== null;
+      this.setAndroid('connecting', `ADB is online${config.avd ? ` (${config.avd})` : ''}; waiting for logcat output.`, serial, { quiet: retrying });
       this.streamStarted = Date.now();
       const logcatArgs = [...args, 'logcat', '-b', 'main', '-b', 'system', '-b', 'crash', '-v', 'threadtime', '-T', '200'];
       const child = this.child(executable, logcatArgs);
@@ -379,27 +409,32 @@ export class LiveDiagnostics {
       // Logged once per attach episode so a logcat that keeps exiting before
       // any output does not repeat it every retry.
       const argv = [path.basename(executable), ...logcatArgs].join(' ');
-      if (argv !== this.logcatArgv) { this.logcatArgv = argv; this.append('launcher', argv, { level: 'I', tag: 'logcat' }); }
+      if (argv !== this.attach.argv) { this.attach.argv = argv; this.append('launcher', argv, { level: 'I', tag: 'logcat' }); }
       this.stream = child;
-      let error = '';
+      let error = '', produced = false;
       child.stdout.on('data', chunk => {
         if (!this.active || generation !== this.generation) return;
         this.android.lastReceivedAt = new Date().toISOString();
-        this.logcatArgv = null;
+        if (!produced) { produced = true; this.endAttachEpisode(); }
         this.setAndroid('streaming', 'Receiving Android logs.');
         this.write('android', chunk, { tag: 'logcat' });
       });
       child.stderr.on('data', chunk => {
         if (!this.active || generation !== this.generation) return;
         error = (error + chunk).slice(-4096);
-        this.write('launcher', chunk, { tag: 'logcat', level: 'W' });
+        // A retry's stderr is the failure detail reported below; only the
+        // first attempt of an episode, or a live stream, logs it as lines.
+        if (produced || !retrying) this.write('launcher', chunk, { tag: 'logcat', level: 'W' });
       });
       child.once('error', e => { error = e.message; });
       child.once('close', code => {
         if (!this.active || generation !== this.generation) return;
         this.flush('android', { tag: 'logcat' }); this.flush('launcher', { tag: 'logcat', level: 'W' });
         this.stream = null; this.nextConnect = Date.now() + 3000;
-        this.setAndroid(code ? 'error' : 'disconnected', error.trim() || 'Logcat disconnected; waiting to reconnect.');
+        if (child.stalled) return;
+        const state = code ? 'error' : 'disconnected', detail = error.trim() || 'Logcat disconnected; waiting to reconnect.';
+        if (produced) this.setAndroid(state, detail);
+        else this.attachFailed(state, detail);
       });
     } catch (error) {
       if (this.active && generation === this.generation) this.setAndroid('error', error.code === 'ENOENT' ? 'ADB is not installed at the configured SDK path. Capture will start when it is available.' : error.message);

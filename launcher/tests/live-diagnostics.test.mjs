@@ -359,7 +359,7 @@ test('each logcat attachment records the exact adb argv as a launcher line', asy
   assert.equal(adb.children.size, 0);
 });
 
-test('a logcat that keeps exiting before any output logs its argv once per attach episode', async t => {
+test('a logcat that keeps failing before any output reports one episode, not every retry', async t => {
   const directory = await temporary(t);
   await fs.mkdir(path.join(directory, 'platform-tools'));
   const executable = path.join(directory, 'platform-tools', process.platform === 'win32' ? 'adb.exe' : 'adb');
@@ -368,25 +368,42 @@ test('a logcat that keeps exiting before any output logs its argv once per attac
   const spawnProcess = (_file, args) => {
     const child = new EventEmitter();
     child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => {};
+    const logcat = args.includes('logcat');
     queueMicrotask(() => {
       if (args.includes('devices')) child.stdout.end('List of devices attached\nemulator-5584\tdevice model:test\n');
-      else { if (output) child.stdout.write(output); child.stdout.end(); }
-      queueMicrotask(() => child.emit('close', args.includes('logcat') && !output ? 1 : 0));
+      else if (output) child.stdout.write(output);
+      else child.stderr.write('error: device offline\n');
+      child.stdout.end(); child.stderr.end();
+      setTimeout(() => child.emit('close', logcat && !output ? 1 : 0), 5);
     });
     return child;
   };
   const capture = new LiveDiagnostics({ directory, getConfig: () => ({}), spawnProcess });
   capture.active = true;
   const config = { sdk: directory, port: 5584 };
-  const argvLines = () => capture.snapshot().entries.filter(entry => /logcat -b main/.test(entry.text)).length;
+  const logcatLines = () => capture.snapshot().entries.filter(entry => entry.tag === 'logcat' && !entry.text.startsWith('List of devices'))
+    .map(entry => [entry.level, entry.text.replace(/^\S*adb(?:\.exe)? .*/, 'argv')]);
   const attach = async () => { await capture.connect(config, capture.generation); await until(() => !capture.stream); };
   for (let attempt = 0; attempt < 3; attempt++) await attach();
-  assert.equal(argvLines(), 1);
+  assert.deepEqual(logcatLines(), [
+    ['I', 'emulator-5584: ADB is online; waiting for logcat output.'],
+    ['I', 'argv'],
+    ['W', 'error: device offline'],
+    ['E', 'emulator-5584: error: device offline'],
+  ]);
+  assert.equal(capture.snapshot().android.state, 'error', 'the panel still follows every retry');
+  assert.match(capture.text(), /^Android capture: error — error: device offline \(repeated 2 more times\)\n/);
   output = '09-21 03:04:05.678  123  456 I test: hello\n';
   await attach();
-  assert.equal(argvLines(), 1, 'the attach that finally streams is still the same episode');
+  assert.deepEqual(logcatLines().slice(4), [
+    ['W', 'Logcat failure repeated 2 more times: error: device offline'],
+    ['I', 'emulator-5584: Receiving Android logs.'],
+    ['W', 'emulator-5584: Logcat disconnected; waiting to reconnect.'],
+  ], 'recovery reports the suppressed count and closes the episode');
+  assert.doesNotMatch(capture.text().split('\n')[0], /repeated \d+ more time/);
+  output = '';
   await attach();
-  assert.equal(argvLines(), 2, 'reattaching after a stream that produced output logs again');
+  assert.deepEqual(logcatLines().slice(7).map(([level]) => level), ['I', 'I', 'W', 'E'], 'a failure after recovery is a new episode, reported in full');
 });
 
 test('perf counters keep bounded windows, render one line each and warn on sustained slow frames', () => {
