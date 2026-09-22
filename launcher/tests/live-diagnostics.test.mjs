@@ -319,27 +319,27 @@ test('host loader lines reporting Windows error 0 stay informational', () => {
   assert.deepEqual(capture.snapshot().entries.map(entry => entry.level), ['I', 'I', 'E', 'E']);
 });
 
-test('discovery misses log the raw device list once and then every tenth attempt', async t => {
+test('discovery misses log the raw device list informationally, once per distinct listing', async t => {
   const directory = await temporary(t);
   const devices = [{ serial: 'emulator-5678', name: 'other-avd' }];
   const adb = simulatedAdb(devices);
   const capture = new LiveDiagnostics({ directory, getConfig: () => ({}), spawnProcess: adb.spawnProcess });
   capture.active = true;
   const discover = () => capture.discover('adb', { port: 5584, avd: 'wanted-avd' }, 0);
-  const misses = () => capture.snapshot().entries.filter(entry => entry.source === 'launcher' && entry.text === 'List of devices attached').length;
+  const reports = () => capture.snapshot().entries.filter(entry => entry.source === 'launcher' && /^No matching Android device/.test(entry.text));
   assert.equal(await discover(), null);
-  assert.equal(misses(), 1);
-  assert.match(capture.text(), /No matching Android device; adb devices -l reports:/);
+  assert.deepEqual(reports().map(entry => entry.level), ['I'], 'no emulator yet is the normal waiting state');
   assert.match(capture.text(), /emulator-5678\s+device model:test/);
-  for (let attempt = 0; attempt < 8; attempt++) await discover();
-  assert.equal(misses(), 1);
+  for (let attempt = 0; attempt < 20; attempt++) await discover();
+  assert.equal(reports().length, 1, 'an idle launcher does not repeat an unchanged listing');
+  devices.push({ serial: 'emulator-5690', name: 'third-avd' });
   await discover();
-  assert.equal(misses(), 2);
+  assert.equal(reports().length, 2, 'a changed listing is reported');
   devices.length = 0; devices.push({ serial: 'emulator-5584', name: 'wanted-avd' });
   assert.equal(await discover(), 'emulator-5584');
   devices.length = 0; devices.push({ serial: 'emulator-5678', name: 'other-avd' });
   await discover();
-  assert.equal(misses(), 3);
+  assert.equal(reports().length, 3, 'a new waiting episode reports its first listing again');
 });
 
 test('each logcat attachment records the exact adb argv as a launcher line', async t => {
@@ -357,6 +357,36 @@ test('each logcat attachment records the exact adb argv as a launcher line', asy
     [['launcher', 'I', `${path.basename(executable)} -P 5038 -s emulator-5584 logcat -b main -b system -b crash -v threadtime -T 200`]]);
   } finally { await capture.stop(); }
   assert.equal(adb.children.size, 0);
+});
+
+test('a logcat that keeps exiting before any output logs its argv once per attach episode', async t => {
+  const directory = await temporary(t);
+  await fs.mkdir(path.join(directory, 'platform-tools'));
+  const executable = path.join(directory, 'platform-tools', process.platform === 'win32' ? 'adb.exe' : 'adb');
+  await fs.writeFile(executable, '');
+  let output = '';
+  const spawnProcess = (_file, args) => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => {};
+    queueMicrotask(() => {
+      if (args.includes('devices')) child.stdout.end('List of devices attached\nemulator-5584\tdevice model:test\n');
+      else { if (output) child.stdout.write(output); child.stdout.end(); }
+      queueMicrotask(() => child.emit('close', args.includes('logcat') && !output ? 1 : 0));
+    });
+    return child;
+  };
+  const capture = new LiveDiagnostics({ directory, getConfig: () => ({}), spawnProcess });
+  capture.active = true;
+  const config = { sdk: directory, port: 5584 };
+  const argvLines = () => capture.snapshot().entries.filter(entry => /logcat -b main/.test(entry.text)).length;
+  const attach = async () => { await capture.connect(config, capture.generation); await until(() => !capture.stream); };
+  for (let attempt = 0; attempt < 3; attempt++) await attach();
+  assert.equal(argvLines(), 1);
+  output = '09-21 03:04:05.678  123  456 I test: hello\n';
+  await attach();
+  assert.equal(argvLines(), 1, 'the attach that finally streams is still the same episode');
+  await attach();
+  assert.equal(argvLines(), 2, 'reattaching after a stream that produced output logs again');
 });
 
 test('perf counters keep bounded windows, render one line each and warn on sustained slow frames', () => {
@@ -386,6 +416,11 @@ test('perf counters keep bounded windows, render one line each and warn on susta
     ['launcher', 'W', 'frame pipeline degraded: host-selected-frame-age p95=290ms sustained'],
   ]);
   assert.equal(capture.perfText().split('\n')[3], 'host-selected-frame-age: rate=75.0/s p50=0.200ms p95=290.000ms p99=0.610ms (5 windows)');
+  capture.resetPerf();
+  assert.equal(capture.perfText(), '', 'a new game session starts without the previous windows');
+  record('host-selected-frame-age', '75', '300', 150);
+  record('host-selected-frame-age', '75', '300', 151);
+  assert.equal(capture.snapshot().entries.filter(entry => entry.tag === 'perf').length, 3, 'the warning interval restarts with the session');
 });
 
 test('replayed history keeps its perf warning without repeating it or reviving old windows', async t => {

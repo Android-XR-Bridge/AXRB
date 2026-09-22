@@ -69,7 +69,7 @@ export class LiveDiagnostics {
     this.entries = []; this.head = 0; this.bytes = 0; this.lastId = 0; this.dropped = 0; this.classB = 0;
     this.evictions = []; this.evictionSeq = 0; this.replaying = false;
     this.partials = new Map(); this.files = new Map(); this.children = new Set();
-    this.perf = new Map(); this.perfWarnedAt = new Map(); this.discoverNulls = 0;
+    this.perf = new Map(); this.perfWarnedAt = new Map(); this.missListing = null; this.logcatArgv = null;
     this.startedAt = new Date().toISOString();
     this.android = { state: 'waiting', detail: 'Waiting for Android.', serial: '', lastReceivedAt: null };
     this.active = false; this.generation = 0; this.nextConnect = 0; this.dirty = false;
@@ -202,12 +202,18 @@ export class LiveDiagnostics {
     if (series.length > PERF_WINDOWS) series.shift();
     const recent = series.slice(-2);
     if (recent.length < 2 || !tracksFramePipeline(counter) || !recent.every(sample => sample.p95 > PERF_SLOW_FRAME_MS)) return;
-    // Rate-limit against entry timestamps, not wall clocks, so replays of
-    // persisted history behave like the live traffic that produced it.
+    // Rate-limit against entry timestamps, not wall clocks, so the interval
+    // follows when the guest or host produced its windows rather than when
+    // bursty pipes happened to deliver them.
     const last = this.perfWarnedAt.get(counter);
     if (last && Date.parse(receivedAt) - Date.parse(last) < PERF_WARN_INTERVAL_MS) return;
     this.perfWarnedAt.set(counter, receivedAt);
     this.append('launcher', `frame pipeline degraded: ${counter} p95=${recent[1].p95}ms sustained`, { level: 'W', tag: 'perf' });
+  }
+  // Each game session starts with fresh windows, so a bundle never presents
+  // the previous game's frame timings as the current one's.
+  resetPerf() {
+    this.perf.clear(); this.perfWarnedAt.clear();
   }
   perfText() {
     // Collector contract: one line per counter in first-seen order describing
@@ -309,12 +315,13 @@ export class LiveDiagnostics {
   }
   noteMissingDevice(listed) {
     // setAndroid dedupes repeated waiting states into silence, so surface the
-    // raw probe output on the first miss and every tenth one after that: a
-    // capture that never attaches stays explainable without flooding the ring.
-    this.discoverNulls++;
-    if (this.discoverNulls === 1 || this.discoverNulls % 10 === 0) {
-      this.append('launcher', `No matching Android device; adb devices -l reports:\n${redact(listed.output).slice(0, 400)}`, { level: 'W', tag: 'logcat' });
-    }
+    // raw probe output whenever it changes: a capture that never attaches stays
+    // explainable, while an idle launcher with no emulator stays quiet. No
+    // device yet is the normal waiting state, not a warning.
+    const listing = redact(listed.output).slice(0, 400);
+    if (listing === this.missListing) return;
+    this.missListing = listing;
+    this.append('launcher', `No matching Android device; adb devices -l reports:\n${listing}`, { tag: 'logcat' });
   }
   async discover(executable, config, generation) {
     const listed = await this.probe(executable, ['-P', '5038', 'devices', '-l']);
@@ -327,7 +334,7 @@ export class LiveDiagnostics {
     const preferred = `emulator-${config.port}`;
     if (!config.avd) {
       const selected = devices.find(device => device.serial === preferred);
-      if (selected?.state === 'device') { this.discoverNulls = 0; return selected.serial; }
+      if (selected?.state === 'device') { this.missListing = null; return selected.serial; }
       this.setAndroid('waiting', selected ? `${preferred} is ${selected.state}.` : 'The configured emulator is not connected.', selected?.serial || '');
       this.noteMissingDevice(listed);
       return null;
@@ -344,11 +351,11 @@ export class LiveDiagnostics {
         continue;
       }
       if (name.output.trim().split(/\r?\n/)[0] === config.avd) {
-        if (device.serial === preferred) { this.discoverNulls = 0; return device.serial; }
+        if (device.serial === preferred) { this.missListing = null; return device.serial; }
         matches.push(device.serial);
       }
     }
-    if (matches.length === 1) { this.discoverNulls = 0; return matches[0]; }
+    if (matches.length === 1) { this.missListing = null; return matches[0]; }
     if (matches.length > 1) throw new Error(`More than one emulator runs ${config.avd}; select its console port in runtime settings.`);
     this.setAndroid('waiting', `Waiting for AVD ${config.avd}; other connected devices are not being captured.`, '');
     this.noteMissingDevice(listed);
@@ -369,12 +376,16 @@ export class LiveDiagnostics {
       const child = this.child(executable, logcatArgs);
       // A capture that exits immediately otherwise vanishes without a trace of
       // what was attempted; the exact argv is the shortest reproduction clue.
-      this.append('launcher', [path.basename(executable), ...logcatArgs].join(' '), { level: 'I', tag: 'logcat' });
+      // Logged once per attach episode so a logcat that keeps exiting before
+      // any output does not repeat it every retry.
+      const argv = [path.basename(executable), ...logcatArgs].join(' ');
+      if (argv !== this.logcatArgv) { this.logcatArgv = argv; this.append('launcher', argv, { level: 'I', tag: 'logcat' }); }
       this.stream = child;
       let error = '';
       child.stdout.on('data', chunk => {
         if (!this.active || generation !== this.generation) return;
         this.android.lastReceivedAt = new Date().toISOString();
+        this.logcatArgv = null;
         this.setAndroid('streaming', 'Receiving Android logs.');
         this.write('android', chunk, { tag: 'logcat' });
       });

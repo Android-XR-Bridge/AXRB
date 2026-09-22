@@ -464,6 +464,7 @@ handler('play', id => exclusive(async () => {
     liveDiagnostics.append('launcher', `Launching ${game.package}`, { tag: 'game' });
     const sessionId = randomUUID().slice(0, 8);
     const sessionStartedAt = new Date().toISOString();
+    liveDiagnostics.resetPerf();
     liveDiagnostics.append('launcher', `session ${sessionId} started: package=${prepared.game.package}${prepared.game.activity ? ` activity=${prepared.game.activity}` : ''}`, { tag: 'session' });
     runtime.launch(prepared.game, async (code, tail) => {
       liveDiagnostics.append('launcher', `Game process exited (${code ?? 'unknown'}).`, { tag: 'game', level: code ? 'E' : 'I' });
