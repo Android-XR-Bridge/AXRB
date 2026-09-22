@@ -19,6 +19,9 @@ const logcatLine = /^(\d\d-\d\d\s+\d\d:\d\d:\d\d\.\d+)\s+(\d+)\s+\d+\s+([VDIWEF]
 const kernelTimestamp = /^\[?\s*\d+\.\d+\]?\s*/;
 const bootChatterFacility = /^(?:init:|ueventd:|vold:|selinux:|apexd:|servicemanager:|libprocessgroup:|cutils-trace:|logd:|cfg80211:|UprobeStatsBpfLoad:|NetBpfLoad:)/;
 const isBootChatter = text => bootChatterFacility.test(text) || (kernelTimestamp.test(text) && bootChatterFacility.test(text.replace(kernelTimestamp, '')));
+const emulatorSeverity = /^(VERBOSE|DEBUG|INFO|WARNING|ERROR|FATAL)\s+\|/;
+const EMULATOR_LEVELS = { VERBOSE: 'V', DEBUG: 'D', INFO: 'I', WARNING: 'W', ERROR: 'E', FATAL: 'F' };
+const bootHeartbeat = /^Android startup diagnostic: \d+s elapsed; /;
 const kernelCrash = /panic|oops|\bBUG\b|unable to handle|call trace|fatal signal/i;
 const perfLine = /^AXRB\.Perf ([\w.-]+): rate=([\d.]+)\/s avg=([\d.]+)ms .*p50=([\d.]+)ms p95=([\d.]+)ms p99=([\d.]+)ms/;
 const PERF_WINDOWS = 12;
@@ -43,6 +46,13 @@ function isClassB(entry) {
 // carries "error"/"warning" words, and a Windows loader that succeeded still
 // reports its ERROR_SUCCESS code as "(Windows error 0)".
 function inferLevel(source, text) {
+  // The emulator labels its own lines ("WARNING      | Failed to …"); its label
+  // outranks words in the message.
+  const labelled = source === 'emulator' ? text.match(emulatorSeverity) : null;
+  if (labelled) return EMULATOR_LEVELS[labelled[1]];
+  // The boot wait's heartbeat quotes adb's raw "error: device offline", which
+  // is normal until Android finishes booting; only a dead emulator is a failure.
+  if (source === 'launcher' && bootHeartbeat.test(text)) return /processExited=True/i.test(text) ? 'E' : 'I';
   const level = /\b(?:fatal|panic)\b/i.test(text) ? 'F' : /\b(?:error|failed|exception)\b/i.test(text) ? 'E' : /\bwarn(?:ing)?\b/i.test(text) ? 'W' : 'I';
   if (level === 'F') return level;
   if (source === 'emulator' && level !== 'I' && isBootChatter(text) && !kernelCrash.test(text)) return 'D';
@@ -342,15 +352,20 @@ export class LiveDiagnostics {
       child.once('close', code => finish(code === 0 ? { output } : { error: error.trim() || output.trim() || 'Android is not connected.' }));
     });
   }
-  noteMissingDevice(listed) {
+  noteMissingDevice(listed, mismatches = []) {
     // setAndroid dedupes repeated waiting states into silence, so surface the
     // raw probe output whenever it changes: a capture that never attaches stays
     // explainable, while an idle launcher with no emulator stays quiet. No
     // device yet is the normal waiting state, not a warning.
     const listing = redact(listed.output).slice(0, 400);
-    if (listing === this.missListing) return;
-    this.missListing = listing;
-    this.append('launcher', `No matching Android device; adb devices -l reports:\n${listing}`, { tag: 'logcat' });
+    // A connected emulator that answers with another AVD name, or not at all,
+    // is the one miss the device list alone cannot explain.
+    const answers = redact(mismatches.join('\n')).slice(0, 400);
+    if (`${listing}\n${answers}` === this.missListing) return;
+    this.missListing = `${listing}\n${answers}`;
+    const devices = listing.replace(/^List of devices attached\s*/, '').trim();
+    const summary = devices ? `No matching Android device; adb devices -l reports:\n${devices}` : 'No matching Android device; adb reports no devices attached.';
+    this.append('launcher', answers ? `${summary}\n${answers}` : summary, { tag: 'logcat' });
   }
   async discover(executable, config, generation) {
     const listed = await this.probe(executable, ['-P', '5038', 'devices', '-l']);
@@ -371,23 +386,25 @@ export class LiveDiagnostics {
     // AVD names and console ports vary by machine. Discover their relationship
     // rather than attaching to the first emulator, or to a hardcoded name.
     const candidates = devices.filter(device => device.state === 'device').sort((a, b) => Number(b.serial === preferred) - Number(a.serial === preferred));
-    const matches = [];
+    const matches = [], mismatches = [];
     for (const device of candidates) {
       if (!this.active || generation !== this.generation) return null;
       const name = await this.probe(executable, ['-P', '5038', '-s', device.serial, 'emu', 'avd', 'name']);
       if (name.error) {
         if (device.serial === preferred) throw new Error(name.error);
+        mismatches.push(`${device.serial} did not report its AVD name: ${name.error}`);
         continue;
       }
-      if (name.output.trim().split(/\r?\n/)[0] === config.avd) {
+      const reported = name.output.trim().split(/\r?\n/)[0];
+      if (reported === config.avd) {
         if (device.serial === preferred) { this.missListing = null; return device.serial; }
         matches.push(device.serial);
-      }
+      } else mismatches.push(`${device.serial} reports AVD name ${JSON.stringify(reported.slice(0, 120))}`);
     }
     if (matches.length === 1) { this.missListing = null; return matches[0]; }
     if (matches.length > 1) throw new Error(`More than one emulator runs ${config.avd}; select its console port in runtime settings.`);
     this.setAndroid('waiting', `Waiting for AVD ${config.avd}; other connected devices are not being captured.`, '');
-    this.noteMissingDevice(listed);
+    this.noteMissingDevice(listed, mismatches);
     return null;
   }
   async connect(config, generation) {
@@ -437,7 +454,10 @@ export class LiveDiagnostics {
         else this.attachFailed(state, detail);
       });
     } catch (error) {
-      if (this.active && generation === this.generation) this.setAndroid('error', error.code === 'ENOENT' ? 'ADB is not installed at the configured SDK path. Capture will start when it is available.' : error.message);
+      if (!this.active || generation !== this.generation) return;
+      // A missing adb is the normal state before setup installs the SDK.
+      if (error.code === 'ENOENT') this.setAndroid('waiting', 'ADB is not installed at the configured SDK path. Capture will start when it is available.');
+      else this.setAndroid('error', error.message);
     }
   }
   async persist() {

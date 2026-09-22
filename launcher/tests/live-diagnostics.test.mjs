@@ -310,6 +310,25 @@ test('kernel boot chatter is demoted to debug while real guest failures keep sev
   assert.deepEqual(capture.snapshot().entries.map(entry => entry.level), ['D', 'D', 'D', 'D', 'E', 'E', 'E', 'F']);
 });
 
+test("the emulator's own severity label outranks keywords in its message", () => {
+  const capture = new LiveDiagnostics({ directory: '.', getConfig: () => ({}), maxEntries: 16, maxBytes: 64 * 1024 });
+  capture.append('emulator', 'WARNING      | Failed to load snapshot \'default_boot\'');
+  capture.append('emulator', 'INFO         | Checking: hasSufficientHwGpu error budget');
+  capture.append('emulator', 'ERROR        | Unable to connect to adb daemon');
+  capture.append('emulator', 'FATAL        | Cannot start AVD');
+  capture.append('emulator', 'input_len: 0x13e1WARNING      |3 Failed to process .ini file');
+  assert.deepEqual(capture.snapshot().entries.map(entry => entry.level), ['W', 'I', 'E', 'F', 'E']);
+});
+
+test('the boot wait heartbeat is informational until the emulator process dies', () => {
+  const capture = new LiveDiagnostics({ directory: '.', getConfig: () => ({}), maxEntries: 16, maxBytes: 64 * 1024 });
+  capture.append('launcher', 'Android startup diagnostic: 31s elapsed; adb=offline (error: device offline (exit 1)); boot=(getprop failed: adb.exe: device offline (exit 1)); processExited=False');
+  capture.append('launcher', 'Android startup diagnostic: 62s elapsed; adb=unreachable: timed out; boot=; processExited=True');
+  capture.append('launcher', 'Android startup diagnostic: warning: restarting ADB server after persistent offline transport.');
+  capture.append('launcher', 'Android startup diagnostic: SDK failed to verify');
+  assert.deepEqual(capture.snapshot().entries.map(entry => entry.level), ['I', 'E', 'W', 'E']);
+});
+
 test('host loader lines reporting Windows error 0 stay informational', () => {
   const capture = new LiveDiagnostics({ directory: '.', getConfig: () => ({}), maxEntries: 16, maxBytes: 64 * 1024 });
   capture.append('host', 'OpenXR.dll loaded (Windows error 0)');
@@ -330,6 +349,7 @@ test('discovery misses log the raw device list informationally, once per distinc
   assert.equal(await discover(), null);
   assert.deepEqual(reports().map(entry => entry.level), ['I'], 'no emulator yet is the normal waiting state');
   assert.match(capture.text(), /emulator-5678\s+device model:test/);
+  assert.match(capture.text(), /emulator-5678 reports AVD name "other-avd"/, 'a connected emulator explains why it was not captured');
   for (let attempt = 0; attempt < 20; attempt++) await discover();
   assert.equal(reports().length, 1, 'an idle launcher does not repeat an unchanged listing');
   devices.push({ serial: 'emulator-5690', name: 'third-avd' });
@@ -340,6 +360,35 @@ test('discovery misses log the raw device list informationally, once per distinc
   devices.length = 0; devices.push({ serial: 'emulator-5678', name: 'other-avd' });
   await discover();
   assert.equal(reports().length, 3, 'a new waiting episode reports its first listing again');
+  devices.length = 0;
+  await discover();
+  assert.equal(reports().at(-1).text, 'No matching Android device; adb reports no devices attached.');
+});
+
+test('a missing adb before setup installs the SDK is a waiting state, not an error', async t => {
+  const directory = await temporary(t);
+  const capture = new LiveDiagnostics({ directory, getConfig: () => ({}) });
+  capture.active = true;
+  await capture.connect({ sdk: path.join(directory, 'not-installed'), port: 5584 }, capture.generation);
+  assert.equal(capture.snapshot().android.state, 'waiting');
+  assert.deepEqual(capture.snapshot().entries.map(entry => [entry.level, entry.text]),
+    [['I', 'Android: ADB is not installed at the configured SDK path. Capture will start when it is available.']]);
+});
+
+test('setup transcript lines name the component each phase works on', async t => {
+  const directory = await temporary(t);
+  const lines = [];
+  const setup = new Setup({ root: directory, directory, runtime: { settings: {} }, changed() {}, onOutput: text => lines.push(text.trim()) });
+  setup.update({ phase: 'verify', component: '' });
+  setup.update({ phase: 'verify', component: 'Android Emulator', completed: 0, total: 10 });
+  setup.update({ phase: 'download' });
+  setup.update({ completed: 5, total: 10 });
+  setup.update({ phase: 'extract', completed: 0, total: 0 });
+  setup.update({ phase: 'boot', component: 'Starting Android' });
+  setup.update({ component: 'Installing AXRB runtime' });
+  setup.update({ phase: 'ready', component: '' });
+  assert.deepEqual(lines, ['Setup: verify', 'Setup: verify · Android Emulator', 'Setup: download · Android Emulator', 'Setup: extract · Android Emulator',
+    'Setup: boot · Starting Android', 'Setup: boot · Installing AXRB runtime', 'Setup: ready']);
 });
 
 test('each logcat attachment records the exact adb argv as a launcher line', async t => {

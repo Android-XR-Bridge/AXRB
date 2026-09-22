@@ -413,7 +413,7 @@ switch ($Action) {
                         try { Invoke-ExternalWithTimeout $adb @('reconnect', 'offline') 10 | Out-Null } catch { }
                         $adbReconnectAttempted = $true
                     } elseif (!$adbServerRestarted -and ((Get-Date) - $startedAt).TotalSeconds -ge 90) {
-                        Write-Output 'Android startup diagnostic: restarting ADB server after persistent offline transport.'
+                        Write-Output 'Android startup diagnostic: warning: restarting ADB server after persistent offline transport.'
                         try { Invoke-ExternalWithTimeout $adb @('kill-server') 15 | Out-Null } catch { }
                         try { Invoke-ExternalWithTimeout $adb @('start-server') 15 | Out-Null } catch { }
                         $adbServerRestarted = $true
