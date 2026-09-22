@@ -34,8 +34,8 @@ function streamKey(source, metadata) {
 // Capture belongs to the application, not the panel or the running game.
 // Retained data is bounded and gets best-effort redaction before disk or renderer.
 export class LiveDiagnostics {
-  constructor({ directory, getConfig, onUpdate = () => {}, spawnProcess = spawn, maxEntries = MAX_DIAGNOSTIC_ENTRIES, maxBytes = MAX_BYTES }) {
-    Object.assign(this, { directory, getConfig, onUpdate, spawnProcess, maxEntries, maxBytes });
+  constructor({ directory, getConfig, onUpdate = () => {}, spawnProcess = spawn, maxEntries = MAX_DIAGNOSTIC_ENTRIES, maxBytes = MAX_BYTES, adbBusy = () => false }) {
+    Object.assign(this, { directory, getConfig, onUpdate, spawnProcess, maxEntries, maxBytes, adbBusy });
     this.entries = []; this.head = 0; this.bytes = 0; this.lastId = 0; this.dropped = 0;
     this.partials = new Map(); this.files = new Map(); this.children = new Set();
     this.startedAt = new Date().toISOString();
@@ -148,7 +148,11 @@ export class LiveDiagnostics {
         this.setAndroid('waiting', `Waiting for ${config.avd || 'the configured Android device'}.`, '');
       }
       await this.tailFiles(config.dataHome);
-      if (!this.stream && !this.connectTask && Date.now() >= this.nextConnect) {
+      // Setup and emulator startup drive ADB themselves. Two clients racing
+      // to fork a server on the same port reset each other, and a capture
+      // that is only watching must not be what breaks the work it watches.
+      if (this.adbBusy()) { this.nextConnect = Math.max(this.nextConnect, Date.now() + 2000); }
+      else if (!this.stream && !this.connectTask && Date.now() >= this.nextConnect) {
         this.connectTask = this.connect(config, this.generation).finally(() => { this.connectTask = null; });
       }
       if (this.stream && this.android.state === 'connecting' && Date.now() - this.streamStarted > 10000) {

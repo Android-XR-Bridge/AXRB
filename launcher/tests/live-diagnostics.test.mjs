@@ -330,3 +330,26 @@ test('a protocol fault is classified as transient while a real failure is not', 
   assert.equal(transientAdbFault('More than one emulator runs same-avd; select its console port in runtime settings.'), false);
   assert.equal(transientAdbFault(''), false);
 });
+
+test('capture stops probing ADB while setup or an operation owns it', async t => {
+  const directory = await temporary(t);
+  await fs.mkdir(path.join(directory, 'platform-tools'));
+  await fs.writeFile(path.join(directory, 'platform-tools', process.platform === 'win32' ? 'adb.exe' : 'adb'), '');
+  let busy = true;
+  const device = simulatedAdb([{ serial: 'emulator-5584', name: 'axrb-managed-api36' }]);
+  const seen = [];
+  const spawnProcess = (file, args) => { seen.push(args.join(' ')); return device.spawnProcess(file, args); };
+  const capture = new LiveDiagnostics({
+    directory: path.join(directory, 'history'),
+    getConfig: () => ({ sdk: directory, port: 5584, dataHome: directory }),
+    spawnProcess, adbBusy: () => busy,
+  });
+  await capture.start();
+  try {
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.equal(seen.length, 0, 'no adb client is spawned while the gate is held');
+    busy = false;
+    await until(() => capture.snapshot().android.state === 'streaming');
+    assert.ok(seen.some(command => command.includes('devices')), 'discovery resumes once the gate clears');
+  } finally { await capture.stop(); }
+});

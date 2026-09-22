@@ -107,6 +107,14 @@ function handler(name, callback) {
     }
   });
 }
+async function listAdbProcesses() {
+  if (process.platform !== 'win32') return null;
+  try {
+    const output = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      "Get-CimInstance Win32_Process -Filter \"Name='adb.exe'\" | ForEach-Object { \"$($_.ProcessId) $($_.ExecutablePath) $($_.CommandLine)\" }"], { timeout: 10000 });
+    return output.trim() || '(no adb.exe processes)';
+  } catch (error) { return `(unavailable: ${message(error)})`; }
+}
 async function exclusive(callback) { if (busy) throw new Error('Wait for the current install or patch to finish.'); busy = true; changed(); try { return await callback(); } finally { busy = false; changed(); } }
 
 async function syncInstalled() {
@@ -293,6 +301,10 @@ if (!smoke && (app.isPackaged || pendingRuntime || state.data.settings.managedDi
 liveDiagnostics = new LiveDiagnostics({
   directory: path.join(state.directory, 'diagnostics'),
   getConfig: () => ({ sdk: runtime.settings.sdk, avd: runtime.settings.avd, port: runtime.settings.port, dataHome: process.env.AXRB_DATA_HOME || path.join(root, 'out') }),
+  // Setup owns ADB while it installs or boots Android, and every operation
+  // behind the exclusive gate drives it too. Capture waits its turn rather
+  // than forking a competing server.
+  adbBusy: () => busy || Boolean(setup?.status?.active),
   onUpdate: () => { if (window && !window.isDestroyed()) window.webContents.send('axrb:diagnostics'); },
 });
 await liveDiagnostics.start();
@@ -568,6 +580,7 @@ handler('diagnostics', async ({ upload = false, save = false } = {}) => {
     version: app.getVersion(), settings: state.data.settings,
     setupLogs: setup?.status.logs ?? [], hardware: setup?.status.hardware ?? null,
     liveLogs: liveDiagnostics.text(),
+    adbProcesses: await listAdbProcesses(),
   });
   if (save) {
     const result = await dialog.showSaveDialog(window, {

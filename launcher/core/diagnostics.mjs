@@ -85,10 +85,21 @@ export function diagnosticSources(dataHome) {
 }
 // The library file is deliberately absent: it is megabytes of cover art and a
 // record of everything the user owns, none of which helps diagnose a failure.
-export async function collectDiagnostics({ dataHome, version = '', settings = {}, setupLogs = [], hardware = null, liveLogs = '', now = () => new Date() } = {}) {
+// Every ADB report so far has left the same question open: whose ADB is it?
+// A foreign client on the same port restarts the server underneath AXRB, and
+// nothing in the bundle could tell that apart from AXRB racing itself.
+export function adbEnvironment(environment = process.env) {
+  const port = environment.ANDROID_ADB_SERVER_PORT || '(unset, adb defaults to 5037)';
+  const socket = environment.ADB_SERVER_SOCKET || '(unset)';
+  const scan = environment.ADB_LOCAL_TRANSPORT_MAX_PORT || '(unset)';
+  return `adb env ANDROID_ADB_SERVER_PORT=${port}; ADB_SERVER_SOCKET=${socket}; ADB_LOCAL_TRANSPORT_MAX_PORT=${scan}`;
+}
+export async function collectDiagnostics({ dataHome, version = '', settings = {}, setupLogs = [], hardware = null, liveLogs = '', now = () => new Date(), environment = process.env, adbProcesses = null } = {}) {
   const sections = [`AXRB diagnostics ${now().toISOString()}`,
     `launcher ${version}; ${process.platform} ${os.release()}; ${os.arch()}; node ${process.versions.node}`];
   if (hardware) sections.push(`hardware ${JSON.stringify(hardware)}`);
+  sections.push(adbEnvironment(environment));
+  if (adbProcesses) sections.push(`--- adb processes ---\n${adbProcesses}`);
   const { managedDirectory, sdk, downloadDir, ovrportCli, ...safeSettings } = settings;
   sections.push(`settings ${JSON.stringify({ ...safeSettings, managed: Boolean(managedDirectory) })}`);
   if (setupLogs.length) sections.push(`--- setup transcript ---\n${setupLogs.join('\n')}`);

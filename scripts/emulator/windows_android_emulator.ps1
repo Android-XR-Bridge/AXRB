@@ -188,8 +188,18 @@ function Invoke-Adb([string[]]$Arguments, [int]$TimeoutSeconds = 60, [int]$Attem
 }
 function Verify-Gpu {
     Write-Output 'Android startup diagnostic: checking guest GLES renderer.'
-    $gles = (Invoke-Adb @('-s', $serial, 'shell', 'dumpsys', 'SurfaceFlinger') 60 | Select-String '^GLES:') -join "`n"
-    if (!$gles) { throw 'Cannot identify guest GLES renderer.' }
+    # sys.boot_completed flips before SurfaceFlinger will describe itself, and
+    # an ADB transport that has just been reconnected can answer the first
+    # dump with nothing at all. That is a guest still arriving, not a guest
+    # without a renderer, so wait for the line instead of failing the setup.
+    $glesDeadline = (Get-Date).AddSeconds(90)
+    $gles = ''
+    do {
+        try { $gles = (Invoke-Adb @('-s', $serial, 'shell', 'dumpsys', 'SurfaceFlinger') 60 1 | Select-String '^GLES:') -join "`n" } catch { $gles = '' }
+        if ($gles) { break }
+        Start-Sleep -Seconds 3
+    } while ((Get-Date) -lt $glesDeadline)
+    if (!$gles) { throw 'Cannot identify guest GLES renderer. Android started but its graphics service never reported one; restart Android and try again.' }
     Write-Output 'Android startup diagnostic: checking guest Vulkan device.'
     $raw = Invoke-Adb @('-s', $serial, 'shell', 'cmd', 'gpu', 'vkjson') 90
     $vk = ($raw -join "`n") | ConvertFrom-Json
