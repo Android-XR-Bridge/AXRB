@@ -34,6 +34,16 @@ test('SSO callbacks are bound to one challenge and do not expose server token er
   await assert.rejects(auth.complete(`oculus://login?token=${hash}&blob=test`), /expired/);
   await assert.rejects(post('https://test', {}, async () => Response.json({ error: { message: 'OC-SECRET-DO-NOT-LOG', code: 190 } })), e => !e.message.includes('SECRET'));
 });
+test('a refused Meta request names its step and error codes without the server message', async () => {
+  const refuse = body => async () => new Response(body, { status: 400 });
+  await assert.rejects(post('https://meta.graph.meta.com/webview_blobs_decrypt', { access_token: 'FRL|x|y', blob: 'b' },
+    refuse(JSON.stringify({ error: { message: 'OC-SECRET-DO-NOT-LOG', type: 'OAuthException', code: 100, error_subcode: 33 } }))),
+  e => e.message === 'Meta request failed (400, OAuthException code 100 subcode 33) at webview_blobs_decrypt. Try signing in again.');
+  await assert.rejects(post('https://meta.graph.meta.com/graphql', { doc_id: '24112177345042346' }, refuse('<html>OC-SECRET-DO-NOT-LOG</html>')),
+    e => e.message === 'Meta request failed (400) at graphql 24112177345042346. Try signing in again.');
+  await assert.rejects(post('https://meta.graph.meta.com/graphql', {}, refuse(JSON.stringify({ error: { type: 'OC-SECRET token=abc', code: 'x' } }))),
+    e => e.message === 'Meta request failed (400) at graphql. Try signing in again.');
+});
 test('library keeps only Quest entitlements and identifies incomplete results', async () => {
   const api = new QuestStore('test', async () => Response.json({ data: { viewer: { user: { display_name: 'Player', active_entitlements: { nodes: [
     { item: { id: '123456', display_name: 'Quest game', platform: 'ANDROID_6DOF' } },

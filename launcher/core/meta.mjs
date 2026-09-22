@@ -31,7 +31,22 @@ export function card(item, owned = false) {
 export async function post(url, fields, request = fetch) {
   const response = await request(url, { method: 'POST', body: new URLSearchParams(fields),
     signal: AbortSignal.timeout(30000), headers: { Accept: 'application/json' } });
-  if (!response.ok) throw new Error(`Meta request failed (${response.status}). Try signing in again.`);
+  if (!response.ok) {
+    // Name the endpoint and Meta's error type and codes so a failure says which
+    // step Meta refused. Only these identifiers are kept: message text can echo
+    // credentials or queries.
+    let reason = '';
+    try {
+      const body = JSON.parse((await response.text()).slice(0, 65536));
+      const error = body?.error ?? body?.errors?.[0];
+      const number = value => Number.isSafeInteger(Number(value)) && value !== null && value !== '' ? Number(value) : null;
+      reason = [/^[A-Za-z_]{1,64}$/.test(error?.type) ? error.type : '', number(error?.code) !== null ? `code ${number(error.code)}` : '',
+        number(error?.error_subcode) !== null ? `subcode ${number(error.error_subcode)}` : ''].filter(Boolean).join(' ');
+    } catch { /* A non-JSON body adds nothing safe to report. */ }
+    const endpoint = new URL(url).pathname.split('/').filter(Boolean).pop() || new URL(url).hostname;
+    const step = /^\d{5,30}$/.test(String(fields.doc_id ?? '')) ? `${endpoint} ${fields.doc_id}` : endpoint;
+    throw new Error(`Meta request failed (${response.status}${reason ? `, ${reason}` : ''}) at ${step}. Try signing in again.`);
+  }
   const raw = await response.text();
   if (raw.length > 16 * 1024 * 1024) throw new Error('Meta returned an oversized response.');
   let data; try { data = JSON.parse(raw); } catch { throw new Error('Meta returned an unexpected response. Try again later.'); }
