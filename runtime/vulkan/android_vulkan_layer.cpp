@@ -64,6 +64,18 @@ constexpr Promotion promotions[]={
     {VK_KHR_MULTIVIEW_EXTENSION_NAME,VK_API_VERSION_1_1,VK_KHR_MULTIVIEW_SPEC_VERSION},
     {VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME,VK_API_VERSION_1_2,VK_KHR_CREATE_RENDERPASS_2_SPEC_VERSION},
     {VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME,VK_API_VERSION_1_2,VK_KHR_DEPTH_STENCIL_RESOLVE_SPEC_VERSION}};
+// Middleware that shares GPU memory between processes asks for this one and
+// refuses to create a device without it, which on GFXStream ends a launch
+// before the engine ever reaches its first frame. Nothing here can make the
+// guest export a real file descriptor, but advertising the name lets the
+// check pass, and the export entry points below fail honestly if a title ever
+// does more than look. Stripped again in vkCreateDevice so the driver only
+// sees names it published.
+constexpr const char* synthesized[]={VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME};
+bool synthetic(const char* name){
+    for(auto* n:synthesized)if(!std::strcmp(n,name))return true;
+    return false;
+}
 uint32_t apiVersion(Instance s,VkPhysicalDevice p){VkPhysicalDeviceProperties v{};function<PFN_vkGetPhysicalDeviceProperties>(s,"vkGetPhysicalDeviceProperties")(p,&v);return v.apiVersion;}
 bool has(const std::vector<VkExtensionProperties>& es,const char* n){return std::any_of(es.begin(),es.end(),[&](auto& e){return !std::strcmp(e.extensionName,n);});}
 VkResult extensions(Instance s,VkPhysicalDevice p,std::vector<VkExtensionProperties>& es){
@@ -103,6 +115,18 @@ VKAPI_ATTR VkResult VKAPI_CALL vkSetDebugUtilsObjectNameEXT(VkDevice h,const VkD
     auto next=function<PFN_vkSetDebugUtilsObjectNameEXT>(device(h),"vkSetDebugUtilsObjectNameEXT");
     return next?next(h,info):VK_ERROR_EXTENSION_NOT_PRESENT;
 }
+// Advertising VK_KHR_external_memory_fd means its entry points must resolve;
+// a null pointer is a crash rather than a refusal. The guest cannot hand out
+// a file descriptor for host memory, so say so in the way the caller expects.
+VKAPI_ATTR VkResult VKAPI_CALL vkGetMemoryFdKHR(VkDevice,const VkMemoryGetFdInfoKHR*,int* fd){
+    static std::once_flag once;
+    std::call_once(once,[]{__android_log_print(ANDROID_LOG_INFO,"AXRB.SystemVulkan","memory export requested; the guest cannot share host memory by descriptor");});
+    if(fd)*fd=-1;
+    return VK_ERROR_FEATURE_NOT_PRESENT;
+}
+VKAPI_ATTR VkResult VKAPI_CALL vkGetMemoryFdPropertiesKHR(VkDevice,VkExternalMemoryHandleTypeFlagBits,int,VkMemoryFdPropertiesKHR*){
+    return VK_ERROR_FEATURE_NOT_PRESENT;
+}
 VKAPI_ATTR VkResult VKAPI_CALL vkEnumerateInstanceLayerProperties(uint32_t* count,VkLayerProperties* out){
     if(!out){*count=1;return VK_SUCCESS;}if(!*count)return VK_INCOMPLETE;
     *out={};std::strcpy(out->layerName,layerName);std::strcpy(out->description,"AXRB Android runtime compatibility");
@@ -116,6 +140,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkEnumerateDeviceExtensionProperties(VkPhysicalDe
     if(name){if(std::strcmp(name,layerName))return VK_ERROR_LAYER_NOT_PRESENT;*count=0;return VK_SUCCESS;}
     auto s=instance(h);std::vector<VkExtensionProperties> es;auto r=extensions(s,h,es);if(r!=VK_SUCCESS)return r;
     auto api=apiVersion(s,h);for(auto& p:promotions)if(api>=p.api&&!has(es,p.name)){VkExtensionProperties e{};std::strcpy(e.extensionName,p.name);e.specVersion=p.revision;es.push_back(e);}
+    for(auto* n:synthesized)if(!has(es,n)){VkExtensionProperties e{};std::strcpy(e.extensionName,n);e.specVersion=1;es.push_back(e);}
     if(!out){*count=es.size();return VK_SUCCESS;}uint32_t n=std::min<uint32_t>(*count,es.size());std::copy_n(es.data(),n,out);*count=n;return n<es.size()?VK_INCOMPLETE:VK_SUCCESS;
 }
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateInstance(const VkInstanceCreateInfo* info,const VkAllocationCallbacks* alloc,VkInstance* out){
@@ -142,7 +167,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice physical,const Vk
     chain->u.pLayerInfo=chain->u.pLayerInfo->pNext;
     std::vector<VkExtensionProperties> es;auto r=extensions(s,physical,es);if(r!=VK_SUCCESS)return r;
     auto api=apiVersion(s,physical);std::vector<const char*> names;
-    for(uint32_t i=0;i<info->enabledExtensionCount;++i){auto n=info->ppEnabledExtensionNames[i];bool promoted=false;for(auto& p:promotions)if(api>=p.api&&!std::strcmp(n,p.name)&&!has(es,n))promoted=true;if(!promoted)names.push_back(n);}
+    for(uint32_t i=0;i<info->enabledExtensionCount;++i){auto n=info->ppEnabledExtensionNames[i];bool promoted=false;for(auto& p:promotions)if(api>=p.api&&!std::strcmp(n,p.name)&&!has(es,n))promoted=true;if(!promoted&&!(synthetic(n)&&!has(es,n)))names.push_back(n);}
     auto modified=*info;modified.enabledExtensionCount=names.size();modified.ppEnabledExtensionNames=names.data();
     auto result=create(physical,&modified,alloc,out);
     if(result==VK_SUCCESS){
@@ -224,6 +249,7 @@ PFN_vkVoidFunction intercept(const char* name){
     ENTRY(vkEnumerateInstanceLayerProperties);ENTRY(vkEnumerateDeviceLayerProperties);ENTRY(vkEnumerateInstanceExtensionProperties);
     ENTRY(vkEnumerateDeviceExtensionProperties);
     ENTRY(vkSetDebugUtilsObjectNameEXT);
+    ENTRY(vkGetMemoryFdKHR);ENTRY(vkGetMemoryFdPropertiesKHR);
     ENTRY(vkCreateDescriptorUpdateTemplate);ENTRY(vkDestroyDescriptorUpdateTemplate);ENTRY(vkUpdateDescriptorSetWithTemplate);
     ENTRY(vkCreateDescriptorUpdateTemplateKHR);ENTRY(vkDestroyDescriptorUpdateTemplateKHR);ENTRY(vkUpdateDescriptorSetWithTemplateKHR);
 #undef ENTRY
