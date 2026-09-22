@@ -317,9 +317,11 @@ window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 window.webContents.on('will-navigate', event => event.preventDefault());
 window.webContents.session.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
 handler('state', () => publicState());
-handler('diagnosticsRead', (afterId = 0) => {
+handler('diagnosticsRead', (afterId = 0, afterEviction = null) => {
   if (!Number.isSafeInteger(afterId) || afterId < 0) throw new Error('Invalid diagnostic cursor.');
-  return liveDiagnostics.snapshot(afterId);
+  if (afterEviction !== null && (!Number.isSafeInteger(afterEviction) || afterEviction < 0)) throw new Error('Invalid diagnostic cursor.');
+  // A reader without an eviction cursor starts from a full snapshot.
+  return liveDiagnostics.snapshot(afterId, afterEviction ?? -1);
 });
 handler('copyText', text => {
   if (typeof text !== 'string' || Buffer.byteLength(text, 'utf8') > 4 * 1024 * 1024) throw new Error('Clipboard text is too large.');
@@ -470,15 +472,19 @@ handler('play', id => exclusive(async () => {
       let record = { id: sessionId, package: prepared.game.package, startedAt: sessionStartedAt, endedAt: new Date().toISOString(), exitCode: code ?? null };
       try {
         const parsed = parseSessionRecord(await fs.readFile(sessionRecordPath(), 'utf8'), sessionId);
-        if (parsed) record = { ...record, ...parsed, id: sessionId, exitCode: code ?? null };
+        // A script that failed early writes nulls; those must not erase the
+        // launcher's own start time or package.
+        const present = Object.fromEntries(Object.entries(parsed ?? {}).filter(([, value]) => value !== null));
+        if (parsed) record = { ...record, ...present, id: sessionId, exitCode: code ?? null };
       } catch { /* No record means an older script or a failed spawn; the fields above still ship. */ }
       sessionRecords.unshift(JSON.stringify(record));
       if (sessionRecords.length > 20) sessionRecords.length = 20;
-      const outcome = record.gameProcessLost ? 'guest crash' : record.closeRequested ? 'user stop' : code ? `exit ${code}` : 'stopped';
+      const outcome = record.gameProcessLost ? 'guest crash' : record.hostProcessLost ? 'host crash' : record.closeRequested ? 'user stop' : code ? `exit ${code}` : 'stopped';
       const save = record.pauseSucceeded && record.syncSucceeded ? 'saved' : 'not confirmed';
       liveDiagnostics.append('launcher', `session ${sessionId} ended: ${outcome}; save ${save}`, { tag: 'session', level: code ? 'E' : 'I' });
       if (code) {
-        const detail = record.gameProcessLost ? 'The game ended unexpectedly on Android (crash or forced stop).' : tail || `Game launcher exited with code ${code}.`;
+        const detail = record.gameProcessLost ? 'The game ended unexpectedly on Android (crash or forced stop).'
+          : record.hostProcessLost ? 'The AXRB host window closed unexpectedly (crash or forced stop).' : tail || `Game launcher exited with code ${code}.`;
         const error = message(new Error(detail));
         state.data.jobs.unshift({ id: randomUUID(), gameId: id, name: game.name, status: 'failed', stage: 'Launch', error });
         if (window && !window.isDestroyed()) window.webContents.send('axrb:launch-error', `${game.name}: ${error}`);

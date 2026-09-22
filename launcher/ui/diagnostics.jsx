@@ -47,9 +47,11 @@ export function DebugPanel() {
       do {
         again = false;
         try {
-          const next = await call('diagnosticsRead', latest.current.lastId);
+          const next = await call('diagnosticsRead', latest.current.lastId, latest.current.evictionSeq ?? null);
           if (!active) return;
-          const entries = [...latest.current.entries.filter(entry => entry.id >= next.firstId), ...next.entries].slice(-5000);
+          const evicted = new Set(next.evicted);
+          const kept = next.reset ? [] : latest.current.entries.filter(entry => entry.id >= next.firstId && !evicted.has(entry.id));
+          const entries = [...kept, ...next.entries].slice(-5000);
           latest.current = { ...next, entries };
           setCapture(latest.current);
         } catch (error) { if (active) setNotice(error.message); }
@@ -136,7 +138,7 @@ export function DebugPanel() {
           </div>}
       </div>
       <div className="flex shrink-0 items-center gap-3 border-t px-4 py-1 text-[11px] text-muted-foreground">
-        <span>{entries.length} matching / {shown.entries.length} retained · {capture.dropped} older omitted</span>
+        <span>{entries.length} matching / {shown.entries.length} retained · {capture.dropped} omitted</span>
         <span className="min-w-0 flex-1 truncate" role="status" title={notice}>{notice}</span>
         <span className="shrink-0">Save includes all sources</span>
       </div>

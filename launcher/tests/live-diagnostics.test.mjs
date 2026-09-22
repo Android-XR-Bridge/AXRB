@@ -387,3 +387,35 @@ test('perf counters keep bounded windows, render one line each and warn on susta
   ]);
   assert.equal(capture.perfText().split('\n')[3], 'host-selected-frame-age: rate=75.0/s p50=0.200ms p95=290.000ms p99=0.610ms (5 windows)');
 });
+
+test('replayed history keeps its perf warning without repeating it or reviving old windows', async t => {
+  const directory = await temporary(t);
+  const at = seconds => new Date(Date.parse('2026-09-22T10:00:00Z') + seconds * 1000).toISOString();
+  const warnings = capture => capture.snapshot().entries.filter(entry => entry.tag === 'perf').length;
+  for (let run = 1; run <= 3; run++) {
+    const capture = new LiveDiagnostics({ directory, getConfig: () => ({}) });
+    capture.tick = async () => {};
+    await capture.start();
+    if (run === 1) for (const seconds of [0, 10]) capture.append('host', 'AXRB.Perf host-end-frame: rate=75/s avg=1ms p50=1ms p95=300ms p99=400ms', { receivedAt: at(seconds) });
+    assert.equal(warnings(capture), 1, `launch ${run}`);
+    if (run > 1) assert.equal(capture.perfText(), '');
+    await capture.stop();
+  }
+});
+
+test('readers learn which retained entries were evicted from the middle', () => {
+  const capture = new LiveDiagnostics({ directory: '.', getConfig: () => ({}), maxEntries: 3, maxBytes: 64 * 1024 });
+  capture.append('launcher', 'kept');
+  capture.append('emulator', 'chatter 1');
+  capture.append('emulator', 'chatter 2');
+  const first = capture.snapshot(0, -1);
+  assert.equal(first.reset, true);
+  assert.deepEqual(first.entries.map(entry => entry.text), ['kept', 'chatter 1', 'chatter 2']);
+  capture.append('emulator', 'chatter 3');
+  const next = capture.snapshot(first.lastId, first.evictionSeq);
+  assert.equal(next.reset, false);
+  assert.deepEqual(next.evicted, [first.entries[1].id]);
+  assert.deepEqual(next.entries.map(entry => entry.text), ['chatter 3']);
+  assert.deepEqual(capture.snapshot(next.lastId, next.evictionSeq).evicted, []);
+  assert.equal(capture.snapshot(next.lastId, next.evictionSeq - 99).reset, true, 'a cursor older than the log resets');
+});

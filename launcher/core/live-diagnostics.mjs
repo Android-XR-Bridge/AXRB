@@ -67,6 +67,7 @@ export class LiveDiagnostics {
   constructor({ directory, getConfig, onUpdate = () => {}, spawnProcess = spawn, maxEntries = MAX_DIAGNOSTIC_ENTRIES, maxBytes = MAX_BYTES }) {
     Object.assign(this, { directory, getConfig, onUpdate, spawnProcess, maxEntries, maxBytes });
     this.entries = []; this.head = 0; this.bytes = 0; this.lastId = 0; this.dropped = 0; this.classB = 0;
+    this.evictions = []; this.evictionSeq = 0; this.replaying = false;
     this.partials = new Map(); this.files = new Map(); this.children = new Set();
     this.perf = new Map(); this.perfWarnedAt = new Map(); this.discoverNulls = 0;
     this.startedAt = new Date().toISOString();
@@ -82,11 +83,16 @@ export class LiveDiagnostics {
       const stat = await fs.stat(file);
       if (stat.size <= 8 * MAX_BYTES) {
         const saved = JSON.parse(await fs.readFile(file, 'utf8'));
-        if (Array.isArray(saved.entries)) for (const entry of saved.entries.slice(-this.maxEntries)) {
-          if (SOURCES.has(entry.source) && typeof entry.text === 'string') {
-            this.append(entry.source, entry.text, { ...entry, receivedAt: typeof entry.receivedAt === 'string' ? entry.receivedAt : this.startedAt });
+        // History already holds any perf warnings it produced, and its perf
+        // windows describe a previous launcher run, so replay skips perf.
+        this.replaying = true;
+        try {
+          if (Array.isArray(saved.entries)) for (const entry of saved.entries.slice(-this.maxEntries)) {
+            if (SOURCES.has(entry.source) && typeof entry.text === 'string') {
+              this.append(entry.source, entry.text, { ...entry, receivedAt: typeof entry.receivedAt === 'string' ? entry.receivedAt : this.startedAt });
+            }
           }
-        }
+        } finally { this.replaying = false; }
       }
     } catch (error) {
       if (error.code !== 'ENOENT') this.append('launcher', `Previous diagnostics could not be read: ${error.message}`, { level: 'W', tag: 'diagnostics' });
@@ -125,14 +131,20 @@ export class LiveDiagnostics {
           const item = this.entries[victim];
           this.bytes -= item.bytes; this.dropped++;
           if (isClassB(item.entry)) this.classB--;
-          if (victim === this.head) this.head++; else this.entries.splice(victim, 1);
+          if (victim === this.head) this.head++;
+          else {
+            // Readers holding this entry cannot infer its removal from firstId.
+            this.entries.splice(victim, 1);
+            this.evictions.push(item.entry.id); this.evictionSeq++;
+            if (this.evictions.length > this.maxEntries) this.evictions.shift();
+          }
         }
         if (this.head > this.maxEntries) { this.entries = this.entries.slice(this.head); this.head = 0; }
         this.dirty = true;
       }
       // Record the sample only after its own line is retained, so a degraded
       // pipeline warning follows the window that triggered it.
-      const perf = source === 'host' || source === 'emulator' || source === 'android' ? (match?.[5] ?? raw).match(perfLine) : null;
+      const perf = !this.replaying && (source === 'host' || source === 'emulator' || source === 'android') ? (match?.[5] ?? raw).match(perfLine) : null;
       if (perf) this.recordPerf(perf[1], fields.receivedAt, perf);
     }
     this.notify();
@@ -168,9 +180,15 @@ export class LiveDiagnostics {
     this.android = { ...this.android, state, detail, serial };
     this.append('launcher', `${serial || 'Android'}: ${detail}`, { tag: 'logcat', level: state === 'error' ? 'E' : state === 'disconnected' ? 'W' : 'I' });
   }
-  snapshot(afterId = 0) {
+  // afterEviction is the evictionSeq a reader last saw. evicted lists ids removed
+  // from the middle since then; when that log no longer reaches back far
+  // enough, reset asks the reader to replace its entries wholesale.
+  snapshot(afterId = 0, afterEviction = this.evictionSeq) {
     const retained = this.entries.slice(this.head);
-    return { entries: retained.filter(({ entry }) => entry.id > afterId).map(({ entry }) => entry),
+    const missed = this.evictionSeq - afterEviction;
+    const reset = missed < 0 || missed > this.evictions.length;
+    return { entries: retained.filter(({ entry }) => reset || entry.id > afterId).map(({ entry }) => entry),
+      reset, evicted: reset || !missed ? [] : this.evictions.slice(-missed), evictionSeq: this.evictionSeq,
       firstId: retained[0]?.entry.id ?? this.lastId + 1, lastId: this.lastId, dropped: this.dropped,
       android: { ...this.android }, startedAt: this.startedAt };
   }

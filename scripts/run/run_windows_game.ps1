@@ -90,7 +90,7 @@ $gameLost = $false
 $pauseSucceeded = $false
 $syncSucceeded = $false
 $sessionStartedAt = $null
-$hostExited = $false
+$hostLost = $false
 $closeRequest = $null
 $closeReady = $null
 $fpsHudEvent = $null
@@ -201,6 +201,7 @@ try {
     if ($launch.Code -ne 0 -or $launch.Text -match 'Error:') { throw "Game launch failed: $($launch.Text) $($launch.Error)" }
     $gameStarted = $true
     Write-Output "$GameName | AXRB is running. Closing its window stops this game session."
+    $missing = 0
     while (!$bridgeProcess.HasExited) {
         if ($closeRequest.WaitOne(0)) { $closeRequested = $true; break }
         $game = Invoke-Adb @('shell', 'pidof', $Package)
@@ -208,6 +209,9 @@ try {
         if ($missing -ge 2) { $gameLost = $true; break }
         Start-Sleep -Milliseconds 500
     }
+    # Closing the host window sets the close event first, so a host that exits
+    # without one ended on its own. Checked here, before cleanup closes it.
+    if (!$closeRequested -and !$gameLost -and $bridgeProcess.HasExited) { $hostLost = $true }
 } finally {
     if ($gameStarted) {
         # Give the activity its normal onPause/onStop callbacks while rendering
@@ -236,7 +240,6 @@ try {
     } elseif ($gameStarted) {
         try { $null = Invoke-Adb @('shell', 'am', 'force-stop', $Package) } catch { Write-Output "Warning: $_" }
     }
-    $hostExited = [bool]($bridgeProcess -and $bridgeProcess.HasExited)
     if ($bridgeProcess) { $bridgeProcess.Dispose() }
     if ($closeRequest) { $closeRequest.Dispose() }
     if ($closeReady) { $closeReady.Dispose() }
@@ -250,13 +253,14 @@ try {
         endedAt = (Get-Date).ToString('o')
         closeRequested = [bool]$closeRequested
         gameProcessLost = [bool]($gameLost -and !$closeRequested)
-        hostExited = $hostExited
+        hostProcessLost = [bool]$hostLost
         pauseSucceeded = [bool]$pauseSucceeded
         syncSucceeded = [bool]$syncSucceeded
     }
     try { $session | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $logs 'session.json') -Encoding UTF8 } catch { Write-Output "Warning: could not write session record: $_" }
     Write-Output 'AXRB game session stopped.'
 }
-# A lost game process is a guest crash, not a clean stop; the launcher keys its
-# failure card on this exit code. Everything else stays 0 like before.
+# A lost game or host process is a crash, not a clean stop; the launcher keys
+# its failure card on these exit codes. Everything else stays 0 like before.
 if ($gameLost -and !$closeRequested) { exit 3 }
+if ($hostLost) { exit 4 }
