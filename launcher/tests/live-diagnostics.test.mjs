@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { LiveDiagnostics } from '../core/live-diagnostics.mjs';
+import { LiveDiagnostics, transientAdbFault } from '../core/live-diagnostics.mjs';
 import { collectDiagnostics } from '../core/diagnostics.mjs';
 import { Runtime, run } from '../core/runtime.mjs';
 import { Setup } from '../core/setup.mjs';
@@ -281,4 +281,52 @@ test('ambiguous AVD names never attach to an arbitrary emulator', async t => {
     assert.match(capture.snapshot().android.detail, /More than one emulator/);
     assert.equal(device.streams.size, 0);
   } finally { await capture.stop(); }
+});
+
+test('a server that is still starting is waited for and retried, not reported as a failure', async t => {
+  const directory = await temporary(t);
+  await fs.mkdir(path.join(directory, 'platform-tools'));
+  await fs.writeFile(path.join(directory, 'platform-tools', process.platform === 'win32' ? 'adb.exe' : 'adb'), '');
+  const seen = [];
+  let listings = 0;
+  const spawnProcess = (_file, args) => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough(); child.stderr = new PassThrough();
+    child.kill = () => { child.stdout.end(); child.stderr.end(); queueMicrotask(() => child.emit('close', null)); };
+    seen.push(args.join(' '));
+    queueMicrotask(() => {
+      if (args.includes('devices')) {
+        // The first client loses the race with the forking server, exactly as
+        // a real one does; the second sees a healthy server.
+        if (++listings === 1) {
+          child.stderr.end("adb.exe: failed to check server version: protocol fault (couldn't read status): connection reset\n");
+          child.emit('close', 1);
+        } else {
+          child.stdout.end('List of devices attached\nemulator-5584\tdevice model:test\n');
+          child.emit('close', 0);
+        }
+      } else if (args.includes('start-server')) {
+        child.stdout.end(''); child.emit('close', 0);
+      } else if (args.includes('logcat')) {
+        child.stdout.write('09-21 03:04:05.678  123  456 I test: recovered\n');
+      } else { child.stdout.end('avd\nOK\n'); child.emit('close', 0); }
+    });
+    return child;
+  };
+  const capture = new LiveDiagnostics({ directory: path.join(directory, 'history'), getConfig: () => ({ sdk: directory, port: 5584, dataHome: directory }), spawnProcess });
+  await capture.start();
+  try {
+    await until(() => capture.snapshot().android.state === 'streaming');
+    assert.equal(capture.snapshot().android.serial, 'emulator-5584');
+    assert.ok(seen.some(command => command.includes('start-server')), 'the server is started deliberately after a protocol fault');
+    assert.doesNotMatch(capture.text(), /protocol fault[\s\S]*Diagnostics:/);
+  } finally { await capture.stop(); }
+});
+
+test('a protocol fault is classified as transient while a real failure is not', () => {
+  assert.equal(transientAdbFault("adb.exe: failed to check server version: protocol fault (couldn't read status): connection reset"), true);
+  assert.equal(transientAdbFault('ADB device discovery timed out.'), true);
+  assert.equal(transientAdbFault('cannot connect to daemon at tcp:5038'), true);
+  assert.equal(transientAdbFault('More than one emulator runs same-avd; select its console port in runtime settings.'), false);
+  assert.equal(transientAdbFault(''), false);
 });

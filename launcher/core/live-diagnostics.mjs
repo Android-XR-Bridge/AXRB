@@ -9,6 +9,17 @@ const MAX_BYTES = 2 * 1024 * 1024;
 const MAX_LINE = 8192;
 const READ_BYTES = 64 * 1024;
 const SOURCES = new Set(['android', 'emulator', 'host', 'launcher']);
+// Listing devices can have to start the ADB server first, which on Windows
+// takes seconds while the binary is scanned, and longer again while an
+// emulator is still booting.
+const ADB_PROBE_TIMEOUT = 15000;
+const ADB_SERVER_TIMEOUT = 30000;
+// Faults that mean "ask again", not "capture is broken": a server that is
+// mid-start, one that a previous client shut down, or a transport that has
+// not finished attaching.
+export function transientAdbFault(message) {
+  return /protocol fault|connection reset|failed to check server version|cannot connect to daemon|device offline|timed out|server is out of date|daemon not running/i.test(String(message ?? ''));
+}
 const LEVELS = new Set(['V', 'D', 'I', 'W', 'E', 'F']);
 const logcatLine = /^(\d\d-\d\d\s+\d\d:\d\d:\d\d\.\d+)\s+(\d+)\s+\d+\s+([VDIWEF])\s+([^:]+):\s?(.*)$/;
 
@@ -195,12 +206,16 @@ export class LiveDiagnostics {
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
     return child;
   }
-  probe(executable, args) {
+  probe(executable, args, timeout = ADB_PROBE_TIMEOUT) {
     return new Promise(resolve => {
       let output = '', error = '', finished = false;
       const child = this.child(executable, args);
       const finish = result => { if (finished) return; finished = true; clearTimeout(timer); resolve(result); };
-      const timer = setTimeout(() => { child.kill(); finish({ error: 'ADB device discovery timed out.' }); }, 3000);
+      // Killing a client that is still waiting for the server it just forked
+      // leaves the next client reading a closed socket, which is one of the
+      // ways the protocol fault below is produced. Allow for a cold start
+      // rather than interrupting one.
+      const timer = setTimeout(() => { child.kill(); finish({ error: 'ADB device discovery timed out.' }); }, timeout);
       child.stdout.on('data', chunk => {
         output += chunk;
         if (output.length > 16384) { output = ''; child.kill(); finish({ error: 'ADB device discovery returned too much output.' }); }
@@ -211,7 +226,17 @@ export class LiveDiagnostics {
     });
   }
   async discover(executable, config, generation) {
-    const listed = await this.probe(executable, ['-P', '5038', 'devices', '-l']);
+    let listed = await this.probe(executable, ['-P', '5038', 'devices', '-l']);
+    // A server that is still starting, or one a departing client took with
+    // it, answers once and then works normally. Start it deliberately and ask
+    // again before calling the capture broken.
+    if (listed.error && transientAdbFault(listed.error)) {
+      if (!this.active || generation !== this.generation) return null;
+      this.setAndroid('waiting', 'Waiting for the ADB server to accept connections.', '');
+      await this.probe(executable, ['-P', '5038', 'start-server'], ADB_SERVER_TIMEOUT);
+      if (!this.active || generation !== this.generation) return null;
+      listed = await this.probe(executable, ['-P', '5038', 'devices', '-l']);
+    }
     if (listed.error) throw new Error(listed.error);
     if (!this.active || generation !== this.generation) return null;
     const devices = listed.output.split(/\r?\n/).flatMap(line => {
@@ -279,7 +304,17 @@ export class LiveDiagnostics {
         this.setAndroid(code ? 'error' : 'disconnected', error.trim() || 'Logcat disconnected; waiting to reconnect.');
       });
     } catch (error) {
-      if (this.active && generation === this.generation) this.setAndroid('error', error.code === 'ENOENT' ? 'ADB is not installed at the configured SDK path. Capture will start when it is available.' : error.message);
+      if (!this.active || generation !== this.generation) return;
+      if (error.code === 'ENOENT') {
+        this.setAndroid('error', 'ADB is not installed at the configured SDK path. Capture will start when it is available.');
+      } else if (transientAdbFault(error.message)) {
+        // Back off further than the normal retry: these clear on their own
+        // once the server settles, and hammering it is what keeps them going.
+        this.nextConnect = Date.now() + 10000;
+        this.setAndroid('waiting', 'The ADB server is not answering yet; retrying.');
+      } else {
+        this.setAndroid('error', error.message);
+      }
     }
   }
   async persist() {
