@@ -11,6 +11,19 @@ const READ_BYTES = 64 * 1024;
 const SOURCES = new Set(['android', 'emulator', 'host', 'launcher']);
 const LEVELS = new Set(['V', 'D', 'I', 'W', 'E', 'F']);
 const logcatLine = /^(\d\d-\d\d\s+\d\d:\d\d:\d\d\.\d+)\s+(\d+)\s+\d+\s+([VDIWEF])\s+([^:]+):\s?(.*)$/;
+// Guest kernel-console shapes. These facilities carry stock boot chatter that
+// keyword inference mistakes for failures (77 of 80 E lines in measured
+// bundles); kernelCrash lists signatures that are never demoted. A timestamp
+// alone is not enough: timestamped lines from other facilities (binder,
+// binder_alloc, …) report real guest failures and keep their severity.
+const kernelTimestamp = /^\[?\s*\d+\.\d+\]?\s*/;
+const bootChatterFacility = /^(?:init:|ueventd:|vold:|selinux:|apexd:|servicemanager:|libprocessgroup:|cutils-trace:|logd:|cfg80211:|UprobeStatsBpfLoad:|NetBpfLoad:)/;
+const isBootChatter = text => bootChatterFacility.test(text) || (kernelTimestamp.test(text) && bootChatterFacility.test(text.replace(kernelTimestamp, '')));
+const kernelCrash = /panic|oops|BUG|unable to handle|call trace|fatal signal/i;
+const perfLine = /^AXRB\.Perf ([\w.-]+): rate=([\d.]+)\/s avg=([\d.]+)ms .*p50=([\d.]+)ms p95=([\d.]+)ms p99=([\d.]+)ms/;
+const PERF_WINDOWS = 12;
+const PERF_SLOW_FRAME_MS = 250;
+const PERF_WARN_INTERVAL_MS = 60000;
 
 function format(entry) {
   return `${entry.receivedAt} [${entry.source}/${entry.level}]${entry.guestTime ? ` [guest ${entry.guestTime}]` : ''}${entry.pid ? ` pid=${entry.pid}` : ''}${entry.tag ? ` ${entry.tag}:` : ''} ${entry.text}`;
@@ -20,13 +33,42 @@ function streamKey(source, metadata) {
   return `${source}:${metadata.stream || ''}:${metadata.tag || ''}:${metadata.level || ''}`;
 }
 
+// Retention classes: guest console chatter (emulator V/D/I) is sacrificed
+// first; launcher, host and android lines plus every W/E/F entry survive floods.
+function isClassB(entry) {
+  return entry.source === 'emulator' && 'VDI'.includes(entry.level);
+}
+
+// Keyword inference alone misreads two measured cases: stock guest boot chatter
+// carries "error"/"warning" words, and a Windows loader that succeeded still
+// reports its ERROR_SUCCESS code as "(Windows error 0)".
+function inferLevel(source, text) {
+  const level = /\b(?:fatal|panic)\b/i.test(text) ? 'F' : /\b(?:error|failed|exception)\b/i.test(text) ? 'E' : /\bwarn(?:ing)?\b/i.test(text) ? 'W' : 'I';
+  if (level === 'F') return level;
+  if (source === 'emulator' && level !== 'I' && isBootChatter(text) && !kernelCrash.test(text)) return 'D';
+  if (source === 'host' && level === 'E' && reportsWindowsSuccess(text)) return 'I';
+  return level;
+}
+
+function reportsWindowsSuccess(text) {
+  if (!text.includes('(Windows error 0)')) return false;
+  const remainder = text.replaceAll('(Windows error 0)', '');
+  return text.endsWith('loaded (Windows error 0)') || !/\b(?:fatal|panic|error|failed|exception)\b/i.test(remainder);
+}
+
+// Frame-pipeline counters whose sustained p95 means the captured experience degraded.
+function tracksFramePipeline(counter) {
+  return counter === 'host-selected-frame-age' || counter.endsWith('end-frame');
+}
+
 // Capture belongs to the application, not the panel or the running game.
 // Retained data is bounded and gets best-effort redaction before disk or renderer.
 export class LiveDiagnostics {
   constructor({ directory, getConfig, onUpdate = () => {}, spawnProcess = spawn, maxEntries = MAX_DIAGNOSTIC_ENTRIES, maxBytes = MAX_BYTES }) {
     Object.assign(this, { directory, getConfig, onUpdate, spawnProcess, maxEntries, maxBytes });
-    this.entries = []; this.head = 0; this.bytes = 0; this.lastId = 0; this.dropped = 0;
+    this.entries = []; this.head = 0; this.bytes = 0; this.lastId = 0; this.dropped = 0; this.classB = 0;
     this.partials = new Map(); this.files = new Map(); this.children = new Set();
+    this.perf = new Map(); this.perfWarnedAt = new Map(); this.discoverNulls = 0;
     this.startedAt = new Date().toISOString();
     this.android = { state: 'waiting', detail: 'Waiting for Android.', serial: '', lastReceivedAt: null };
     this.active = false; this.generation = 0; this.nextConnect = 0; this.dirty = false;
@@ -57,7 +99,7 @@ export class LiveDiagnostics {
     for (const raw of String(text ?? '').replaceAll('\r', '').split('\n')) {
       if (!raw) continue;
       const match = source === 'android' ? raw.match(logcatLine) : null;
-      const level = match?.[3] || metadata.level || (/\b(?:fatal|panic)\b/i.test(raw) ? 'F' : /\b(?:error|failed|exception)\b/i.test(raw) ? 'E' : /\bwarn(?:ing)?\b/i.test(raw) ? 'W' : 'I');
+      const level = match?.[3] || metadata.level || inferLevel(source, raw);
       const fields = {
         receivedAt: metadata.receivedAt || new Date().toISOString(), source,
         level: LEVELS.has(level) ? level : 'I',
@@ -71,12 +113,27 @@ export class LiveDiagnostics {
         const entry = { id: ++this.lastId, ...fields, text: safe.slice(offset, offset + MAX_LINE) };
         const bytes = Buffer.byteLength(JSON.stringify(entry));
         this.entries.push({ entry, bytes }); this.bytes += bytes;
+        if (isClassB(entry)) this.classB++;
         while (this.entries.length - this.head > this.maxEntries || this.bytes > this.maxBytes) {
-          this.bytes -= this.entries[this.head++].bytes; this.dropped++;
+          // Evict the oldest boot-chatter entry while any exists so guest
+          // floods cannot displace launcher, host and failure lines; only
+          // once no chatter remains does the oldest entry go.
+          let victim = this.head;
+          if (this.classB) {
+            for (let index = this.head; index < this.entries.length; index++) if (isClassB(this.entries[index].entry)) { victim = index; break; }
+          }
+          const item = this.entries[victim];
+          this.bytes -= item.bytes; this.dropped++;
+          if (isClassB(item.entry)) this.classB--;
+          if (victim === this.head) this.head++; else this.entries.splice(victim, 1);
         }
         if (this.head > this.maxEntries) { this.entries = this.entries.slice(this.head); this.head = 0; }
         this.dirty = true;
       }
+      // Record the sample only after its own line is retained, so a degraded
+      // pipeline warning follows the window that triggered it.
+      const perf = source === 'host' || source === 'emulator' ? raw.match(perfLine) : null;
+      if (perf) this.recordPerf(perf[1], fields.receivedAt, perf);
     }
     this.notify();
   }
@@ -118,7 +175,29 @@ export class LiveDiagnostics {
       android: { ...this.android }, startedAt: this.startedAt };
   }
   text() {
-    return `Android capture: ${this.android.state} — ${this.android.detail}\n${this.dropped ? `[${this.dropped} older entries omitted by capture limits]\n` : ''}${this.entries.slice(this.head).map(({ entry }) => format(entry)).join('\n')}`;
+    return `Android capture: ${this.android.state} — ${this.android.detail}\n${this.dropped ? `[${this.dropped} entries omitted by capture limits]\n` : ''}${this.entries.slice(this.head).map(({ entry }) => format(entry)).join('\n')}`;
+  }
+  recordPerf(counter, receivedAt, match) {
+    let series = this.perf.get(counter);
+    if (!series) { series = []; this.perf.set(counter, series); }
+    series.push({ receivedAt, rate: Number(match[2]), p50: Number(match[4]), p95: Number(match[5]), p99: Number(match[6]) });
+    if (series.length > PERF_WINDOWS) series.shift();
+    const recent = series.slice(-2);
+    if (recent.length < 2 || !tracksFramePipeline(counter) || !recent.every(sample => sample.p95 > PERF_SLOW_FRAME_MS)) return;
+    // Rate-limit against entry timestamps, not wall clocks, so replays of
+    // persisted history behave like the live traffic that produced it.
+    const last = this.perfWarnedAt.get(counter);
+    if (last && Date.parse(receivedAt) - Date.parse(last) < PERF_WARN_INTERVAL_MS) return;
+    this.perfWarnedAt.set(counter, receivedAt);
+    this.append('launcher', `frame pipeline degraded: ${counter} p95=${recent[1].p95}ms sustained`, { level: 'W', tag: 'perf' });
+  }
+  perfText() {
+    // Collector contract: one line per counter in first-seen order describing
+    // its latest window; '' when no perf lines were seen.
+    return [...this.perf].map(([counter, series]) => {
+      const latest = series[series.length - 1];
+      return `${counter}: rate=${latest.rate.toFixed(1)}/s p50=${latest.p50.toFixed(3)}ms p95=${latest.p95.toFixed(3)}ms p99=${latest.p99.toFixed(3)}ms (${series.length} window${series.length === 1 ? '' : 's'})`;
+    }).join('\n');
   }
   async tick() {
     if (!this.active) return;
@@ -210,6 +289,15 @@ export class LiveDiagnostics {
       child.once('close', code => finish(code === 0 ? { output } : { error: error.trim() || output.trim() || 'Android is not connected.' }));
     });
   }
+  noteMissingDevice(listed) {
+    // setAndroid dedupes repeated waiting states into silence, so surface the
+    // raw probe output on the first miss and every tenth one after that: a
+    // capture that never attaches stays explainable without flooding the ring.
+    this.discoverNulls++;
+    if (this.discoverNulls === 1 || this.discoverNulls % 10 === 0) {
+      this.append('launcher', `No matching Android device; adb devices -l reports:\n${redact(listed.output).slice(0, 400)}`, { level: 'W', tag: 'logcat' });
+    }
+  }
   async discover(executable, config, generation) {
     const listed = await this.probe(executable, ['-P', '5038', 'devices', '-l']);
     if (listed.error) throw new Error(listed.error);
@@ -221,8 +309,9 @@ export class LiveDiagnostics {
     const preferred = `emulator-${config.port}`;
     if (!config.avd) {
       const selected = devices.find(device => device.serial === preferred);
-      if (selected?.state === 'device') return selected.serial;
+      if (selected?.state === 'device') { this.discoverNulls = 0; return selected.serial; }
       this.setAndroid('waiting', selected ? `${preferred} is ${selected.state}.` : 'The configured emulator is not connected.', selected?.serial || '');
+      this.noteMissingDevice(listed);
       return null;
     }
     // AVD names and console ports vary by machine. Discover their relationship
@@ -237,13 +326,14 @@ export class LiveDiagnostics {
         continue;
       }
       if (name.output.trim().split(/\r?\n/)[0] === config.avd) {
-        if (device.serial === preferred) return device.serial;
+        if (device.serial === preferred) { this.discoverNulls = 0; return device.serial; }
         matches.push(device.serial);
       }
     }
-    if (matches.length === 1) return matches[0];
+    if (matches.length === 1) { this.discoverNulls = 0; return matches[0]; }
     if (matches.length > 1) throw new Error(`More than one emulator runs ${config.avd}; select its console port in runtime settings.`);
     this.setAndroid('waiting', `Waiting for AVD ${config.avd}; other connected devices are not being captured.`, '');
+    this.noteMissingDevice(listed);
     return null;
   }
   async connect(config, generation) {
@@ -257,7 +347,11 @@ export class LiveDiagnostics {
       const args = ['-P', '5038', '-s', serial];
       this.setAndroid('connecting', `ADB is online${config.avd ? ` (${config.avd})` : ''}; waiting for logcat output.`, serial);
       this.streamStarted = Date.now();
-      const child = this.child(executable, [...args, 'logcat', '-b', 'main', '-b', 'system', '-b', 'crash', '-v', 'threadtime', '-T', '200']);
+      const logcatArgs = [...args, 'logcat', '-b', 'main', '-b', 'system', '-b', 'crash', '-v', 'threadtime', '-T', '200'];
+      const child = this.child(executable, logcatArgs);
+      // A capture that exits immediately otherwise vanishes without a trace of
+      // what was attempted; the exact argv is the shortest reproduction clue.
+      this.append('launcher', [path.basename(executable), ...logcatArgs].join(' '), { level: 'I', tag: 'logcat' });
       this.stream = child;
       let error = '';
       child.stdout.on('data', chunk => {

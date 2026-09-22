@@ -282,3 +282,105 @@ test('ambiguous AVD names never attach to an arbitrary emulator', async t => {
     assert.equal(device.streams.size, 0);
   } finally { await capture.stop(); }
 });
+
+test('emulator console floods evict boot chatter before launcher and failing guest lines', () => {
+  const capture = new LiveDiagnostics({ directory: '.', getConfig: () => ({}), maxEntries: 4, maxBytes: 64 * 1024 });
+  capture.append('launcher', 'capture attached to emulator-5584', { tag: 'logcat' });
+  capture.append('emulator', 'warning: guest compositor stalled');
+  capture.append('emulator', 'binder_alloc: 1873: binder_alloc_buf size 2416648 failed, no address space');
+  for (let index = 1; index <= 8; index++) capture.append('emulator', `[    ${index}.000000] init: starting service 'zygote'`);
+  const texts = capture.snapshot().entries.map(entry => entry.text);
+  assert.ok(texts.includes('capture attached to emulator-5584'));
+  assert.ok(texts.includes('warning: guest compositor stalled'));
+  assert.ok(texts.includes('binder_alloc: 1873: binder_alloc_buf size 2416648 failed, no address space'));
+  assert.deepEqual(texts.filter(text => text.includes("service 'zygote'")), ["[    8.000000] init: starting service 'zygote'"]);
+  assert.equal(capture.snapshot().dropped, 7);
+});
+
+test('kernel boot chatter is demoted to debug while real guest failures keep severity', () => {
+  const capture = new LiveDiagnostics({ directory: '.', getConfig: () => ({}), maxEntries: 64, maxBytes: 64 * 1024 });
+  capture.append('emulator', '[    9.412037] ueventd: firmware_load: error -2 opening file');
+  capture.append('emulator', "init: warning: could not parse /vendor/etc/public.libraries.txt");
+  capture.append('emulator', '[   88.290614] cfg80211: failed to load regulatory.db');
+  capture.append('emulator', '[  101.553416] audio: error - unable to handle stream (call trace dumped)');
+  capture.append('emulator', 'binder: 1873:1873 transaction failed 29189/-3, size 0-0 line 3134');
+  capture.append('emulator', '[   38.869677] binder_alloc: 2674: binder_alloc_buf size 1056768 failed, no address space');
+  capture.append('emulator', '[   12.553416] Kernel panic - not syncing: attempted to kill init');
+  assert.deepEqual(capture.snapshot().entries.map(entry => entry.level), ['D', 'D', 'D', 'E', 'E', 'E', 'F']);
+});
+
+test('host loader lines reporting Windows error 0 stay informational', () => {
+  const capture = new LiveDiagnostics({ directory: '.', getConfig: () => ({}), maxEntries: 16, maxBytes: 64 * 1024 });
+  capture.append('host', 'OpenXR.dll loaded (Windows error 0)');
+  capture.append('host', 'controller state remapped (Windows error 0)');
+  capture.append('host', 'driver init error before retry (Windows error 0) unresolved');
+  capture.append('host', 'device failed to load (Windows error 126)');
+  assert.deepEqual(capture.snapshot().entries.map(entry => entry.level), ['I', 'I', 'E', 'E']);
+});
+
+test('discovery misses log the raw device list once and then every tenth attempt', async t => {
+  const directory = await temporary(t);
+  const devices = [{ serial: 'emulator-5678', name: 'other-avd' }];
+  const adb = simulatedAdb(devices);
+  const capture = new LiveDiagnostics({ directory, getConfig: () => ({}), spawnProcess: adb.spawnProcess });
+  capture.active = true;
+  const discover = () => capture.discover('adb', { port: 5584, avd: 'wanted-avd' }, 0);
+  const misses = () => capture.snapshot().entries.filter(entry => entry.source === 'launcher' && entry.text === 'List of devices attached').length;
+  assert.equal(await discover(), null);
+  assert.equal(misses(), 1);
+  assert.match(capture.text(), /No matching Android device; adb devices -l reports:/);
+  assert.match(capture.text(), /emulator-5678\s+device model:test/);
+  for (let attempt = 0; attempt < 8; attempt++) await discover();
+  assert.equal(misses(), 1);
+  await discover();
+  assert.equal(misses(), 2);
+  devices.length = 0; devices.push({ serial: 'emulator-5584', name: 'wanted-avd' });
+  assert.equal(await discover(), 'emulator-5584');
+  devices.length = 0; devices.push({ serial: 'emulator-5678', name: 'other-avd' });
+  await discover();
+  assert.equal(misses(), 3);
+});
+
+test('each logcat attachment records the exact adb argv as a launcher line', async t => {
+  const directory = await temporary(t);
+  await fs.mkdir(path.join(directory, 'platform-tools'));
+  const executable = path.join(directory, 'platform-tools', process.platform === 'win32' ? 'adb.exe' : 'adb');
+  await fs.writeFile(executable, '');
+  const adb = simulatedAdb([{ serial: 'emulator-5584', name: 'test-avd' }]);
+  const capture = new LiveDiagnostics({ directory: path.join(directory, 'history'), getConfig: () => ({ sdk: directory, port: 5584, avd: 'test-avd', dataHome: directory }), spawnProcess: adb.spawnProcess });
+  await capture.start();
+  try {
+    await until(() => capture.snapshot().android.state === 'streaming');
+    assert.deepEqual(capture.snapshot().entries.filter(entry => /logcat -b main/.test(entry.text))
+      .map(entry => [entry.source, entry.level, entry.text]),
+    [['launcher', 'I', `${path.basename(executable)} -P 5038 -s emulator-5584 logcat -b main -b system -b crash -v threadtime -T 200`]]);
+  } finally { await capture.stop(); }
+  assert.equal(adb.children.size, 0);
+});
+
+test('perf counters keep bounded windows, render one line each and warn on sustained slow frames', () => {
+  const capture = new LiveDiagnostics({ directory: '.', getConfig: () => ({}), maxEntries: 100, maxBytes: 1024 * 1024 });
+  const at = seconds => new Date(Date.parse('2026-09-22T10:00:00Z') + seconds * 1000).toISOString();
+  const record = (counter, rate, p95, seconds) =>
+    capture.append('host', `AXRB.Perf ${counter}: rate=${rate}/s avg=0.4ms samples=120 p50=0.200ms p95=${p95}ms p99=0.610ms`, { receivedAt: at(seconds) });
+  assert.equal(capture.perfText(), '');
+  for (let seconds = 0; seconds < 14; seconds++) record('host-end-frame', '75', '120', seconds);
+  record('host-frame-submit', '150.5', '90', 14);
+  assert.equal(capture.perfText(), [
+    'host-end-frame: rate=75.0/s p50=0.200ms p95=120.000ms p99=0.610ms (12 windows)',
+    'host-frame-submit: rate=150.5/s p50=0.200ms p95=90.000ms p99=0.610ms (1 window)',
+  ].join('\n'));
+  assert.equal(capture.snapshot().entries.filter(entry => entry.tag === 'perf').length, 0);
+  record('host-selected-frame-age', '75', '120', 20);
+  record('host-selected-frame-age', '75', '260', 50);
+  assert.equal(capture.snapshot().entries.filter(entry => entry.tag === 'perf').length, 0);
+  record('host-selected-frame-age', '75', '280', 80);
+  record('host-selected-frame-age', '75', '300', 100);
+  record('host-selected-frame-age', '75', '290', 145);
+  assert.deepEqual(capture.snapshot().entries.filter(entry => entry.tag === 'perf')
+    .map(entry => [entry.source, entry.level, entry.text]), [
+    ['launcher', 'W', 'frame pipeline degraded: host-selected-frame-age p95=280ms sustained'],
+    ['launcher', 'W', 'frame pipeline degraded: host-selected-frame-age p95=290ms sustained'],
+  ]);
+  assert.equal(capture.perfText().split('\n')[2], 'host-selected-frame-age: rate=75.0/s p50=0.200ms p95=290.000ms p99=0.610ms (5 windows)');
+});

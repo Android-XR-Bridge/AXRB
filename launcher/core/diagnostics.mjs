@@ -81,17 +81,20 @@ export function diagnosticSources(dataHome) {
     ['guest-vulkan.json', path.join(emulator, 'guest-vulkan.json')],
     ['host.log', path.join(game, 'host.log')],
     ['host.err', path.join(game, 'host.err')],
+    ['session.json', path.join(game, 'session.json')],
   ];
 }
 // The library file is deliberately absent: it is megabytes of cover art and a
 // record of everything the user owns, none of which helps diagnose a failure.
-export async function collectDiagnostics({ dataHome, version = '', settings = {}, setupLogs = [], hardware = null, liveLogs = '', now = () => new Date() } = {}) {
+export async function collectDiagnostics({ dataHome, version = '', settings = {}, setupLogs = [], hardware = null, liveLogs = '', sessions = [], perf = '', now = () => new Date() } = {}) {
   const sections = [`AXRB diagnostics ${now().toISOString()}`,
     `launcher ${version}; ${process.platform} ${os.release()}; ${os.arch()}; node ${process.versions.node}`];
   if (hardware) sections.push(`hardware ${JSON.stringify(hardware)}`);
   const { managedDirectory, sdk, downloadDir, ovrportCli, ...safeSettings } = settings;
   sections.push(`settings ${JSON.stringify({ ...safeSettings, managed: Boolean(managedDirectory) })}`);
+  if (sessions.length) sections.push(`--- game sessions ---\n${sessions.join('\n')}`);
   if (setupLogs.length) sections.push(`--- setup transcript ---\n${setupLogs.join('\n')}`);
+  if (perf) sections.push(`--- performance windows ---\n${perf}`);
   if (liveLogs) sections.push(`--- live diagnostics (host receipt order) ---\n${liveLogs}`);
   for (const [label, file] of diagnosticSources(dataHome)) {
     try { sections.push(`--- ${label} ---\n${condense(await readTail(file))}`); }

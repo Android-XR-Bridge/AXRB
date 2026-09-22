@@ -74,7 +74,21 @@ test('the bundle carries the useful logs, redacted, and never the game library',
 
 test('diagnostic sources cover the emulator and host logs a failure needs', () => {
   const names = diagnosticSources('C:\\data').map(([label]) => label);
-  assert.deepEqual(names, ['emulator.stdout.log', 'emulator.stderr.log', 'guest-gles.txt', 'guest-vulkan.json', 'host.log', 'host.err']);
+  assert.deepEqual(names, ['emulator.stdout.log', 'emulator.stderr.log', 'guest-gles.txt', 'guest-vulkan.json', 'host.log', 'host.err', 'session.json']);
+});
+
+test('game sessions and performance windows appear as their own bundle sections', async () => {
+  const bundle = await collectDiagnostics({
+    dataHome: 'Z:\\nowhere', sessions: [
+      JSON.stringify({ id: 'ab12de34', package: 'com.meta.samples.NorthStar', exitCode: 3, closeRequested: false, gameProcessLost: true, pauseSucceeded: false, syncSucceeded: false }),
+    ],
+    perf: 'host-end-frame: rate=75.0/s p50=0.212ms p95=0.322ms p99=0.396ms (12 windows)',
+  });
+  assert.match(bundle, /--- game sessions ---\n.*com\.meta\.samples\.NorthStar/);
+  assert.match(bundle, /"gameProcessLost":true/);
+  assert.match(bundle, /--- performance windows ---\nhost-end-frame: rate=75\.0\/s/);
+  const bare = await collectDiagnostics({ dataHome: 'Z:\\nowhere' });
+  assert.doesNotMatch(bare, /game sessions|performance windows/, 'empty sections stay out of the bundle');
 });
 
 test('upload posts the bundle and returns the link the service reports', async () => {

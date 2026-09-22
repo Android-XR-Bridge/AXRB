@@ -44,6 +44,10 @@ let setup;
 let metaSession;
 let liveDiagnostics, reviewedDiagnostics = null;
 let emulatorWatchdog;
+// Structured per-game-session records (newest first) shipped in every
+// diagnostics bundle; the run script also writes logs/game/session.json.
+const sessionRecords = [];
+const sessionRecordPath = () => path.join(process.env.AXRB_DATA_HOME || path.join(root, 'out'), 'logs/game/session.json');
 let quitting = false;
 let compatibilityProfiles;
 const ovrport = new Ovrport();
@@ -456,10 +460,23 @@ handler('play', id => exclusive(async () => {
   try {
     compatibility = resolveCompatibility(compatibilityProfiles, prepared.game);
     liveDiagnostics.append('launcher', `Launching ${game.package}`, { tag: 'game' });
+    const sessionId = randomUUID().slice(0, 8);
+    const sessionStartedAt = new Date().toISOString();
+    liveDiagnostics.append('launcher', `session ${sessionId} started: package=${prepared.game.package}${prepared.game.activity ? ` activity=${prepared.game.activity}` : ''}`, { tag: 'session' });
     runtime.launch(prepared.game, async (code, tail) => {
       liveDiagnostics.append('launcher', `Game process exited (${code ?? 'unknown'}).`, { tag: 'game', level: code ? 'E' : 'I' });
+      // Merge the run script's structured record when present; its exit code
+      // and flags are authoritative over any transcript text.
+      let record = { id: sessionId, package: prepared.game.package, startedAt: sessionStartedAt, endedAt: new Date().toISOString(), exitCode: code ?? null };
+      try { record = { ...record, ...JSON.parse(await fs.readFile(sessionRecordPath(), 'utf8')), id: sessionId, exitCode: code ?? null }; } catch { /* No record means an older script or a failed spawn; the fields above still ship. */ }
+      sessionRecords.unshift(JSON.stringify(record));
+      if (sessionRecords.length > 20) sessionRecords.length = 20;
+      const outcome = record.gameProcessLost ? 'guest crash' : record.closeRequested ? 'user stop' : code ? `exit ${code}` : 'stopped';
+      const save = record.pauseSucceeded && record.syncSucceeded ? 'saved' : 'not confirmed';
+      liveDiagnostics.append('launcher', `session ${sessionId} ended: ${outcome}; save ${save}`, { tag: 'session', level: code ? 'E' : 'I' });
       if (code) {
-        const error = message(new Error(tail || `Game launcher exited with code ${code}.`));
+        const detail = record.gameProcessLost ? 'The game ended unexpectedly on Android (crash or forced stop).' : tail || `Game launcher exited with code ${code}.`;
+        const error = message(new Error(detail));
         state.data.jobs.unshift({ id: randomUUID(), gameId: id, name: game.name, status: 'failed', stage: 'Launch', error });
         if (window && !window.isDestroyed()) window.webContents.send('axrb:launch-error', `${game.name}: ${error}`);
       }
@@ -564,6 +581,8 @@ handler('diagnostics', async ({ upload = false, save = false } = {}) => {
     version: app.getVersion(), settings: state.data.settings,
     setupLogs: setup?.status.logs ?? [], hardware: setup?.status.hardware ?? null,
     liveLogs: liveDiagnostics.text(),
+    sessions: sessionRecords,
+    perf: liveDiagnostics.perfText(),
   });
   if (save) {
     const result = await dialog.showSaveDialog(window, {

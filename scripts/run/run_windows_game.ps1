@@ -84,6 +84,11 @@ function Invoke-Adb([string[]]$Arguments, [int]$TimeoutMs = 10000) {
 $ownsEmulator = [bool]$OwnsEmulator
 $bridgeProcess = $null
 $gameStarted = $false
+$closeRequested = $false
+$gameLost = $false
+$pauseSucceeded = $false
+$syncSucceeded = $false
+$sessionStartedAt = $null
 $closeRequest = $null
 $closeReady = $null
 $fpsHudEvent = $null
@@ -167,6 +172,7 @@ try {
         $env:AXRB_CLOSE_EVENT = $closeEventName
         $env:AXRB_FPS_HUD_EVENT = $FpsHudEventName
         $env:AXRB_PRECOMPOSE_PROJECTION_LAYERS = $(if ($PrecomposeProjectionLayers) { '1' } else { '0' })
+        $sessionStartedAt = Get-Date
         $bridgeProcess = Start-Process -FilePath $HostExe -ArgumentList @('--serve-openxr', '38490', '0', $titleArgument) -WindowStyle Hidden -PassThru -RedirectStandardOutput "$logs\host.log" -RedirectStandardError "$logs\host.err"
     } finally {
         $env:AXRB_CLOSE_EVENT = $previousCloseEvent
@@ -193,12 +199,11 @@ try {
     if ($launch.Code -ne 0 -or $launch.Text -match 'Error:') { throw "Game launch failed: $($launch.Text) $($launch.Error)" }
     $gameStarted = $true
     Write-Output "$GameName | AXRB is running. Closing its window stops this game session."
-    $missing = 0
     while (!$bridgeProcess.HasExited) {
-        if ($closeRequest.WaitOne(0)) { break }
+        if ($closeRequest.WaitOne(0)) { $closeRequested = $true; break }
         $game = Invoke-Adb @('shell', 'pidof', $Package)
         if ($game.Code -eq 0 -and $game.Text) { $missing = 0 } else { $missing++ }
-        if ($missing -ge 2) { break }
+        if ($missing -ge 2) { $gameLost = $true; break }
         Start-Sleep -Milliseconds 500
     }
 } finally {
@@ -208,9 +213,11 @@ try {
         try {
             $pause = Invoke-Adb @('shell', 'am', 'start', '-W', '-a', 'android.intent.action.MAIN', '-c', 'android.intent.category.HOME') 10000
             if ($pause.Code -ne 0 -or $pause.Text -match 'Error:') { throw "Android pause failed: $($pause.Text) $($pause.Error)" }
+            $pauseSucceeded = $true
             Start-Sleep -Seconds 2
             $flush = Invoke-Adb @('shell', 'sync')
             if ($flush.Code -ne 0) { throw "Android sync failed: $($flush.Error)" }
+            $syncSucceeded = $true
             Write-Output 'Android activity backgrounded and filesystem flushed before shutdown.'
         } catch { Write-Output "Warning: save/pause did not complete: $_" }
     }
@@ -228,8 +235,22 @@ try {
         try { $null = Invoke-Adb @('shell', 'am', 'force-stop', $Package) } catch { Write-Output "Warning: $_" }
     }
     if ($bridgeProcess) { $bridgeProcess.Dispose() }
-    if ($closeRequest) { $closeRequest.Dispose() }
-    if ($closeReady) { $closeReady.Dispose() }
     if ($fpsHudEvent) { $fpsHudEvent.Dispose() }
+    # Structured session record: the launcher reads this instead of parsing the
+    # transcript above, and the diagnostics bundle ships it verbatim.
+    $session = [ordered]@{
+        package = $Package; activity = $Activity; game = $GameName
+        startedAt = if ($sessionStartedAt) { $sessionStartedAt.ToString('o') } else { $null }
+        endedAt = (Get-Date).ToString('o')
+        closeRequested = [bool]$closeRequested
+        gameProcessLost = [bool]($gameLost -and !$closeRequested)
+        hostExited = [bool]($bridgeProcess -and $bridgeProcess.HasExited)
+        pauseSucceeded = [bool]$pauseSucceeded
+        syncSucceeded = [bool]$syncSucceeded
+    }
+    try { $session | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $logs 'session.json') -Encoding UTF8 } catch { Write-Output "Warning: could not write session record: $_" }
     Write-Output 'AXRB game session stopped.'
 }
+# A lost game process is a guest crash, not a clean stop; the launcher keys its
+# failure card on this exit code. Everything else stays 0 like before.
+if ($gameLost -and !$closeRequested) { exit 3 }
