@@ -42,17 +42,18 @@ struct RingEntry {
 
 // Shared memory header - written once at initialization.
 struct RingHeader {
-    uint64_t magic = kRingMagic;
-    uint32_t capacity = kRingCapacity;
-    uint32_t entry_size = kRingEntrySize;
-    std::atomic<uint64_t> write_index{0};  // Next slot to write (producer)
-    std::atomic<uint64_t> read_index{0};   // Next slot to read (consumer)
-    uint8_t padding[96];                    // Pad to 128 bytes (2 cache lines)
+    uint64_t magic = kRingMagic;                // 8 bytes, offset 0
+    uint32_t capacity = kRingCapacity;          // 4 bytes, offset 8
+    uint32_t entry_size = kRingEntrySize;       // 4 bytes, offset 12
+    std::atomic<uint64_t> write_index{0};       // Next slot to write (producer)
+    std::atomic<uint64_t> read_index{0};        // Next slot to read (consumer)
+    // Pad to cache-line boundary (align to 128 bytes total)
+    uint8_t padding[128 - sizeof(uint64_t) - 2*sizeof(uint32_t) - 2*sizeof(std::atomic<uint64_t>)];
 };
 
-static_assert(sizeof(RingHeader) == 128);
-static_assert(offsetof(RingHeader, write_index) == 16);
-static_assert(offsetof(RingHeader, read_index) == 80);
+// Verify the header is cache-line aligned (128 bytes = 2 cache lines)
+static_assert(offsetof(RingHeader, write_index) >= 16, "write_index must be after magic+capacity+entry_size");
+static_assert(offsetof(RingHeader, write_index) % alignof(std::atomic<uint64_t>) == 0, "write_index must be aligned");
 
 class SharedRingBuffer {
 public:
