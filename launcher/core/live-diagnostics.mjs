@@ -12,10 +12,10 @@ const SOURCES = new Set(['android', 'emulator', 'host', 'launcher']);
 const LEVELS = new Set(['V', 'D', 'I', 'W', 'E', 'F']);
 const logcatLine = /^(\d\d-\d\d\s+\d\d:\d\d:\d\d\.\d+)\s+(\d+)\s+\d+\s+([VDIWEF])\s+([^:]+):\s?(.*)$/;
 // Guest kernel-console shapes. These facilities carry stock boot chatter that
-// keyword inference mistakes for failures (77 of 80 E lines in measured
-// bundles); kernelCrash lists signatures that are never demoted. A timestamp
-// alone is not enough: timestamped lines from other facilities (binder,
-// binder_alloc, …) report real guest failures and keep their severity.
+// keyword inference mistakes for failures; kernelCrash lists signatures that
+// are never demoted. A timestamp alone is not enough: timestamped lines from
+// other facilities (binder, binder_alloc, …) report real guest failures and
+// keep their severity.
 const kernelTimestamp = /^\[?\s*\d+\.\d+\]?\s*/;
 const bootChatterFacility = /^(?:init:|ueventd:|vold:|selinux:|apexd:|servicemanager:|libprocessgroup:|cutils-trace:|logd:|cfg80211:|UprobeStatsBpfLoad:|NetBpfLoad:)/;
 const isBootChatter = text => bootChatterFacility.test(text) || (kernelTimestamp.test(text) && bootChatterFacility.test(text.replace(kernelTimestamp, '')));
