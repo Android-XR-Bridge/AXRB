@@ -55,8 +55,29 @@ The embedded Python 3.14.3 distribution includes its PSF license as
 `runtime/tools/python/LICENSE.txt`. The clock adapter includes MinHook's BSD
 license in `runtime/licenses/MinHook.txt`. Khronos OpenXR and Vulkan headers are
 used under Apache-2.0 (Copyright 2015-2026 The Khronos Group Inc.); see
-`licenses/Apache-2.0.txt`. LLVM/libc++ notices for the NDK runtime are included in
-`licenses/LLVM-NDK.txt`.
+`licenses/Apache-2.0.txt`.
+
+The Android runtime library, the Vulkan layer and the guest compatibility
+adapters are compiled with the Android NDK's Clang toolchain, which links the
+LLVM runtime libraries into them statically: libc++ and libc++abi through the
+NDK CMake toolchain's default `c++_static`, or `-static-libstdc++` for the
+directly compiled adapters, together with the compiler-rt builtins and the
+unwinder that the Clang driver links. Those libraries are under the Apache
+License 2.0 with LLVM Exceptions, with legacy University of Illinois/NCSA and
+MIT notices for older contributions. Their complete terms are in
+`licenses/LLVM-NDK.txt`, copied verbatim from
+`toolchains/llvm/prebuilt/windows-x86_64/NOTICE` in NDK 27.3.13750724, the
+revision `runtime/apk/build_apk.ps1` pins and `scripts/build/android_sdk.ps1`
+installs. Notice SHA-256:
+`f96f763beb66a7ba7a667647fc64c0226ace875e590c831fdd9579ec1c1d91e1`.
+
+No `libc++_shared.so` is packaged: the APK ships only
+`lib/<abi>/libopenxr_runtime.so`. Bionic and the platform libraries the runtime
+names — `libc`, `libm`, `liblog`, `libandroid`, `libEGL`, `libGLESv3` and
+`libvulkan` — are resolved against the Android system copies rather than
+redistributed. The NDK's other build tools are used to compile AXRB and are not
+redistributed, so the copyleft terms in the NDK's whole-toolchain notice cover
+nothing that AXRB ships.
 
 The Windows x64 desktop `openxr_loader.dll` is redistributed unmodified from
 Khronos Group's `OpenXR.Loader.1.1.60.nupkg`, matching the OpenXR header version.
