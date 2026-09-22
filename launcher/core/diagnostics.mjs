@@ -84,6 +84,12 @@ export function diagnosticSources(dataHome) {
     ['session.json', path.join(game, 'session.json')],
   ];
 }
+
+export function parseSessionRecord(text, expectedId) {
+  const record = JSON.parse(String(text).replace(/^\uFEFF/, ''));
+  if (!record || typeof record !== 'object' || Array.isArray(record) || record.id !== expectedId) return null;
+  return record;
+}
 // The library file is deliberately absent: it is megabytes of cover art and a
 // record of everything the user owns, none of which helps diagnose a failure.
 export async function collectDiagnostics({ dataHome, version = '', settings = {}, setupLogs = [], hardware = null, liveLogs = '', sessions = [], perf = '', now = () => new Date() } = {}) {

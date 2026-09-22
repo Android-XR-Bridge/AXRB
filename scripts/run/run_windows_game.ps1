@@ -17,7 +17,8 @@ param(
     [ValidatePattern('^Local\\AXRB\.FpsHud\.[a-f0-9]{32}$')][string]$FpsHudEventName,
     [switch]$PrecomposeProjectionLayers,
     [switch]$OwnsEmulator,
-    [string]$HostExe
+    [string]$HostExe,
+    [ValidatePattern('^[a-f0-9]{8}$')][string]$SessionId
 )
 # The launcher reads this script's output as UTF-8 and reports a failure from
 # its message alone, so progress records stay out of the stream and a
@@ -89,6 +90,7 @@ $gameLost = $false
 $pauseSucceeded = $false
 $syncSucceeded = $false
 $sessionStartedAt = $null
+$hostExited = $false
 $closeRequest = $null
 $closeReady = $null
 $fpsHudEvent = $null
@@ -234,17 +236,21 @@ try {
     } elseif ($gameStarted) {
         try { $null = Invoke-Adb @('shell', 'am', 'force-stop', $Package) } catch { Write-Output "Warning: $_" }
     }
+    $hostExited = [bool]($bridgeProcess -and $bridgeProcess.HasExited)
     if ($bridgeProcess) { $bridgeProcess.Dispose() }
+    if ($closeRequest) { $closeRequest.Dispose() }
+    if ($closeReady) { $closeReady.Dispose() }
     if ($fpsHudEvent) { $fpsHudEvent.Dispose() }
     # Structured session record: the launcher reads this instead of parsing the
     # transcript above, and the diagnostics bundle ships it verbatim.
     $session = [ordered]@{
+        id = $SessionId
         package = $Package; activity = $Activity; game = $GameName
         startedAt = if ($sessionStartedAt) { $sessionStartedAt.ToString('o') } else { $null }
         endedAt = (Get-Date).ToString('o')
         closeRequested = [bool]$closeRequested
         gameProcessLost = [bool]($gameLost -and !$closeRequested)
-        hostExited = [bool]($bridgeProcess -and $bridgeProcess.HasExited)
+        hostExited = $hostExited
         pauseSucceeded = [bool]$pauseSucceeded
         syncSucceeded = [bool]$syncSucceeded
     }

@@ -302,11 +302,12 @@ test('kernel boot chatter is demoted to debug while real guest failures keep sev
   capture.append('emulator', '[    9.412037] ueventd: firmware_load: error -2 opening file');
   capture.append('emulator', "init: warning: could not parse /vendor/etc/public.libraries.txt");
   capture.append('emulator', '[   88.290614] cfg80211: failed to load regulatory.db');
+  capture.append('emulator', "[    7.367971] init: Command 'setprop debug.stagefright.ccodec' failed: property doesn't exist");
   capture.append('emulator', '[  101.553416] audio: error - unable to handle stream (call trace dumped)');
   capture.append('emulator', 'binder: 1873:1873 transaction failed 29189/-3, size 0-0 line 3134');
   capture.append('emulator', '[   38.869677] binder_alloc: 2674: binder_alloc_buf size 1056768 failed, no address space');
   capture.append('emulator', '[   12.553416] Kernel panic - not syncing: attempted to kill init');
-  assert.deepEqual(capture.snapshot().entries.map(entry => entry.level), ['D', 'D', 'D', 'E', 'E', 'E', 'F']);
+  assert.deepEqual(capture.snapshot().entries.map(entry => entry.level), ['D', 'D', 'D', 'D', 'E', 'E', 'E', 'F']);
 });
 
 test('host loader lines reporting Windows error 0 stay informational', () => {
@@ -366,9 +367,11 @@ test('perf counters keep bounded windows, render one line each and warn on susta
   assert.equal(capture.perfText(), '');
   for (let seconds = 0; seconds < 14; seconds++) record('host-end-frame', '75', '120', seconds);
   record('host-frame-submit', '150.5', '90', 14);
+  capture.append('android', '09-22 10:00:15.000  123  456 I AXRB.Perf: AXRB.Perf end-frame: rate=75/s avg=0.4ms samples=120 p50=0.200ms p95=120ms p99=0.610ms', { receivedAt: at(15) });
   assert.equal(capture.perfText(), [
     'host-end-frame: rate=75.0/s p50=0.200ms p95=120.000ms p99=0.610ms (12 windows)',
     'host-frame-submit: rate=150.5/s p50=0.200ms p95=90.000ms p99=0.610ms (1 window)',
+    'end-frame: rate=75.0/s p50=0.200ms p95=120.000ms p99=0.610ms (1 window)',
   ].join('\n'));
   assert.equal(capture.snapshot().entries.filter(entry => entry.tag === 'perf').length, 0);
   record('host-selected-frame-age', '75', '120', 20);
@@ -382,5 +385,5 @@ test('perf counters keep bounded windows, render one line each and warn on susta
     ['launcher', 'W', 'frame pipeline degraded: host-selected-frame-age p95=280ms sustained'],
     ['launcher', 'W', 'frame pipeline degraded: host-selected-frame-age p95=290ms sustained'],
   ]);
-  assert.equal(capture.perfText().split('\n')[2], 'host-selected-frame-age: rate=75.0/s p50=0.200ms p95=290.000ms p99=0.610ms (5 windows)');
+  assert.equal(capture.perfText().split('\n')[3], 'host-selected-frame-age: rate=75.0/s p50=0.200ms p95=290.000ms p99=0.610ms (5 windows)');
 });

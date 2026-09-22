@@ -19,7 +19,7 @@ const logcatLine = /^(\d\d-\d\d\s+\d\d:\d\d:\d\d\.\d+)\s+(\d+)\s+\d+\s+([VDIWEF]
 const kernelTimestamp = /^\[?\s*\d+\.\d+\]?\s*/;
 const bootChatterFacility = /^(?:init:|ueventd:|vold:|selinux:|apexd:|servicemanager:|libprocessgroup:|cutils-trace:|logd:|cfg80211:|UprobeStatsBpfLoad:|NetBpfLoad:)/;
 const isBootChatter = text => bootChatterFacility.test(text) || (kernelTimestamp.test(text) && bootChatterFacility.test(text.replace(kernelTimestamp, '')));
-const kernelCrash = /panic|oops|BUG|unable to handle|call trace|fatal signal/i;
+const kernelCrash = /panic|oops|\bBUG\b|unable to handle|call trace|fatal signal/i;
 const perfLine = /^AXRB\.Perf ([\w.-]+): rate=([\d.]+)\/s avg=([\d.]+)ms .*p50=([\d.]+)ms p95=([\d.]+)ms p99=([\d.]+)ms/;
 const PERF_WINDOWS = 12;
 const PERF_SLOW_FRAME_MS = 250;
@@ -132,7 +132,7 @@ export class LiveDiagnostics {
       }
       // Record the sample only after its own line is retained, so a degraded
       // pipeline warning follows the window that triggered it.
-      const perf = source === 'host' || source === 'emulator' ? raw.match(perfLine) : null;
+      const perf = source === 'host' || source === 'emulator' || source === 'android' ? (match?.[5] ?? raw).match(perfLine) : null;
       if (perf) this.recordPerf(perf[1], fields.receivedAt, perf);
     }
     this.notify();

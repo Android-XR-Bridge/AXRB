@@ -269,11 +269,14 @@ export class Runtime {
     // Preparation may have booted Android before the session script runs, so
     // ownership arrives explicitly instead of being inferred from the device.
     const ownsEmulator = options?.ownsEmulator === true;
+    const sessionId = options?.sessionId;
+    if (sessionId !== undefined && !/^[a-f0-9]{8}$/.test(sessionId)) throw new Error('Invalid session identifier.');
     this.fpsHudEvent = `Local\\AXRB.FpsHud.${randomUUID().replaceAll('-', '')}`;
     const args = powershellArgs(path.join(this.root, 'scripts/run/run_windows_game.ps1'), { Avd: this.settings.avd, Port: this.settings.port,
       Sdk: this.settings.sdk, MemoryMB: this.settings.memoryMB, CpuCores: this.settings.cpuCores ?? 4, Package: game.package, Activity: game.activity, GameName: game.name, FpsHud: this.settings.fpsHud === true, FpsHudEventName: this.fpsHudEvent,
       // An absent switch keeps the script's historic device-presence behavior.
       ...(ownsEmulator ? { OwnsEmulator: true } : {}),
+      ...(sessionId ? { SessionId: sessionId } : {}),
       ...(this.settings.precomposeProjectionLayers === true || compatibility.precomposeProjectionLayers === true ? { PrecomposeProjectionLayers: true } : {}),
       ...(this.settings.managedDirectory ? { RuntimeApk: path.join(this.root, 'out/android/runtime-arm64-v8a/axrb-openxr-runtime-debug.apk') } : {}) });
     // Windows PowerShell can exit successfully without executing its command

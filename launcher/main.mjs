@@ -12,7 +12,7 @@ import { Setup, identifyArchives, avdDirectory, parseStorageGB, planStorageChang
 import { loadLibraryArtwork } from './core/artwork.mjs';
 import { Quest } from './core/quest.mjs';
 import { importGameZip } from './core/game-files.mjs';
-import { collectDiagnostics, uploadDiagnostics } from './core/diagnostics.mjs';
+import { collectDiagnostics, parseSessionRecord, uploadDiagnostics } from './core/diagnostics.mjs';
 import { LiveDiagnostics } from './core/live-diagnostics.mjs';
 import { EmulatorWatchdog } from './core/watchdog.mjs';
 import { loadCompatibilityProfiles, resolveCompatibility, compatibilityPatchArgs, compatibilityRuntimeOptions } from './core/compatibility.mjs';
@@ -468,7 +468,10 @@ handler('play', id => exclusive(async () => {
       // Merge the run script's structured record when present; its exit code
       // and flags are authoritative over any transcript text.
       let record = { id: sessionId, package: prepared.game.package, startedAt: sessionStartedAt, endedAt: new Date().toISOString(), exitCode: code ?? null };
-      try { record = { ...record, ...JSON.parse(await fs.readFile(sessionRecordPath(), 'utf8')), id: sessionId, exitCode: code ?? null }; } catch { /* No record means an older script or a failed spawn; the fields above still ship. */ }
+      try {
+        const parsed = parseSessionRecord(await fs.readFile(sessionRecordPath(), 'utf8'), sessionId);
+        if (parsed) record = { ...record, ...parsed, id: sessionId, exitCode: code ?? null };
+      } catch { /* No record means an older script or a failed spawn; the fields above still ship. */ }
       sessionRecords.unshift(JSON.stringify(record));
       if (sessionRecords.length > 20) sessionRecords.length = 20;
       const outcome = record.gameProcessLost ? 'guest crash' : record.closeRequested ? 'user stop' : code ? `exit ${code}` : 'stopped';
@@ -481,7 +484,7 @@ handler('play', id => exclusive(async () => {
         if (window && !window.isDestroyed()) window.webContents.send('axrb:launch-error', `${game.name}: ${error}`);
       }
       await persist();
-    }, compatibilityRuntimeOptions(compatibility), { ownsEmulator: prepared.ownsEmulator });
+    }, compatibilityRuntimeOptions(compatibility), { ownsEmulator: prepared.ownsEmulator, sessionId });
   } catch (error) {
     if (prepared.ownsEmulator) await runtime.adb(['emu', 'kill']).catch(cleanupError => liveDiagnostics.append('launcher', `Android shutdown failed: ${message(cleanupError)}`, { tag: 'game', level: 'W' }));
     throw error;
