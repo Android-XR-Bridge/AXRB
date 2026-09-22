@@ -42,10 +42,16 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (!cold) { std::fprintf(stderr, "Clock correction requires -no-snapshot\n"); return 2; }
     std::wstring command = quote(argv[1]);
-    // -no-snapshot is an Android emulator wrapper flag. Consume it as the
-    // clock-correction safety handshake; raw QEMU rejects that option.
+    // -no-snapshot is the clock-correction safety handshake and must reach the
+    // emulator: stripping it left quick boot on, so the emulator saved a
+    // snapshot at shutdown and restored it at the next start, which froze the
+    // guest under the clock shim. The emulator front end parses its own options
+    // before -qemu; only a copy after that separator would reach raw QEMU,
+    // which rejects it.
+    bool qemuOptions = false;
     for (int i = 3; i < argc; ++i) {
-        if (!std::wcscmp(argv[i], L"-no-snapshot")) continue;
+        if (!std::wcscmp(argv[i], L"-qemu")) qemuOptions = true;
+        if (qemuOptions && !std::wcscmp(argv[i], L"-no-snapshot")) continue;
         command += L" " + quote(argv[i]);
     }
     STARTUPINFOW startup{sizeof(startup)}; PROCESS_INFORMATION process{};
