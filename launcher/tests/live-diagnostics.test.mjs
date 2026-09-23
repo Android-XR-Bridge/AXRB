@@ -330,6 +330,107 @@ test('a protocol fault is classified as transient while a real failure is not', 
   assert.equal(transientAdbFault('cannot connect to daemon at tcp:5038'), true);
   assert.equal(transientAdbFault('More than one emulator runs same-avd; select its console port in runtime settings.'), false);
   assert.equal(transientAdbFault(''), false);
+  // A reserved or occupied port also makes adb say it cannot connect, but no
+  // amount of retrying opens it.
+  assert.equal(transientAdbFault("could not install *smartsocket* listener: cannot bind to 127.0.0.1:5038: An attempt was made to access a socket in a way forbidden by its access permissions. (10013)\nadb.exe: cannot connect to daemon"), false);
+});
+
+test('a server that cannot bind its port is reported at once with the reason from its own log', async t => {
+  const directory = await temporary(t);
+  await fs.mkdir(path.join(directory, 'platform-tools'));
+  await fs.writeFile(path.join(directory, 'platform-tools', process.platform === 'win32' ? 'adb.exe' : 'adb'), '');
+  const stamp = date => `${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${date.toTimeString().slice(0, 8)}.000`;
+  const now = new Date(), yesterday = new Date(Date.now() - 86400000);
+  const adbLog = path.join(directory, 'adb.log');
+  // The log is shared by every adb server on the machine: an old failure on
+  // this port and a fresh one from another server must not be quoted.
+  await fs.writeFile(adbLog, [
+    `${stamp(yesterday)}  1111  1112 E adb     : main.cpp:150 could not install *smartsocket* listener: cannot bind to 127.0.0.1:5038: old failure (10048)`,
+    '--- adb starting (pid 1234) ---',
+    `${stamp(now)}  1234  1235 I adb     : main.cpp:65 Android Debug Bridge version 1.0.41`,
+    `${stamp(now)}  1234  1235 F adb     : main.cpp:150 could not install *smartsocket* listener: cannot bind to 127.0.0.1:5038: An attempt was made to access a socket in a way forbidden by its access permissions. (10013)`,
+    `${stamp(now)}  2222  2223 E adb     : transport.cpp:1000 SSL_read failed for tcp:5037 client`,
+    '',
+  ].join('\r\n'));
+  const seen = [];
+  const spawnProcess = (_file, args) => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough(); child.stderr = new PassThrough();
+    child.kill = () => { child.stdout.end(); child.stderr.end(); queueMicrotask(() => child.emit('close', null)); };
+    seen.push(args.join(' '));
+    // What adb's Windows client actually prints: never the reason itself.
+    queueMicrotask(() => {
+      child.stdout.end('');
+      child.stderr.end(args.includes('start-server') ? 'could not read ok from ADB Server\n* failed to start daemon\nadb.exe: cannot connect to daemon\n' : 'adb.exe: cannot connect to daemon at tcp:5038: cannot connect to 127.0.0.1:5038\n');
+      child.emit('close', 1);
+    });
+    return child;
+  };
+  const capture = new LiveDiagnostics({ directory: path.join(directory, 'history'), getConfig: () => ({ sdk: directory, port: 5584, dataHome: directory }), spawnProcess, adbLog });
+  await capture.start();
+  try {
+    // No grace period: retrying cannot open a reserved port.
+    await until(() => capture.snapshot().android.state === 'error');
+    const { detail } = capture.snapshot().android;
+    assert.match(detail, /failed to start daemon/, "the start-server failure is reported, not the listing's symptom");
+    assert.match(detail, /ADB server log: main\.cpp:150 could not install \*smartsocket\* listener: cannot bind to 127\.0\.0\.1:5038: An attempt .*\(10013\)$/);
+    assert.doesNotMatch(detail, /old failure|SSL_read/);
+    // Later retries fail identically; they move nothing and log nothing.
+    const lines = () => capture.snapshot().entries.filter(entry => /ADB server/.test(entry.text)).length;
+    const before = lines();
+    for (let attempt = 0; attempt < 3; attempt++) capture.adbFailed(detail);
+    assert.equal(lines(), before);
+    assert.equal(seen.filter(command => command.includes('start-server')).length, 1);
+  } finally { await capture.stop(); }
+});
+
+test('a device that never answers its AVD name still escalates', async t => {
+  const directory = await temporary(t);
+  await fs.mkdir(path.join(directory, 'platform-tools'));
+  await fs.writeFile(path.join(directory, 'platform-tools', process.platform === 'win32' ? 'adb.exe' : 'adb'), '');
+  const spawnProcess = (_file, args) => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough(); child.stderr = new PassThrough();
+    child.kill = () => {};
+    queueMicrotask(() => {
+      if (args.includes('devices')) { child.stdout.end('List of devices attached\nemulator-5584\tdevice model:test\n'); child.stderr.end(); child.emit('close', 0); return; }
+      child.stdout.end(''); child.stderr.end('ADB device discovery timed out.'); child.emit('close', 1);
+    });
+    return child;
+  };
+  const capture = new LiveDiagnostics({ directory: path.join(directory, 'history'), getConfig: () => ({ sdk: directory, avd: 'axrb-managed-api36', port: 5584, dataHome: directory }), spawnProcess, adbLog: path.join(directory, 'none.log') });
+  await capture.start();
+  try {
+    await until(() => capture.adbFault);
+    assert.equal(capture.snapshot().android.state, 'waiting');
+    // The listing keeps succeeding, which must not restart the grace period.
+    capture.adbFault.since -= 60000; capture.nextConnect = 0;
+    await until(() => capture.snapshot().android.state === 'error');
+    assert.match(capture.snapshot().android.detail, /discovery timed out/);
+  } finally { await capture.stop(); }
+});
+
+test('an ordinary capture error keeps the normal retry and gets no server-log hint', () => {
+  const capture = new LiveDiagnostics({ directory: '.', getConfig: () => ({}) });
+  capture.nextConnect = 12345;
+  capture.adbFailed('More than one emulator runs same-avd; select its console port in runtime settings.');
+  assert.equal(capture.snapshot().android.state, 'error');
+  assert.equal(capture.snapshot().android.detail, 'More than one emulator runs same-avd; select its console port in runtime settings.');
+  assert.equal(capture.nextConnect, 12345, 'connect() already scheduled the normal retry');
+  assert.equal(capture.adbFault, null, 'it is not a server fault episode');
+});
+
+test('a transient fault waits quietly, then is reported once it outlasts the grace period', async () => {
+  const capture = new LiveDiagnostics({ directory: '.', getConfig: () => ({}), adbLog: path.join(os.tmpdir(), 'axrb-missing-adb.log'), adbFaultGrace: 60000 });
+  const fault = "adb.exe: failed to check server version: protocol fault (couldn't read status): connection reset";
+  for (let attempt = 0; attempt < 3; attempt++) await capture.adbFailed(fault);
+  assert.equal(capture.snapshot().android.state, 'waiting');
+  assert.equal(capture.snapshot().entries.filter(entry => /not answering yet/.test(entry.text)).length, 1);
+  capture.adbFault.since -= 60000;
+  await capture.adbFailed(fault);
+  await capture.adbFailed(fault);
+  assert.equal(capture.snapshot().android.state, 'error');
+  assert.equal(capture.snapshot().entries.filter(entry => entry.level === 'E' && entry.text.includes('protocol fault')).length, 1);
 });
 
 test('capture stops probing ADB while setup or an operation owns it', async t => {

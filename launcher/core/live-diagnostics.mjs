@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
@@ -16,10 +17,17 @@ const ADB_PROBE_TIMEOUT = 15000;
 const ADB_SERVER_TIMEOUT = 30000;
 // Faults that mean "ask again", not "capture is broken": a server that is
 // mid-start, one that a previous client shut down, or a transport that has
-// not finished attaching.
+// not finished attaching. A server that cannot open its port never will, so
+// that is not one of them, even though adb also says it cannot connect.
 export function transientAdbFault(message) {
-  return /protocol fault|connection reset|failed to check server version|cannot connect to daemon|device offline|timed out|server is out of date|daemon not running/i.test(String(message ?? ''));
+  const text = String(message ?? '');
+  return !/cannot bind|could not install \*smartsocket\* listener/i.test(text) &&
+    /protocol fault|connection reset|failed to check server version|cannot connect to daemon|device offline|timed out|server is out of date|daemon not running/i.test(text);
 }
+// How long a transient fault may last before it is reported as the failure it
+// has become. A server that is only settling answers well within this.
+const ADB_FAULT_GRACE = 60000;
+const ADB_SETTLING = 'The ADB server is not answering yet; retrying.';
 const LEVELS = new Set(['V', 'D', 'I', 'W', 'E', 'F']);
 const logcatLine = /^(\d\d-\d\d\s+\d\d:\d\d:\d\d\.\d+)\s+(\d+)\s+\d+\s+([VDIWEF])\s+([^:]+):\s?(.*)$/;
 // Guest kernel-console shapes. These facilities carry stock boot chatter that
@@ -102,8 +110,10 @@ function tracksFramePipeline(counter) {
 // Capture belongs to the application, not the panel or the running game.
 // Retained data is bounded and gets best-effort redaction before disk or renderer.
 export class LiveDiagnostics {
-  constructor({ directory, getConfig, onUpdate = () => {}, spawnProcess = spawn, maxEntries = MAX_DIAGNOSTIC_ENTRIES, maxBytes = MAX_BYTES, adbBusy = () => false }) {
-    Object.assign(this, { directory, getConfig, onUpdate, spawnProcess, maxEntries, maxBytes, adbBusy });
+  constructor({ directory, getConfig, onUpdate = () => {}, spawnProcess = spawn, maxEntries = MAX_DIAGNOSTIC_ENTRIES, maxBytes = MAX_BYTES, adbBusy = () => false,
+    adbLog = path.join(os.tmpdir(), 'adb.log'), adbFaultGrace = ADB_FAULT_GRACE }) {
+    Object.assign(this, { directory, getConfig, onUpdate, spawnProcess, maxEntries, maxBytes, adbBusy, adbLog, adbFaultGrace });
+    this.adbFault = null;
     this.entries = []; this.head = 0; this.bytes = 0; this.lastId = 0; this.dropped = 0; this.tiers = [0, 0, 0]; this.tagWindows = new Map();
     this.evictions = []; this.evictionSeq = 0; this.replaying = false;
     this.partials = new Map(); this.files = new Map(); this.children = new Set();
@@ -315,7 +325,7 @@ export class LiveDiagnostics {
       const signature = JSON.stringify([config.sdk, config.avd, config.port, config.dataHome]);
       if (signature !== this.configSignature) {
         this.configSignature = signature; this.generation++;
-        this.endAttachEpisode();
+        this.endAttachEpisode(); this.adbFault = null;
         for (const child of this.children) child.kill();
         this.stream = null; this.nextConnect = 0;
         for (const cursor of this.files.values()) this.write(cursor.source, cursor.decoder.end(), { tag: cursor.label, end: true });
@@ -433,10 +443,17 @@ export class LiveDiagnostics {
     // again before calling the capture broken.
     if (listed.error && transientAdbFault(listed.error)) {
       if (!this.active || generation !== this.generation) return null;
-      this.setAndroid('waiting', 'Waiting for the ADB server to accept connections.', '');
-      await this.probe(executable, ['-P', '5038', 'start-server'], ADB_SERVER_TIMEOUT);
+      // Once a fault is under way the panel already says so; setting this
+      // again would alternate with the failure and log both every retry.
+      if (!this.adbFault) this.setAndroid('waiting', ADB_SETTLING, '');
+      const started = await this.probe(executable, ['-P', '5038', 'start-server'], ADB_SERVER_TIMEOUT);
       if (!this.active || generation !== this.generation) return null;
       listed = await this.probe(executable, ['-P', '5038', 'devices', '-l']);
+      // A server that failed to start is the cause; the listing's "cannot
+      // connect to daemon" that follows only repeats the symptom. adb's client
+      // never says why it failed, so add what the server logged about this
+      // port: a bind failure there is permanent and is reported at once.
+      if (listed.error && started.error) listed = { error: started.error + await this.adbServerHint() };
     }
     if (listed.error) throw new Error(listed.error);
     if (!this.active || generation !== this.generation) return null;
@@ -447,9 +464,9 @@ export class LiveDiagnostics {
     const preferred = `emulator-${config.port}`;
     if (!config.avd) {
       const selected = devices.find(device => device.serial === preferred);
-      if (selected?.state === 'device') { this.missListing = null; return selected.serial; }
+      if (selected?.state === 'device') { this.missListing = this.adbFault = null; return selected.serial; }
       this.setAndroid('waiting', selected ? `${preferred} is ${selected.state}.` : 'The configured emulator is not connected.', selected?.serial || '');
-      this.noteMissingDevice(listed);
+      this.noteMissingDevice(listed); this.adbFault = null;
       return null;
     }
     // AVD names and console ports vary by machine. Discover their relationship
@@ -467,14 +484,14 @@ export class LiveDiagnostics {
       // The emulator console ends lines with "\r\r\n", so trim the line itself.
       const reported = name.output.split(/\r?\n/)[0].trim();
       if (reported === config.avd) {
-        if (device.serial === preferred) { this.missListing = null; return device.serial; }
+        if (device.serial === preferred) { this.missListing = this.adbFault = null; return device.serial; }
         matches.push(device.serial);
       } else mismatches.push(`${device.serial} reports AVD name ${JSON.stringify(reported.slice(0, 120))}`);
     }
-    if (matches.length === 1) { this.missListing = null; return matches[0]; }
+    if (matches.length === 1) { this.missListing = this.adbFault = null; return matches[0]; }
     if (matches.length > 1) throw new Error(`More than one emulator runs ${config.avd}; select its console port in runtime settings.`);
     this.setAndroid('waiting', `Waiting for AVD ${config.avd}; other connected devices are not being captured.`, '');
-    this.noteMissingDevice(listed, mismatches);
+    this.noteMissingDevice(listed, mismatches); this.adbFault = null;
     return null;
   }
   async connect(config, generation) {
@@ -531,15 +548,46 @@ export class LiveDiagnostics {
       // A missing adb is the normal state before setup installs the SDK.
       if (error.code === 'ENOENT') {
         this.setAndroid('waiting', 'ADB is not installed at the configured SDK path. Capture will start when it is available.');
-      } else if (transientAdbFault(error.message)) {
-        // Back off further than the normal retry: these clear on their own
-        // once the server settles, and hammering it is what keeps them going.
-        this.nextConnect = Date.now() + 10000;
-        this.setAndroid('waiting', 'The ADB server is not answering yet; retrying.');
-      } else {
-        this.setAndroid('error', error.message);
-      }
+      } else await this.adbFailed(error.message);
     }
+  }
+  // Server faults, a server that is settling or one that cannot start, form
+  // one episode that ends when discovery completes. Transient ones wait
+  // quietly through the grace period, backing off because hammering the
+  // server is what keeps them going; one that outlasts it, or that retrying
+  // cannot fix, is reported, once per message. Anything else is an ordinary
+  // error and is retried at the normal pace.
+  adbFailed(text) {
+    const transient = transientAdbFault(text);
+    if (!transient && !/failed to start daemon|cannot bind|smartsocket/i.test(text)) { this.setAndroid('error', text); return; }
+    const fault = this.adbFault ??= { since: Date.now() };
+    const settling = transient && Date.now() - fault.since < this.adbFaultGrace;
+    this.nextConnect = Date.now() + (settling ? 10000 : 30000);
+    if (settling) this.setAndroid('waiting', ADB_SETTLING);
+    else this.setAndroid('error', text);
+  }
+  // adb's client only says its server did not start; the server's log says
+  // why, for example a port Windows has reserved for Hyper-V. The log is
+  // shared by every adb server on the machine, so only a recent error that
+  // names this server's port counts.
+  async adbServerHint(port = '5038') {
+    let handle;
+    try {
+      handle = await fs.open(this.adbLog, 'r');
+      const { size } = await handle.stat();
+      const length = Math.min(size, 8192), buffer = Buffer.alloc(length);
+      await handle.read(buffer, 0, length, size - length);
+      const now = new Date();
+      const recent = value => {
+        const stamp = value.match(/^(\d\d)-(\d\d) (\d\d):(\d\d):(\d\d)/);
+        if (!stamp) return false;
+        const at = new Date(now.getFullYear(), stamp[1] - 1, stamp[2], stamp[3], stamp[4], stamp[5]);
+        return Math.abs(now - at) < 5 * 60 * 1000;
+      };
+      const line = buffer.toString('utf8').split(/\r?\n/).slice(-40).reverse()
+        .find(value => /\s[EF] adb\s/.test(value) && value.includes(port) && recent(value));
+      return line ? ` ADB server log: ${line.replace(/^.*?\sadb\s+:\s*/, '').trim().slice(0, 300)}` : '';
+    } catch { return ''; } finally { await handle?.close(); }
   }
   async persist() {
     if (!this.dirty) return this.persistTask;
