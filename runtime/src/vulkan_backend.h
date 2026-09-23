@@ -53,7 +53,6 @@ struct VulkanExportRequest {
 class VulkanBackend {
 public:
     const axrb::protocol::WindowsGpuMarker& gpu_marker() const { return gpuMarker_; }
-    const std::vector<axrb::protocol::WindowsGpuMarker>& batch_slots() const { return batchSlots_; }
     bool release_batch();
     bool gpu_export_enabled() const { return gpuExportEnabled_; }
     bool export_batch(const std::vector<VulkanExportRequest>& requests, std::vector<axrb::protocol::WindowsGpuFrame>& frames);
@@ -91,13 +90,8 @@ private:
     VkQueue queue_ = VK_NULL_HANDLE;
     uint32_t queueFamily_ = 0;
     VkCommandPool pool_ = VK_NULL_HANDLE;
-    // Double-buffered command buffers: one records while the other executes.
-    // This allows the guest to start recording the next frame's export while
-    // the GPU is still processing the current frame's blit commands.
-    static constexpr uint32_t kCommandBufferCount = 2;
-    VkCommandBuffer cmd_[kCommandBufferCount] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    VkFence fence_[kCommandBufferCount] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    uint32_t cmdIndex_ = 0;  // Current command buffer index (alternates 0/1)
+    VkCommandBuffer cmd_ = VK_NULL_HANDLE;
+    VkFence fence_ = VK_NULL_HANDLE;
     VkBuffer buffer_ = VK_NULL_HANDLE;
     VkDeviceMemory bufferMemory_ = VK_NULL_HANDLE;
     void* mapped_ = nullptr;
