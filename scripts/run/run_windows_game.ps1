@@ -129,6 +129,11 @@ try {
     $runtimePolicy = & python "$PSScriptRoot\..\emulator\android_runtime_policy.py" --sdk $Sdk --serial $serial --package $Package --storage-read-ahead-kib $StorageReadAheadKB
     if ($LASTEXITCODE -ne 0) { throw 'Android runtime policy failed. The game was not started.' }
     Write-Output "Android runtime policy: $runtimePolicy"
+    # The audio adapter is allowed to fail without stopping the launch; say so
+    # where a player will see it rather than only inside the policy report.
+    $audioPolicy = $null
+    try { $audioPolicy = (($runtimePolicy -join '') | ConvertFrom-Json).audio } catch { }
+    if ($audioPolicy -and $audioPolicy.status -eq 'failed') { Write-Output "Warning: the audio adapter was not applied, so the game uses Android's stock audio driver. $($audioPolicy.reason)" }
     $appMetadataDir = Join-Path $logs "apps\$Package"
     $labelJson = & python "$PSScriptRoot\android_app_label.py" --sdk $Sdk --serial $serial --package $Package --icon-output "$appMetadataDir\icon.png"
     if ($LASTEXITCODE -ne 0) { throw 'Could not read the installed APK metadata.' }

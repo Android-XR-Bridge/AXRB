@@ -10,6 +10,14 @@ from audio_policy import apply_audio_policy
 from distribution import bundled_library, ndk_compiler
 
 
+class AdbError(subprocess.CalledProcessError):
+    # CalledProcessError leaves out what adb printed, which is the only record
+    # of why a command failed.
+    def __str__(self):
+        detail = (self.stderr or self.output or '').strip().splitlines()
+        return super().__str__() + (f' adb said: {detail[-1][:300]}' if detail else '')
+
+
 def ensure_adb_root(run):
     # adbd can close the connection while restarting as root. Check the
     # reconnected daemon's UID instead of treating that disconnect as failure.
@@ -35,13 +43,22 @@ def main():
         parser.error('Invalid Android package')
     adb = [str(args.sdk / 'platform-tools/adb.exe'), '-s', args.serial]
     def run(*parts):
-        return subprocess.run([*adb, *parts], check=True, capture_output=True,
-                              text=True, timeout=120).stdout.strip()
+        try:
+            return subprocess.run([*adb, *parts], check=True, capture_output=True,
+                                  text=True, timeout=120).stdout.strip()
+        except subprocess.CalledProcessError as error:
+            raise AdbError(error.returncode, error.cmd, error.output, error.stderr) from None
     if run('shell', 'getprop ro.hardware') != 'ranchu':
         print(json.dumps({'status': 'skipped', 'reason': 'Not the AXRB emulator'})); return
     ensure_adb_root(run)
     root = Path(__file__).resolve().parents[2]
-    audio = apply_audio_policy(run, args.sdk, root)
+    # Smaller audio buffers are a compatibility improvement, not a condition of
+    # running: if the adapter cannot be applied, the game starts on the stock
+    # driver and the reason travels with this policy's report.
+    try:
+        audio = apply_audio_policy(run, args.sdk, root)
+    except Exception as error:
+        audio = {'status': 'failed', 'reason': ' '.join(str(error).split())[:500]}
     storage = apply_storage_policy(
         lambda command: run('shell', 'su 0 sh -c ' + shlex.quote(command)),
         args.storage_read_ahead_kib)
