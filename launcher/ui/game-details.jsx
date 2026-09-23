@@ -7,6 +7,12 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { activeStatuses, bytes, call, Cover, IconButton, InstallProgress } from './common';
 
+const acNexusPackage = 'com.Ubisoft.ACNexusVR';
+const acNexusPatches = {
+  patch_ac_nexus_no_appsw_72: { label: 'AC Nexus: disable AppSW, 72 FPS target', detail: 'For build 207706. Verified in gameplay; lets the game render each frame and requests 72 Hz.' },
+  patch_ac_nexus_no_appsw_90: { label: 'AC Nexus: disable AppSW, 90 FPS target', detail: 'For build 207706. Requests 90 Hz; requires a 90 Hz headset and host connection. Actual FPS depends on performance.' },
+};
+
 export function GameDetails({ game, state, local, onClose, run, pending, setPage, notify }) {
   const returnFocus = useRef(document.activeElement);
   const [extra, setExtra] = useState(null);
@@ -20,16 +26,22 @@ export function GameDetails({ game, state, local, onClose, run, pending, setPage
   const patch = selected => operate(async () => {
     const result = await call('patch', game.id, selected);
     if (result?.patches) {
-      setExtra({ kind: 'patches', items: result.patches.map(item => ({ ...item, selected: item.recommended, arguments: '' })) });
+      const items = result.patches.filter(item => game.package === acNexusPackage || !acNexusPatches[item.name])
+        .map(item => ({ ...item, selected: game.package === acNexusPackage && item.name === 'patch_ac_nexus_no_appsw_72' ? true : item.recommended, arguments: '' }));
+      setExtra({ kind: 'patches', items });
       return;
     }
     notify(result?.profileLabel ? `Patched with ${result.profileLabel} compatibility profile` : 'Patched');
     setExtra(null);
   });
-  const editPatch = (name, values) => setExtra(current => ({ ...current, items: current.items.map(item => item.name === name ? { ...item, ...values } : item) }));
+  const editPatch = (name, values) => setExtra(current => ({ ...current, items: current.items.map(item => {
+    if (item.name === name) return { ...item, ...values };
+    if (values.selected && acNexusPatches[name] && acNexusPatches[item.name]) return { ...item, selected: false };
+    return item;
+  }) }));
   const choosingPatches = extra?.kind === 'patches';
   const applyPatches = () => patch(extra.items.filter(item => item.selected).map(item => ({ name: item.name, arguments: item.arguments.trim() ? item.arguments.split(',').map(value => value.trim()) : [] })));
-  const resetPatches = () => setExtra(current => ({ ...current, items: current.items.map(item => ({ ...item, selected: item.recommended, arguments: '' })) }));
+  const resetPatches = () => setExtra(current => ({ ...current, items: current.items.map(item => ({ ...item, selected: game.package === acNexusPackage && item.name === 'patch_ac_nexus_no_appsw_72' ? true : item.recommended, arguments: '' })) }));
   const loadExtra = kind => operate(async () => {
     const result = await call(kind, game.id);
     if (kind === 'permissions') { setExtra({ kind, ...result }); return; }
@@ -88,11 +100,11 @@ export function GameDetails({ game, state, local, onClose, run, pending, setPage
           : pending.has(`game-${game.id}`) && <div role="status" className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" />Working…</div>}
         {extra?.kind === 'patches' && <section data-patch-options className="space-y-3 border-t pt-4" aria-label="Patch options">
           <div className="text-sm font-medium">Patch options</div>
-          <p className="text-xs text-muted-foreground">No verified profile for this game version. Recommended CLI patches are selected; review optional patches before applying. Patching writes a separate APK. Install or update it afterward.</p>
+          <p className="text-xs text-muted-foreground">Recommended CLI patches are selected. Review optional patches before applying. Patching writes a separate APK. Install or update it afterward.</p>
           {extra.items.map(item => <div key={item.name} className="space-y-2">
             <label className="flex items-start gap-3 text-xs">
               <input type="checkbox" className="mt-0.5 size-4 shrink-0 accent-primary" checked={item.selected} disabled={busy} data-patch={item.name} onChange={e => editPatch(item.name, { selected: e.target.checked })} />
-              <span><span className="block">{item.name.replace(/^patch_/, '').replaceAll('_', ' ')}{item.recommended ? ' (recommended)' : ''}</span><code className="text-muted-foreground">{item.name}</code></span>
+              <span><span className="block">{acNexusPatches[item.name]?.label || item.name.replace(/^patch_/, '').replaceAll('_', ' ')}{item.recommended ? ' (recommended)' : ''}</span>{acNexusPatches[item.name] && <span className="block text-muted-foreground">{acNexusPatches[item.name].detail}</span>}<code className="text-muted-foreground">{item.name}</code></span>
             </label>
             {item.selected && <details className="ml-7 text-xs text-muted-foreground"><summary className="cursor-pointer">Arguments (advanced)</summary><Input className="mt-2" aria-label={`Arguments for ${item.name}`} placeholder="Comma-separated arguments" value={item.arguments} disabled={busy} onChange={e => editPatch(item.name, { arguments: e.target.value })} /></details>}
           </div>)}

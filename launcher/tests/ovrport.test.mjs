@@ -6,6 +6,8 @@ const catalog = [
   { name: 'patch_copy_libraries', recommended: true },
   { name: 'patch_vrapi_openxr', recommended: false },
   { name: 'patch_remove_vrapi', recommended: false },
+  { name: 'patch_ac_nexus_no_appsw_72', recommended: false },
+  { name: 'patch_ac_nexus_no_appsw_90', recommended: false },
 ];
 
 test('a legacy CLI cannot claim profiled patch support', async () => {
@@ -34,6 +36,7 @@ test('manual selections reject unknown patches, duplicates, conflicts and argume
   assert.throws(() => selectedPatchArgs(catalog, [{ name: 'patch_typo', arguments: [] }]), /Invalid/);
   assert.throws(() => selectedPatchArgs(catalog, [{ name: 'patch_copy_libraries', arguments: [] }, { name: 'patch_copy_libraries', arguments: [] }]), /duplicate/);
   assert.throws(() => selectedPatchArgs(catalog, [{ name: 'patch_vrapi_openxr', arguments: [] }, { name: 'patch_remove_vrapi', arguments: [] }]), /conflicts/);
+  assert.throws(() => selectedPatchArgs(catalog, [{ name: 'patch_ac_nexus_no_appsw_72', arguments: [] }, { name: 'patch_ac_nexus_no_appsw_90', arguments: [] }]), /conflict/);
   assert.throws(() => selectedPatchArgs(catalog, [{ name: 'patch_copy_libraries', arguments: ['x;patch_remove_vrapi'] }]), /Invalid arguments/);
   assert.deepEqual(selectedPatchArgs(catalog, [{ name: 'patch_copy_libraries', arguments: ['first', 'second'] }, { name: 'patch_vrapi_openxr', arguments: [] }]), ['--patches=patch_copy_libraries=first,second;patch_vrapi_openxr']);
 });

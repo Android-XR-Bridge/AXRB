@@ -45,5 +45,6 @@ export function selectedPatchArgs(catalog, selected) {
     return p.name + (p.arguments.length ? `=${p.arguments.join(',')}` : '');
   });
   if (seen.has('patch_vrapi_openxr') && seen.has('patch_remove_vrapi')) throw new Error('patch_vrapi_openxr conflicts with patch_remove_vrapi; select only one.');
+  if (seen.has('patch_ac_nexus_no_appsw_72') && seen.has('patch_ac_nexus_no_appsw_90')) throw new Error('AC Nexus 72 and 90 FPS patches conflict; select only one.');
   return [`--patches=${values.join(';')}`];
 }
