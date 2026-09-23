@@ -337,11 +337,7 @@ export class LiveDiagnostics {
       }
       this.flushSuppressed();
       await this.tailFiles(config.dataHome);
-      // Setup and emulator startup drive ADB themselves. Two clients racing
-      // to fork a server on the same port reset each other, and a capture
-      // that is only watching must not be what breaks the work it watches.
-      if (this.adbBusy()) { this.nextConnect = Math.max(this.nextConnect, Date.now() + 2000); }
-      else if (!this.stream && !this.connectTask && Date.now() >= this.nextConnect) {
+      if (!this.stream && !this.connectTask && Date.now() >= this.nextConnect) {
         this.connectTask = this.connect(config, this.generation).finally(() => { this.connectTask = null; });
       }
       if (this.stream && this.android.state === 'connecting' && Date.now() - this.streamStarted > 10000) {
@@ -393,19 +389,25 @@ export class LiveDiagnostics {
       } finally { await handle?.close(); }
     }
   }
-  child(executable, args) {
+  // Two clients racing to fork a server on the same port reset each other, and
+  // an adb client forks one whenever it finds none. Capture is only watching,
+  // so its clients address the server as 127.0.0.1, which adb treats as
+  // remote and never starts; only the deliberate start-server below may.
+  child(executable, args, { startsServer = false } = {}) {
     const env = { ...process.env, ANDROID_ADB_SERVER_PORT: '5038', ADB_LOCAL_TRANSPORT_MAX_PORT: '5683' };
     delete env.ADB_SERVER_SOCKET;
+    if (startsServer) delete env.ANDROID_ADB_SERVER_ADDRESS;
+    else env.ANDROID_ADB_SERVER_ADDRESS = '127.0.0.1';
     const child = this.spawnProcess(executable, args, { windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'], env });
     this.children.add(child);
     child.once('close', () => this.children.delete(child));
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
     return child;
   }
-  probe(executable, args, timeout = ADB_PROBE_TIMEOUT) {
+  probe(executable, args, timeout = ADB_PROBE_TIMEOUT, options) {
     return new Promise(resolve => {
       let output = '', error = '', finished = false;
-      const child = this.child(executable, args);
+      const child = this.child(executable, args, options);
       const finish = result => { if (finished) return; finished = true; clearTimeout(timer); resolve(result); };
       // Killing a client that is still waiting for the server it just forked
       // leaves the next client reading a closed socket, which is one of the
@@ -446,7 +448,11 @@ export class LiveDiagnostics {
       // Once a fault is under way the panel already says so; setting this
       // again would alternate with the failure and log both every retry.
       if (!this.adbFault) this.setAndroid('waiting', ADB_SETTLING, '');
-      const started = await this.probe(executable, ['-P', '5038', 'start-server'], ADB_SERVER_TIMEOUT);
+      // Setup and emulator startup start the server themselves; while they
+      // own ADB, wait for theirs rather than forking a competitor. A fault
+      // from before they took over gets a fresh grace period afterwards.
+      if (this.adbBusy()) { this.adbFault = null; return null; }
+      const started = await this.probe(executable, ['-P', '5038', 'start-server'], ADB_SERVER_TIMEOUT, { startsServer: true });
       if (!this.active || generation !== this.generation) return null;
       listed = await this.probe(executable, ['-P', '5038', 'devices', '-l']);
       // A server that failed to start is the cause; the listing's "cannot

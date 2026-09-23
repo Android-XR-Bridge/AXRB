@@ -433,26 +433,64 @@ test('a transient fault waits quietly, then is reported once it outlasts the gra
   assert.equal(capture.snapshot().entries.filter(entry => entry.level === 'E' && entry.text.includes('protocol fault')).length, 1);
 });
 
-test('capture stops probing ADB while setup or an operation owns it', async t => {
+test('capture keeps watching while setup owns ADB but never starts a server of its own', async t => {
   const directory = await temporary(t);
   await fs.mkdir(path.join(directory, 'platform-tools'));
   await fs.writeFile(path.join(directory, 'platform-tools', process.platform === 'win32' ? 'adb.exe' : 'adb'), '');
-  let busy = true;
+  let serverUp = false;
   const device = simulatedAdb([{ serial: 'emulator-5584', name: 'axrb-managed-api36' }]);
   const seen = [];
-  const spawnProcess = (file, args) => { seen.push(args.join(' ')); return device.spawnProcess(file, args); };
+  const spawnProcess = (file, args, options) => {
+    seen.push({ command: args.join(' '), address: options.env.ANDROID_ADB_SERVER_ADDRESS });
+    if (serverUp) return device.spawnProcess(file, args, options);
+    const child = new EventEmitter();
+    child.stdout = new PassThrough(); child.stderr = new PassThrough();
+    child.kill = () => {};
+    queueMicrotask(() => { child.stdout.end(''); child.stderr.end('* cannot start server on remote host\nadb.exe: failed to check server version: cannot connect to daemon at tcp:127.0.0.1:5038\n'); child.emit('close', 1); });
+    return child;
+  };
   const capture = new LiveDiagnostics({
     directory: path.join(directory, 'history'),
     getConfig: () => ({ sdk: directory, port: 5584, dataHome: directory }),
-    spawnProcess, adbBusy: () => busy,
+    spawnProcess, adbBusy: () => true,
   });
   await capture.start();
   try {
-    await new Promise(resolve => setTimeout(resolve, 300));
-    assert.equal(seen.length, 0, 'no adb client is spawned while the gate is held');
-    busy = false;
+    await until(() => seen.length > 0 && capture.snapshot().android.state === 'waiting');
+    assert.ok(seen.every(({ address }) => address === '127.0.0.1'), 'every capture client addresses the server as remote, so none can fork one');
+    assert.ok(!seen.some(({ command }) => command.includes('start-server')), 'no server is started while setup owns ADB');
+    // Setup's own server comes up while setup still holds ADB; capture
+    // attaches to it without waiting for setup to finish.
+    serverUp = true; capture.nextConnect = 0;
     await until(() => capture.snapshot().android.state === 'streaming');
-    assert.ok(seen.some(command => command.includes('devices')), 'discovery resumes once the gate clears');
+    assert.ok(!seen.some(({ command }) => command.includes('start-server')));
+  } finally { await capture.stop(); }
+});
+
+test('the deliberate start-server is the only capture client allowed to fork a server', async t => {
+  const directory = await temporary(t);
+  await fs.mkdir(path.join(directory, 'platform-tools'));
+  await fs.writeFile(path.join(directory, 'platform-tools', process.platform === 'win32' ? 'adb.exe' : 'adb'), '');
+  const environments = [];
+  const spawnProcess = (_file, args, options) => {
+    environments.push({ command: args.join(' '), address: options.env.ANDROID_ADB_SERVER_ADDRESS });
+    const child = new EventEmitter();
+    child.stdout = new PassThrough(); child.stderr = new PassThrough();
+    child.kill = () => {};
+    queueMicrotask(() => { child.stdout.end(''); child.stderr.end('adb.exe: cannot connect to daemon\n'); child.emit('close', 1); });
+    return child;
+  };
+  const previous = process.env.ANDROID_ADB_SERVER_ADDRESS;
+  process.env.ANDROID_ADB_SERVER_ADDRESS = '192.0.2.1';
+  t.after(() => { if (previous === undefined) delete process.env.ANDROID_ADB_SERVER_ADDRESS; else process.env.ANDROID_ADB_SERVER_ADDRESS = previous; });
+  const capture = new LiveDiagnostics({ directory: path.join(directory, 'history'), getConfig: () => ({ sdk: directory, port: 5584, dataHome: directory }), spawnProcess });
+  await capture.start();
+  try {
+    await until(() => environments.length >= 3);
+    assert.deepEqual(environments.map(({ command }) => command.split(' ').pop()), ['-l', 'start-server', '-l']);
+    for (const { command, address } of environments) {
+      assert.equal(address, command.includes('start-server') ? undefined : '127.0.0.1', command);
+    }
   } finally { await capture.stop(); }
 });
 

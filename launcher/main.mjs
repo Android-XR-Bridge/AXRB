@@ -316,8 +316,8 @@ liveDiagnostics = new LiveDiagnostics({
   directory: path.join(state.directory, 'diagnostics'),
   getConfig: () => ({ sdk: runtime.settings.sdk, avd: runtime.settings.avd, port: runtime.settings.port, dataHome: process.env.AXRB_DATA_HOME || path.join(root, 'out') }),
   // Setup owns ADB while it installs or boots Android, and every operation
-  // behind the exclusive gate drives it too. Capture waits its turn rather
-  // than forking a competing server.
+  // behind the exclusive gate drives it too. Capture keeps watching, but
+  // leaves starting the server to them rather than forking a competitor.
   adbBusy: () => busy || Boolean(setup?.status?.active),
   onUpdate: () => { if (window && !window.isDestroyed()) window.webContents.send('axrb:diagnostics'); },
 });

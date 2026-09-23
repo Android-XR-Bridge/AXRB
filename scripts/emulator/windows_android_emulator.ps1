@@ -601,8 +601,15 @@ switch ($Action) {
         $candidates = @(Get-ManagedEmulatorProcess)
         $adbState = ''
         if (Test-Path -LiteralPath $adb) {
+            # An adb client forks a server when it finds none, and this poll
+            # runs every few seconds, including while setup starts its own.
+            # Addressing the server as 127.0.0.1 makes adb treat it as remote,
+            # so a missing server reads as unreachable instead of being started
+            # by a client the 5-second timeout may kill mid-fork.
+            $env:ANDROID_ADB_SERVER_ADDRESS = '127.0.0.1'
             try { $adbState = ((Invoke-ExternalWithTimeout $adb @('-s', $serial, 'get-state') 5) -join '').Trim() }
             catch { $adbState = '' }
+            finally { $env:ANDROID_ADB_SERVER_ADDRESS = $null }
         }
         # Windows PowerShell's ConvertTo-Json renders the pipeline's "Nothing"
         # result (what -ExpandProperty on an empty collection produces) as {}
