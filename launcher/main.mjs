@@ -436,10 +436,17 @@ handler('uninstall', id => exclusive(async () => {
 handler('patch', (id, selected) => exclusive(async () => {
   const game = getGame(id), cli = await configuredCli();
   if (!game.apk) throw new Error('Download or import the APK first.');
-  const input = game.apk;
-  const identity = await runtime.inspect(input);
+  // Patch from the original APK every time. After a patch game.apk points at
+  // the patched copy, and patching that again stacks OVRPort's changes onto
+  // its own output (base-axrb-axrb.apk).
+  let input = game.apk, identity = await runtime.inspect(input);
+  if (identity.patched) {
+    const source = game.sourceApk ? await runtime.inspect(game.sourceApk).catch(() => null) : null;
+    if (!source || source.patched || source.package !== game.package || source.versionCode !== identity.versionCode) throw new Error('This APK is already patched and its original is no longer available. Download or import the original APK to patch it again.');
+    input = game.sourceApk; identity = source;
+  } else game.sourceApk = input;
   if (identity.package !== game.package) throw new Error('APK package no longer matches this game; import it separately.');
-  Object.assign(game, { version: identity.version, versionCode: identity.versionCode, activity: identity.activity, patched: identity.patched });
+  Object.assign(game, { version: identity.version, versionCode: identity.versionCode, activity: identity.activity, patched: input === game.apk ? identity.patched : true });
   await persist();
   const compatibility = resolveCompatibility(compatibilityProfiles, identity);
   let patchArgs;

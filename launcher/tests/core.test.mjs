@@ -117,7 +117,7 @@ test('portable copies and moves keep carried files while preserving external pat
   const state = new State(path.join(original, 'data')); await state.load({ portableRoot: original });
   state.data.settings = { managedDirectory: path.join(original, 'AXRB Runtime'), sdk: path.join(original, 'AXRB Runtime/sdk'),
     downloadDir: path.join(original, 'downloads'), ovrportCli: path.join(dir, 'external-tools/ovrport.jar') };
-  state.put({ id: 'carried', apk, files: [{ path: asset, kind: 'obb' }], owned: true, installed: true });
+  state.put({ id: 'carried', apk, sourceApk: apk, files: [{ path: asset, kind: 'obb' }], owned: true, installed: true });
   state.put({ id: 'external', apk: external, files: [{ path: external, kind: 'apk' }] });
   await state.save();
   await state.stageRuntime(path.join(original, 'AXRB Runtime'), new Set(['com.game.carried']));
@@ -128,6 +128,7 @@ test('portable copies and moves keep carried files while preserving external pat
   const copy = new State(path.join(copied, 'data')); await copy.load({ portableRoot: copied });
   assert.equal(await fs.readFile(copy.data.games[0].apk, 'utf8'), 'copied APK', 'a copy must not keep using the still-existing original');
   assert.equal(await fs.readFile(copy.data.games[0].files[0].path, 'utf8'), 'expansion data');
+  assert.equal(copy.data.games[0].sourceApk, copy.data.games[0].apk, 'the pre-patch original follows the copy too');
   assert.deepEqual(copy.data.settings, { ...state.data.settings, managedDirectory: path.join(copied, 'AXRB Runtime'),
     sdk: path.join(copied, 'AXRB Runtime/sdk'), downloadDir: path.join(copied, 'downloads') });
   assert.equal(copy.data.games[1].apk, external, 'a sibling with the same prefix is not inside the portable root');

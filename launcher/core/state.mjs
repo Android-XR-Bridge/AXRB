@@ -22,6 +22,7 @@ export class State {
         }
         for (const game of this.data.games) {
           if (game.apk) game.apk = rebase(game.apk);
+          if (game.sourceApk) game.sourceApk = rebase(game.sourceApk);
           for (const file of game.files || []) file.path = rebase(file.path);
         }
         const pending = await this.pendingRuntime();
