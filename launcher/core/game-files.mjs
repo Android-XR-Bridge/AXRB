@@ -5,7 +5,24 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { archivePath, extractZip, zipSize } from './archive.mjs';
 import { checkSpace, safeName } from './download.mjs';
 
-export const shellQuote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
+// Android's install failure codes, in words a player can act on. The code stays
+// at the end of the message so a report can still be searched for it.
+const INSTALL_FAILURES = {
+  INSTALL_FAILED_UPDATE_INCOMPATIBLE: 'An installed copy of this game is signed differently, for example the unpatched store version before patching. Android will not update it with this APK. Uninstall the game first (this deletes its Android data and saves), then install again.',
+  INSTALL_FAILED_VERSION_DOWNGRADE: 'An installed copy of this game is newer than this APK. Uninstall the game first (this deletes its Android data and saves) to install this version.',
+  INSTALL_FAILED_INSUFFICIENT_STORAGE: 'Android does not have enough free storage for this APK. Free space or grow Android storage in Settings, then retry.',
+  INSTALL_FAILED_NO_MATCHING_ABIS: 'This APK has no native code Android can run here (it needs arm64-v8a or x86_64).',
+  INSTALL_PARSE_FAILED_NO_CERTIFICATES: 'This APK is not signed. If it was patched, patch it again; otherwise download or import it again.',
+  INSTALL_FAILED_INVALID_APK: 'Android rejected this APK as invalid. Download, import or patch it again.',
+  INSTALL_PARSE_FAILED_NOT_APK: 'This file is not a valid APK. Download, import or patch it again.',
+};
+export function describeInstallFailure(error) {
+  const code = String(error?.message ?? '').match(/\b(INSTALL_(?:FAILED|PARSE_FAILED)_[A-Z_]+)\b/)?.[1];
+  if (!code || !INSTALL_FAILURES[code]) return error;
+  return new Error(`${INSTALL_FAILURES[code]} (Android: ${code})`, { cause: error });
+}
+
+export const shellQuote =value => `'${String(value).replaceAll("'", "'\\''")}'`;
 
 export function assetDestination(packageName, relative) {
   if (!/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+$/.test(packageName)) throw new Error('Invalid package');
@@ -149,7 +166,8 @@ export async function installFiles(game, adb, update = () => {}, signal) {
   if (Number(available) * 1024 < bytes + 1024 ** 3) throw new Error(`Android needs at least ${(bytes / 1024 ** 3 + 1).toFixed(1)} GB free for this installation. Free space and retry.`);
   const rootAdb = assets.length && (await adb(['shell', 'id', '-u'], { signal })).trim() === '0';
   signal?.throwIfAborted(); update('Installing APK');
-  await adb([splits.length ? 'install-multiple' : 'install', '--no-incremental', '--force-queryable', '-r', ...apkPaths], { timeout: 30 * 60 * 1000, signal });
+  await adb([splits.length ? 'install-multiple' : 'install', '--no-incremental', '--force-queryable', '-r', ...apkPaths], { timeout: 30 * 60 * 1000, signal })
+    .catch(error => { throw describeInstallFailure(error); });
   completed = apkBytes;
   let uid;
   if (rootAdb) {

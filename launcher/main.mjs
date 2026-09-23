@@ -113,6 +113,9 @@ function handler(name, callback) {
     } catch (error) {
       const text = message(error);
       if (trace) liveDiagnostics?.append('launcher', `${name} failed: ${text}`, { level: 'E', tag: 'operation' });
+      // A message rewritten for the player keeps the tool's original text as
+      // its cause; diagnostics carry both so nothing the tool said is lost.
+      if (trace && error?.cause) liveDiagnostics?.append('launcher', `${name} failure detail: ${message(error.cause)}`, { level: 'E', tag: 'operation' });
       return { ok: false, error: text };
     }
   });
