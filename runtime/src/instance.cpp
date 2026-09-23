@@ -235,6 +235,29 @@ XrResult XRAPI_CALL xrGetOpenGLESGraphicsRequirementsKHR_impl(
     return XR_SUCCESS;
 }
 
+#if defined(__ANDROID__)
+// The API version of the device xrGetVulkanGraphicsDeviceKHR will hand out,
+// read through a throwaway instance because none exists yet when an engine
+// asks for its requirements. 0 when it cannot be determined.
+static uint32_t guest_device_api_version()
+{
+    VkApplicationInfo application{VK_STRUCTURE_TYPE_APPLICATION_INFO};
+    application.apiVersion = VK_API_VERSION_1_1;
+    VkInstanceCreateInfo info{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+    info.pApplicationInfo = &application;
+    VkInstance probe = VK_NULL_HANDLE;
+    if (vkCreateInstance(&info, nullptr, &probe) != VK_SUCCESS) return 0;
+    uint32_t version = 0;
+    if (VkPhysicalDevice device = VulkanBackend::choose_device(probe)) {
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(device, &properties);
+        version = properties.apiVersion;
+    }
+    vkDestroyInstance(probe, nullptr);
+    return version;
+}
+#endif
+
 XrResult XRAPI_CALL xrGetVulkanGraphicsRequirementsKHR_impl(
     XrInstance instance,
     XrSystemId systemId,
@@ -263,8 +286,16 @@ XrResult XRAPI_CALL xrGetVulkanGraphicsRequirementsKHR_impl(
         vkGetInstanceProcAddr(VK_NULL_HANDLE, "vkEnumerateInstanceVersion"));
     if (enumerateVersion && enumerateVersion(&instanceVersion) == VK_SUCCESS &&
         VK_VERSION_MAJOR(instanceVersion) == 1 && VK_VERSION_MINOR(instanceVersion) > 1) {
-        graphicsRequirements->maxApiVersionSupported =
-            XR_MAKE_VERSION(VK_VERSION_MAJOR(instanceVersion), VK_VERSION_MINOR(instanceVersion), 0);
+        // The loader may implement a newer version than the device (1.4
+        // against GFXStream's 1.3), and an engine that trusts this ceiling
+        // for device calls would find 1.4 entry points missing. Report the
+        // lower of the two.
+        const uint32_t deviceVersion = guest_device_api_version();
+        if (deviceVersion && VK_VERSION_MINOR(deviceVersion) < VK_VERSION_MINOR(instanceVersion)) instanceVersion = deviceVersion;
+        if (VK_VERSION_MINOR(instanceVersion) > 1) {
+            graphicsRequirements->maxApiVersionSupported =
+                XR_MAKE_VERSION(VK_VERSION_MAJOR(instanceVersion), VK_VERSION_MINOR(instanceVersion), 0);
+        }
     }
     AXRB_VKBIND("requirements min=1.0.0 max=%u.%u.%u",
         static_cast<unsigned>(XR_VERSION_MAJOR(graphicsRequirements->maxApiVersionSupported)),

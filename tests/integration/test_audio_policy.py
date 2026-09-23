@@ -89,7 +89,32 @@ class AudioPolicyTests(unittest.TestCase):
             self.apply(guest)
         self.assertFalse(guest.mounted)
         self.assertEqual(guest.frames, 1088)
-        self.assertIn('umount ' + policy.HAL_DIR, guest.mutations)
+        self.assertIn('umount -l ' + policy.HAL_DIR, guest.mutations)
+
+    def test_a_probe_that_fails_while_audio_restarts_is_retried(self):
+        guest = Guest()
+        failures = iter([True, True])
+        original = guest.run
+        def flaky(*args):
+            if args[0] == 'shell' and 'getprop init.svc.vendor.audio-hal' in args[1] and guest.mounted and next(failures, False):
+                raise policy.subprocess.CalledProcessError(1, ['adb', *args])
+            return original(*args)
+        guest.run = flaky
+        with patch.object(policy.time, 'sleep'):
+            self.assertEqual(self.apply(guest)['status'], 'applied')
+        self.assertTrue(guest.mounted)
+
+    def test_a_failed_rollback_reports_both_failures(self):
+        guest = Guest()
+        guest.fail_start = True
+        original = guest.run
+        def stuck(*args):
+            if args[0] == 'shell' and 'umount ' in args[1]:
+                raise policy.subprocess.CalledProcessError(1, ['adb', *args])
+            return original(*args)
+        guest.run = stuck
+        with patch.object(policy.time, 'sleep'), self.assertRaisesRegex(RuntimeError, '960-frame.*stock audio driver also failed'):
+            self.apply(guest)
 
     def test_historical_frame_counts_do_not_hide_live_output_failure(self):
         def shell(command):

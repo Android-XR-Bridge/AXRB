@@ -46,16 +46,22 @@ def build_adapter(sdk, root):
 
 
 def audio_ready(shell, expected_frames):
-    if shell('getprop init.svc.vendor.audio-hal') != 'running':
+    # A probe can fail outright while the HAL and audioserver restart, or while
+    # adbd settles after restarting as root. That means "not ready yet"; only
+    # the deadline in wait_for_audio decides that audio did not come up.
+    try:
+        if shell('getprop init.svc.vendor.audio-hal') != 'running':
+            return False
+        dump = shell('dumpsys -t 2 media.audio_flinger')
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return False
-    dump = shell('dumpsys -t 2 media.audio_flinger')
     # Match live output-thread records, excluding historical stream dumps.
     frames = [int(n) for n in re.findall(r'^  HAL frame count: (\d+)$', dump, re.M)]
     return bool(frames) and all(n == expected_frames for n in frames)
 
 
 def wait_for_audio(shell, frames):
-    for _ in range(20):
+    for _ in range(60):
         if audio_ready(shell, frames):
             return
         time.sleep(0.5)
@@ -111,10 +117,16 @@ def apply_audio_policy(run, sdk, root):
             mounted = True
         shell('setprop ctl.restart vendor.audio-hal')
         wait_for_audio(shell, 960)
-    except Exception:
+    except Exception as failure:
         if mounted:
-            shell('umount ' + HAL_DIR)
-            shell('setprop ctl.restart vendor.audio-hal')
-            wait_for_audio(shell, 1088)
+            # The running HAL keeps the adapter mapped, so a plain umount fails
+            # with EBUSY. Detach the overlay instead; the restarted HAL then
+            # loads the stock driver from beneath it.
+            try:
+                shell('umount -l ' + HAL_DIR)
+                shell('setprop ctl.restart vendor.audio-hal')
+                wait_for_audio(shell, 1088)
+            except Exception as rollback:
+                raise RuntimeError(f'{failure}; restoring the stock audio driver also failed: {rollback}') from failure
         raise
     return {'status': 'applied', 'output_frames': 960}

@@ -234,7 +234,9 @@ function Get-GuestFeatures {
 }
 # sys.boot_completed flips before PackageManager will answer, and a game
 # launched in that window fails to resolve its own activity, so wait for the
-# service that the launch actually depends on.
+# service that the launch actually depends on. Ask for the framework package:
+# it always exists, whereas a fresh image may have no third-party apps yet,
+# and PackageManager scans every package before it answers anything.
 function Wait-BootCompleted([int]$TimeoutSeconds) {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $booted = $false
@@ -247,7 +249,7 @@ function Wait-BootCompleted([int]$TimeoutSeconds) {
         }
         if ($booted) {
             [string]$packages = ''
-            try { $packages = ((Invoke-ExternalWithTimeout $adb @('-s', $serial, 'shell', 'cmd', 'package', 'list', 'packages', '-3') 15) -join '') } catch { }
+            try { $packages = ((Invoke-ExternalWithTimeout $adb @('-s', $serial, 'shell', 'cmd', 'package', 'path', 'android') 15) -join '') } catch { }
             if ($packages -match 'package:') { return $true }
         }
     } while ((Get-Date) -lt $deadline)
