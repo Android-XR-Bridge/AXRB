@@ -60,8 +60,12 @@ app.on('before-quit', event => {
   if (!liveDiagnostics || quitting) return;
   event.preventDefault(); quitting = true;
   (async () => {
-    await emulatorWatchdog?.stop();
-    const idle = await runtime.adbServerIdle().catch(() => false);
+    // Waiting for the watchdog's poll in flight, then running another, could
+    // hold quit for 20 seconds. Its last reading is at most a poll old, and
+    // anything AXRB itself is still starting keeps the server.
+    const watched = emulatorWatchdog?.snapshot().phase;
+    emulatorWatchdog?.stop();
+    const idle = !busy && !setup?.status?.active && await runtime.adbServerIdle(watched).catch(() => false);
     liveDiagnostics.append('launcher', idle ? 'Stopping the ADB server; Android is not running.' : 'Leaving the ADB server running for Android or a game session.', { tag: 'runtime' });
     // Capture stops first so its logcat children end quietly with the launcher.
     await liveDiagnostics.stop();

@@ -431,4 +431,11 @@ test('quitting stops the ADB server only when no game or emulator still needs it
   assert.equal(await runtime.adbServerIdle(), false, 'the emulator still runs');
   running = false; runtime.child = {};
   assert.equal(await runtime.adbServerIdle(), false, 'a game session still streams through adb reverse');
+  runtime.child = null; running = true;
+  runtime.status = async () => { throw new Error('the watchdog reading should have been used'); };
+  assert.equal(await runtime.adbServerIdle('stopped'), true, "the watchdog's reading spares a status run");
+  assert.equal(await runtime.adbServerIdle('online'), false);
+  assert.equal(await runtime.adbServerIdle('starting'), false);
+  runtime.status = async () => ({ running: false, pid: null, count: 0, adbState: '' });
+  assert.equal(await runtime.adbServerIdle('unknown'), true, 'an unknown reading asks directly');
 });

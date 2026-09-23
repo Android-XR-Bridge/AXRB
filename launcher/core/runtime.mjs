@@ -104,9 +104,12 @@ export class Runtime {
   // holding the port and, in portable mode, an adb.exe inside the folder. It
   // stays while a game or the emulator still runs: the game's image stream
   // rides that server's adb reverse, and sessions can outlive the launcher.
-  async adbServerIdle() {
+  // watchedPhase is the watchdog's latest reading; trusting it spares quit a
+  // PowerShell status run of up to 10 seconds. Without one, ask directly.
+  async adbServerIdle(watchedPhase) {
     if (this.child || !this.settings.sdk) return false;
     try { await fs.access(path.join(this.settings.sdk, 'platform-tools/adb.exe')); } catch { return false; }
+    if (['stopped', 'online', 'starting'].includes(watchedPhase)) return watchedPhase === 'stopped';
     return !(await this.status()).running;
   }
   stopAdbServer() {
