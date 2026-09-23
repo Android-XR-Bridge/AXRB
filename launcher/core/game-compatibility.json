@@ -9,6 +9,22 @@
       "ovrport": { "extraPatches": ["patch_vrapi_openxr"] },
       "runtime": { "precomposeProjectionLayers": true },
       "summary": "VrApi OpenXR adapter and projection-layer precomposition"
+    },
+    {
+      "id": "batman-arkham-shadow-1.4.1",
+      "label": "Batman: Arkham Shadow 1.4.1",
+      "package": "com.camouflaj.manta",
+      "versions": [{ "versionCode": "350961", "versionName": "1.4.1-350961" }],
+      "ovrport": { "recommended": true },
+      "summary": "OVRPort's recommended patches: they replace the Meta Platform SDK loader, which otherwise crashes at start, and pass the Unity Oculus hardware and Meta XR Audio checks. Patch before installing; if the unpatched store copy is already installed, uninstall it first (this deletes its Android saves)."
+    },
+    {
+      "id": "north-star-1.0.1",
+      "label": "North Star 1.0.1",
+      "package": "com.meta.samples.NorthStar",
+      "versions": [{ "versionCode": "101", "versionName": "1.0.1" }],
+      "ovrport": { "recommended": true },
+      "summary": "OVRPort's recommended patches: they pass the Unity Oculus hardware check, without which VR does not start. The game does not use the Meta Platform SDK. Patch before installing."
     }
   ]
 }

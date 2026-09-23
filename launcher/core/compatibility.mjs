@@ -4,7 +4,7 @@ import { validPackage } from './runtime.mjs';
 const TOP_KEYS = new Set(['schemaVersion', 'profiles']);
 const PROFILE_KEYS = new Set(['id', 'label', 'package', 'versions', 'ovrport', 'runtime', 'summary']);
 const VERSION_KEYS = new Set(['versionCode', 'versionName']);
-const OVRPORT_KEYS = new Set(['extraPatches']);
+const OVRPORT_KEYS = new Set(['recommended', 'extraPatches']);
 const RUNTIME_KEYS = new Set(['precomposeProjectionLayers']);
 // Patch names travel inside a semicolon-separated `--extra-patches` value where
 // `=` introduces per-patch arguments, so anything outside a plain identifier
@@ -79,13 +79,20 @@ function checkProfile(profile, seenIds) {
   if (Object.hasOwn(profile, 'ovrport') && profile.ovrport !== undefined) {
     if (!isRecord(profile.ovrport)) throw new Error(`${context} ovrport must be an object.`);
     assertKnownKeys(profile.ovrport, OVRPORT_KEYS, `${context} ovrport`);
-    if (!Object.hasOwn(profile.ovrport, 'extraPatches')) throw new Error(`${context} ovrport needs extraPatches.`);
-    if (!Array.isArray(profile.ovrport.extraPatches) || profile.ovrport.extraPatches.length === 0) {
+    // OVRPort always applies its recommended set; extraPatches add to it.
+    // `recommended: true` records that the set alone was verified, which is an
+    // action in its own right: a matched profile patches without asking.
+    const recommended = Object.hasOwn(profile.ovrport, 'recommended');
+    if (recommended && profile.ovrport.recommended !== true) throw new Error(`${context} ovrport.recommended must be true when present.`);
+    const extra = Object.hasOwn(profile.ovrport, 'extraPatches');
+    if (!recommended && !extra) throw new Error(`${context} ovrport needs extraPatches or recommended.`);
+    if (extra && (!Array.isArray(profile.ovrport.extraPatches) || profile.ovrport.extraPatches.length === 0)) {
       throw new Error(`${context} ovrport.extraPatches must be a nonempty array.`);
     }
     ovrport = {
-      extraPatches: profile.ovrport.extraPatches.map((name, index) =>
-        checkPatchName(name, `${context} ovrport.extraPatches[${index}]`)),
+      ...(recommended ? { recommended: true } : {}),
+      ...(extra ? { extraPatches: profile.ovrport.extraPatches.map((name, index) =>
+        checkPatchName(name, `${context} ovrport.extraPatches[${index}]`)) } : {}),
     };
   }
 

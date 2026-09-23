@@ -302,6 +302,15 @@ patch and launch actions. The initial profile is **The Climb 2 2.2**
 Use an experimental CLI build containing the adapter. The profile does not
 establish complete gameplay compatibility.
 
+**Batman: Arkham Shadow 1.4.1** (`com.camouflaj.manta`, versionCode 350961) and
+**North Star 1.0.1** (`com.meta.samples.NorthStar`, versionCode 101) use
+ovrport's recommended patches alone, recorded as `"ovrport": { "recommended":
+true }`. Both are Unity titles whose Oculus XR plugin refuses to start VR off
+Quest hardware until patched. Batman also carries the Meta Platform SDK loader
+and Meta XR Audio for Wwise, which the recommended set replaces and patches. A
+matched profile patches without showing the picker, and its summary tells the
+player to patch before installing.
+
 Game details disclose the local APK's matching profile. **Patch** re-inspects
 the actual input file before selecting a preset or showing manual choices, and
 again when applying those choices. Replacing an APK therefore refreshes its

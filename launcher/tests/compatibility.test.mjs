@@ -43,6 +43,31 @@ test('bundled database matches The Climb 2 2.2 with patch and runtime actions', 
   assert.deepEqual(compatibilityRuntimeOptions(resolution), { precomposeProjectionLayers: true });
 });
 
+test('bundled database patches Batman and North Star with the recommended set only', async () => {
+  const profiles = await loadCompatibilityProfiles(bundled);
+  for (const game of [{ package: 'com.camouflaj.manta', version: '1.4.1-350961', versionCode: '350961' },
+    { package: 'com.meta.samples.NorthStar', version: '1.0.1', versionCode: '101' }]) {
+    const resolution = resolveCompatibility(profiles, game);
+    assert.equal(resolution.status, 'matched', game.package);
+    assert.deepEqual(compatibilityPatchArgs(resolution), [], 'no extra patches: OVRPort applies its recommended set');
+    assert.deepEqual(compatibilityRuntimeOptions(resolution), {});
+    assert.match(resolution.summary, /before installing/);
+  }
+  assert.equal(resolveCompatibility(profiles, { package: 'com.camouflaj.manta', version: '1.4.2-360000', versionCode: '360000' }).status, 'mismatch');
+});
+
+test('a profile may record that the recommended patches alone were verified', async t => {
+  const recommendedOnly = profile({ id: 'recommended', ovrport: { recommended: true } });
+  delete recommendedOnly.runtime;
+  const both = profile({ id: 'both', package: 'com.example.both', ovrport: { recommended: true, extraPatches: ['patch_a'] } });
+  const profiles = await loadCompatibilityProfiles(await writeProfiles(t, doc(recommendedOnly, both)));
+  assert.deepEqual(profiles[0].ovrport, { recommended: true });
+  const resolution = resolveCompatibility(profiles, { package: 'com.example.game', version: '1.0' });
+  assert.equal(resolution.status, 'matched');
+  assert.deepEqual(compatibilityPatchArgs(resolution), []);
+  assert.deepEqual(compatibilityPatchArgs(resolveCompatibility(profiles, { package: 'com.example.both', version: '1.0' })), ['--extra-patches=patch_a']);
+});
+
 test('version codes match as exact strings, including large codes and combined selectors', async t => {
   const file = await writeProfiles(t, doc(profile({
     id: 'code-game',
@@ -138,6 +163,9 @@ test('malformed envelopes, identities and unknown keys are rejected', async t =>
     ['unknown ovrport key', doc(profile({ ovrport: { extraPatches: ['patch_vrapi_openxr'], extra: true } }))],
     ['ovrport not object', doc(profile({ ovrport: [] }))],
     ['ovrport empty patches', doc(profile({ ovrport: { extraPatches: [] } }))],
+    ['ovrport with no action', doc(profile({ ovrport: {} }))],
+    ['ovrport recommended false', doc(profile({ ovrport: { recommended: false } }))],
+    ['ovrport recommended not boolean', doc(profile({ ovrport: { recommended: 'yes' } }))],
     ['patch semicolon injection', doc(profile({ ovrport: { extraPatches: ['patch_a;patch_b'] } }))],
     ['patch argument injection', doc(profile({ ovrport: { extraPatches: ['patch_a=1'] } }))],
     ['patch empty name', doc(profile({ ovrport: { extraPatches: [''] } }))],
