@@ -10,6 +10,7 @@
 #include <mutex>
 #include <shared_mutex>
 #include <chrono>
+#include <vector>
 #include "vulkan_descriptor_template.h"
 
 namespace {
@@ -23,6 +24,12 @@ struct Device {
     PFN_vkDestroyDescriptorUpdateTemplate destroyTemplate = nullptr;
     PFN_vkUpdateDescriptorSetWithTemplate updateTemplate = nullptr;
     PFN_vkUpdateDescriptorSets updateSets = nullptr;
+    PFN_vkAllocateMemory allocate = nullptr;
+    // Set when the application enabled VK_KHR_external_memory_fd and only this
+    // layer published it; the driver's own entry points otherwise.
+    bool syntheticMemoryFd = false;
+    PFN_vkGetMemoryFdKHR getMemoryFd = nullptr;
+    PFN_vkGetMemoryFdPropertiesKHR getMemoryFdProperties = nullptr;
 };
 std::shared_mutex mutex;
 std::map<void*,Instance> instances;
@@ -116,16 +123,63 @@ VKAPI_ATTR VkResult VKAPI_CALL vkSetDebugUtilsObjectNameEXT(VkDevice h,const VkD
     return next?next(h,info):VK_ERROR_EXTENSION_NOT_PRESENT;
 }
 // Advertising VK_KHR_external_memory_fd means its entry points must resolve;
-// a null pointer is a crash rather than a refusal. The guest cannot hand out
-// a file descriptor for host memory, so say so in the way the caller expects.
-VKAPI_ATTR VkResult VKAPI_CALL vkGetMemoryFdKHR(VkDevice,const VkMemoryGetFdInfoKHR*,int* fd){
+// a null pointer is a crash rather than a refusal. A driver that publishes the
+// extension itself answers for real. Otherwise the guest cannot hand out a
+// file descriptor for host memory, so say so in the way the caller expects.
+VKAPI_ATTR VkResult VKAPI_CALL vkGetMemoryFdKHR(VkDevice h,const VkMemoryGetFdInfoKHR* info,int* fd){
+    auto s=device(h);
+    if(s.getMemoryFd)return s.getMemoryFd(h,info,fd);
     static std::once_flag once;
     std::call_once(once,[]{__android_log_print(ANDROID_LOG_INFO,"AXRB.SystemVulkan","memory export requested; the guest cannot share host memory by descriptor");});
     if(fd)*fd=-1;
     return VK_ERROR_FEATURE_NOT_PRESENT;
 }
-VKAPI_ATTR VkResult VKAPI_CALL vkGetMemoryFdPropertiesKHR(VkDevice,VkExternalMemoryHandleTypeFlagBits,int,VkMemoryFdPropertiesKHR*){
-    return VK_ERROR_FEATURE_NOT_PRESENT;
+VKAPI_ATTR VkResult VKAPI_CALL vkGetMemoryFdPropertiesKHR(VkDevice h,VkExternalMemoryHandleTypeFlagBits type,int fd,VkMemoryFdPropertiesKHR* properties){
+    auto s=device(h);
+    return s.getMemoryFdProperties?s.getMemoryFdProperties(h,type,fd,properties):VK_ERROR_FEATURE_NOT_PRESENT;
+}
+// The driver never enabled VK_KHR_external_memory_fd on a device where only
+// this layer published it, so it must not see a request to export memory as
+// a file descriptor. Pass it a copy of the chain without that handle type, or
+// without the request if that was all it asked for; the allocation itself
+// still succeeds. The application's structures are const and may be shared
+// or read-only, so they are copied, never relinked: every structure ahead of
+// the request must be one whose size is known here, and a chain with anything
+// else passes through unchanged.
+VKAPI_ATTR VkResult VKAPI_CALL vkAllocateMemory(VkDevice h,const VkMemoryAllocateInfo* info,const VkAllocationCallbacks* alloc,VkDeviceMemory* out){
+    auto s=device(h);
+    if(!s.syntheticMemoryFd||!info)return s.allocate(h,info,alloc,out);
+    auto size=[](VkStructureType type)->size_t{
+        switch(type){
+        case VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO:return sizeof(VkMemoryDedicatedAllocateInfo);
+        case VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO:return sizeof(VkMemoryAllocateFlagsInfo);
+        case VK_STRUCTURE_TYPE_MEMORY_PRIORITY_ALLOCATE_INFO_EXT:return sizeof(VkMemoryPriorityAllocateInfoEXT);
+        case VK_STRUCTURE_TYPE_MEMORY_OPAQUE_CAPTURE_ADDRESS_ALLOCATE_INFO:return sizeof(VkMemoryOpaqueCaptureAddressAllocateInfo);
+        default:return 0;
+        }
+    };
+    std::vector<const VkBaseInStructure*> ahead;
+    const VkExportMemoryAllocateInfo* request=nullptr;
+    for(auto* node=static_cast<const VkBaseInStructure*>(info->pNext);node;node=node->pNext){
+        if(node->sType==VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO){request=reinterpret_cast<const VkExportMemoryAllocateInfo*>(node);break;}
+        if(!size(node->sType))return s.allocate(h,info,alloc,out);
+        ahead.push_back(node);
+    }
+    if(!request||!(request->handleTypes&VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT))return s.allocate(h,info,alloc,out);
+    auto trimmed=*request;
+    trimmed.handleTypes&=~VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+    const void* rest=trimmed.handleTypes?static_cast<const void*>(&trimmed):request->pNext;
+    // Copies are built back to front so each can point at the one after it.
+    std::vector<std::vector<uint64_t>> copies(ahead.size());
+    for(size_t i=ahead.size();i-->0;){
+        const size_t bytes=size(ahead[i]->sType);
+        copies[i].resize((bytes+sizeof(uint64_t)-1)/sizeof(uint64_t));
+        std::memcpy(copies[i].data(),ahead[i],bytes);
+        reinterpret_cast<VkBaseInStructure*>(copies[i].data())->pNext=static_cast<const VkBaseInStructure*>(rest);
+        rest=copies[i].data();
+    }
+    auto head=*info;head.pNext=rest;
+    return s.allocate(h,&head,alloc,out);
 }
 VKAPI_ATTR VkResult VKAPI_CALL vkEnumerateInstanceLayerProperties(uint32_t* count,VkLayerProperties* out){
     if(!out){*count=1;return VK_SUCCESS;}if(!*count)return VK_INCOMPLETE;
@@ -166,8 +220,14 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice physical,const Vk
     auto create=reinterpret_cast<PFN_vkCreateDevice>(chain->u.pLayerInfo->pfnNextGetInstanceProcAddr(s.handle,"vkCreateDevice"));
     chain->u.pLayerInfo=chain->u.pLayerInfo->pNext;
     std::vector<VkExtensionProperties> es;auto r=extensions(s,physical,es);if(r!=VK_SUCCESS)return r;
-    auto api=apiVersion(s,physical);std::vector<const char*> names;
-    for(uint32_t i=0;i<info->enabledExtensionCount;++i){auto n=info->ppEnabledExtensionNames[i];bool promoted=false;for(auto& p:promotions)if(api>=p.api&&!std::strcmp(n,p.name)&&!has(es,n))promoted=true;if(!promoted&&!(synthetic(n)&&!has(es,n)))names.push_back(n);}
+    auto api=apiVersion(s,physical);std::vector<const char*> names;bool strippedMemoryFd=false;
+    for(uint32_t i=0;i<info->enabledExtensionCount;++i){
+        auto n=info->ppEnabledExtensionNames[i];bool promoted=false;
+        for(auto& p:promotions)if(api>=p.api&&!std::strcmp(n,p.name)&&!has(es,n))promoted=true;
+        const bool stripped=synthetic(n)&&!has(es,n);
+        if(stripped&&!std::strcmp(n,VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME))strippedMemoryFd=true;
+        if(!promoted&&!stripped)names.push_back(n);
+    }
     auto modified=*info;modified.enabledExtensionCount=names.size();modified.ppEnabledExtensionNames=names.data();
     auto result=create(physical,&modified,alloc,out);
     if(result==VK_SUCCESS){
@@ -179,6 +239,12 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice physical,const Vk
         state.updateTemplate=function<PFN_vkUpdateDescriptorSetWithTemplate>(state,"vkUpdateDescriptorSetWithTemplate");
         if(!state.updateTemplate)state.updateTemplate=function<PFN_vkUpdateDescriptorSetWithTemplate>(state,"vkUpdateDescriptorSetWithTemplateKHR");
         state.updateSets=function<PFN_vkUpdateDescriptorSets>(state,"vkUpdateDescriptorSets");
+        state.allocate=function<PFN_vkAllocateMemory>(state,"vkAllocateMemory");
+        state.syntheticMemoryFd=strippedMemoryFd;
+        if(!strippedMemoryFd){
+            state.getMemoryFd=function<PFN_vkGetMemoryFdKHR>(state,"vkGetMemoryFdKHR");
+            state.getMemoryFdProperties=function<PFN_vkGetMemoryFdPropertiesKHR>(state,"vkGetMemoryFdPropertiesKHR");
+        }
         std::lock_guard lock(mutex);devices[key(*out)]=state;
     }
     return result;
@@ -249,7 +315,7 @@ PFN_vkVoidFunction intercept(const char* name){
     ENTRY(vkEnumerateInstanceLayerProperties);ENTRY(vkEnumerateDeviceLayerProperties);ENTRY(vkEnumerateInstanceExtensionProperties);
     ENTRY(vkEnumerateDeviceExtensionProperties);
     ENTRY(vkSetDebugUtilsObjectNameEXT);
-    ENTRY(vkGetMemoryFdKHR);ENTRY(vkGetMemoryFdPropertiesKHR);
+    ENTRY(vkGetMemoryFdKHR);ENTRY(vkGetMemoryFdPropertiesKHR);ENTRY(vkAllocateMemory);
     ENTRY(vkCreateDescriptorUpdateTemplate);ENTRY(vkDestroyDescriptorUpdateTemplate);ENTRY(vkUpdateDescriptorSetWithTemplate);
     ENTRY(vkCreateDescriptorUpdateTemplateKHR);ENTRY(vkDestroyDescriptorUpdateTemplateKHR);ENTRY(vkUpdateDescriptorSetWithTemplateKHR);
 #undef ENTRY
