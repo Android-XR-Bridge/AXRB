@@ -12,7 +12,4 @@ target_include_directories(axrb_protocol
 
 if(WIN32)
   target_link_libraries(axrb_protocol PUBLIC ws2_32)
-else()
-  # For shared memory (shm_open) on Linux/Android
-  target_link_libraries(axrb_protocol PUBLIC rt)
 endif()
