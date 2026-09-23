@@ -13,7 +13,8 @@ param(
     [switch]$GpuSharing,
     [switch]$ShowWindow,
     [switch]$ColdBoot,
-    [switch]$RecoverUnresponsive
+    [switch]$RecoverUnresponsive,
+    [switch]$StockEmulator
 )
 # See run_windows_game.ps1 for why these are set here rather than by the caller.
 # That script also runs this one with &, so this one deliberately has no trap:
@@ -74,6 +75,33 @@ $xrFeatures = @(
 function Require-Path([string]$Path, [string]$Description) {
     if (!(Test-Path -LiteralPath $Path)) { throw "Android startup diagnostic: $Description was not found at $Path" }
 }
+# The emulator runs Android on one vCPU, whatever the AVD asks for, when
+# CPUID hides PCLMULQDQ, POPCNT or AES-NI. qemu_multicore.py explains the
+# check and keeps a copy of the backend without it; a CPU that passes gets no
+# copy. Any failure here falls back to the stock emulator: one vCPU is slow,
+# but a launch that dies because of this would be worse.
+function Get-MultiCoreBackend([string]$Backend, [int]$Cores) {
+    $text = ''
+    try { $text = (& python "$PSScriptRoot/qemu_multicore.py" ensure --backend $Backend | Out-String).Trim() } catch { $text = $_.Exception.Message }
+    try { $result = $text | ConvertFrom-Json } catch { $result = $null }
+    if ($LASTEXITCODE -ne 0 -or $null -eq $result) {
+        Write-Host "vCPU check: qemu_multicore.py failed ($text); starting the stock emulator."
+        return $null
+    }
+    $hidden = @($result.missing) -join ', '
+    $cause = if ($hidden) { "CPUID hides $hidden, so the stock emulator runs Android on 1 vCPU" }
+        elseif ($null -eq $result.cpuid_ecx) { 'CPUID could not be read, so the stock emulator may run Android on 1 vCPU' }
+        else { 'AXRB_QEMU_MULTICORE=force is set' }
+    if ($result.status -eq 'not-needed') {
+        Write-Host 'vCPU check: CPUID reports PCLMULQDQ, POPCNT and AES-NI, so the stock emulator keeps the vCPU count.'
+    } elseif ($result.status -in 'patched', 'ready') {
+        Write-Host "vCPU check: $cause; starting $(Split-Path $result.target -Leaf) to keep $Cores."
+        return $result.target
+    } else {
+        Write-Host "vCPU check: $cause, and there is no multi-core copy: $($result.reason)"
+    }
+    return $null
+}
 function Read-LogTail {
     $files = @("$logs\emulator.stdout.log", "$logs\emulator.stderr.log")
     ([string](($files | Where-Object { Test-Path -LiteralPath $_ } | ForEach-Object { Get-Content -LiteralPath $_ -Tail 12 -ErrorAction SilentlyContinue }) -join ' ')).Trim()
@@ -126,7 +154,9 @@ function Get-ManagedEmulatorProcess {
     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
         $commandLine = $_.CommandLine -replace '"'
         $commandLine -match $patternAvd -and $commandLine -match $patternPorts -and
-        $_.Name -match '^(qemu-system-x86_64-headless|emulator)\.exe$' -and
+        # The multi-core copy is started without emulator.exe, so its QEMU is
+        # the only process that carries the AVD on its command line.
+        $_.Name -match '^(qemu-system-x86_64-headless|qemu-system-x86_64(-headless)?-multicore|emulator)\.exe$' -and
         $_.ExecutablePath -and [IO.Path]::GetFullPath($_.ExecutablePath).StartsWith($sdkEmulator + '\', [StringComparison]::OrdinalIgnoreCase)
     }
 }
@@ -465,7 +495,17 @@ switch ($Action) {
         $oldPath = $env:PATH
         $oldLauncherDir = $env:ANDROID_EMULATOR_LAUNCHER_DIR
         $launchExe = $emulator
+        # Started without the emulator.exe front end, which would otherwise
+        # put the SDK on PATH and tell QEMU where it was launched from.
+        $directBackend = $false
+        if ($GuestClock -ne 'TscCorrected' -and !$StockEmulator) {
+            # -no-window is what makes the front end choose the headless backend.
+            $backendName = if ($ShowWindow) { 'qemu-system-x86_64.exe' } else { 'qemu-system-x86_64-headless.exe' }
+            $multicore = Get-MultiCoreBackend (Join-Path $Sdk "emulator\qemu\windows-x86_64\$backendName") $CpuCores
+            if ($multicore) { $launchExe = $multicore; $directBackend = $true }
+        }
         if ($GuestClock -eq 'TscCorrected') {
+            $directBackend = $true
             $qemu = Join-Path $Sdk 'emulator/qemu/windows-x86_64/qemu-system-x86_64-headless.exe'
             $knownHash = 'DCEC1CC23AC57FF04EC748CDE7E42BFC713BF2AD532E49606A4A9332CFB94B56'
             Require-Path $qemu 'headless QEMU binary for clock correction'
@@ -479,7 +519,7 @@ switch ($Action) {
             $arguments = @(('"' + $qemu + '"'), ('"' + $clockDll + '"')) + $arguments
         }
         try {
-            if ($GuestClock -eq 'TscCorrected') {
+            if ($directBackend) {
                 $env:ANDROID_EMULATOR_LAUNCHER_DIR = Join-Path $Sdk 'emulator'
                 $env:PATH = "$Sdk\emulator;$Sdk\emulator\lib64;$oldPath"
             }
@@ -574,6 +614,18 @@ switch ($Action) {
         try { Verify-Gpu; Verify-Abi; Ensure-XrFeatures; Write-Output 'Android startup diagnostic: guest verification complete.' } catch {
             try { Invoke-ExternalWithTimeout $adb @('-s', $serial, 'emu', 'kill') 5 | Out-Null } catch { }
             throw
+        }
+        if ($PSBoundParameters.ContainsKey('CpuCores')) {
+            # The launcher refuses a guest with a different count and can only
+            # say "restart Android". Say why here, while the emulator's own
+            # reason is still in its log.
+            [string]$vcpus = ''
+            try { $vcpus = ((Invoke-ExternalWithTimeout $adb @('-s', $serial, 'shell', 'getconf', '_NPROCESSORS_ONLN') 10) -join '').Trim() } catch { }
+            if ($vcpus -eq "$CpuCores") { Write-Output "Guest vCPUs: $vcpus." }
+            elseif (Select-String -LiteralPath "$logs\emulator.stdout.log" -SimpleMatch 'Setting AVD to run with 1 vCPU' -Quiet -ErrorAction SilentlyContinue) {
+                $why = if ($StockEmulator) { '-StockEmulator was set.' } elseif ($GuestClock -eq 'TscCorrected') { 'Clock correction only runs the stock backend.' } else { 'See the vCPU check line above.' }
+                Write-Output "Android startup diagnostic: warning: guest has $vcpus vCPU, not ${CpuCores}: the emulator's CPUID check forced one. $why"
+            } else { Write-Output "Android startup diagnostic: warning: guest reports '$vcpus' vCPUs, not $CpuCores." }
         }
         if ($GuestClock -ne 'Default') {
             # Report what the kernel chose; do not force it. A kernel that

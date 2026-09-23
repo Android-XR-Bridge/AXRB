@@ -131,6 +131,25 @@ Write-Output ('RESULT:' + (@{ commands = @($script:commands.ToArray()); rejected
   assert.deepEqual(result, { commands: ['-s emulator-5584 emu kill'], rejected: true });
 });
 
+test('the multi-core QEMU copy is found as the managed emulator without an emulator.exe parent', windows, async () => {
+  const result = await probe(`
+$definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-ManagedEmulatorProcess' }, $true)
+. ([scriptblock]::Create($definition.Extent.Text))
+$Sdk = 'C:\\fixture\\sdk'
+$Avd = 'axrb-managed-api36'
+$Port = 5584
+$qemu = 'C:\\fixture\\sdk\\emulator\\qemu\\windows-x86_64\\'
+function Get-CimInstance { param($ClassName, $Filter, $ErrorAction) @(
+  [pscustomobject]@{ ProcessId = 21; Name = 'qemu-system-x86_64-headless-multicore.exe'; ExecutablePath = $qemu + 'qemu-system-x86_64-headless-multicore.exe'; CommandLine = '"-avd" "axrb-managed-api36" "-ports" "5584,5585"' },
+  [pscustomobject]@{ ProcessId = 22; Name = 'qemu-system-x86_64-multicore.exe'; ExecutablePath = $qemu + 'qemu-system-x86_64-multicore.exe'; CommandLine = '"-avd" "axrb-managed-api36" "-ports" "5584,5585"' },
+  [pscustomobject]@{ ProcessId = 23; Name = 'qemu-system-x86_64-headless-multicore.exe'; ExecutablePath = 'C:\\other\\emulator\\qemu\\windows-x86_64\\qemu-system-x86_64-headless-multicore.exe'; CommandLine = '"-avd" "axrb-managed-api36" "-ports" "5584,5585"' },
+  [pscustomobject]@{ ProcessId = 24; Name = 'qemu-system-x86_64-multicore-evil.exe'; ExecutablePath = $qemu + 'qemu-system-x86_64-multicore-evil.exe'; CommandLine = '"-avd" "axrb-managed-api36" "-ports" "5584,5585"' }
+) }
+Write-Output ('RESULT:' + (@(Get-ManagedEmulatorProcess | ForEach-Object { $_.ProcessId }) | ConvertTo-Json -Compress))
+`);
+  assert.deepEqual(result, [21, 22]);
+});
+
 test('Status action is side-effect-free and never throws for an unset-up SDK', windows, async () => {
   const output = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-ExecutionPolicy', 'Bypass', '-File', script,
     '-Action', 'Status', '-Sdk', 'C:\\fixture\\does-not-exist', '-Avd', 'axrb-managed-api36', '-Port', '5584']);

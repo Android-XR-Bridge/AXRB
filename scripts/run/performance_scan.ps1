@@ -285,7 +285,9 @@ foreach ($id in $hostAfter.Keys) {
 }
 # These four decide whether a session is healthy, so they are listed even when
 # idle: a missing bridge or a pegged vrserver is itself the answer.
-$always = @('qemu-system-x86_64-headless', 'axrb-host-bridge', 'vrserver', 'vrcompositor')
+# QEMU runs as its multi-core copy on CPUs whose CPUID the emulator distrusts.
+$qemuName = @($rows.Name | Where-Object { $_ -like 'qemu-system-x86_64*' } | Select-Object -First 1)
+$always = @($(if ($qemuName) { $qemuName[0] } else { 'qemu-system-x86_64-headless' }), 'axrb-host-bridge', 'vrserver', 'vrcompositor')
 $shown = @($rows | Sort-Object Percent -Descending | Select-Object -First 12)
 $missing = @()
 foreach ($name in $always) {
