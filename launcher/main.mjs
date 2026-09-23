@@ -12,7 +12,7 @@ import { Setup, identifyArchives, avdDirectory, parseStorageGB, planStorageChang
 import { loadLibraryArtwork } from './core/artwork.mjs';
 import { Quest } from './core/quest.mjs';
 import { importGameZip } from './core/game-files.mjs';
-import { collectDiagnostics, redact, uploadDiagnostics } from './core/diagnostics.mjs';
+import { collectDiagnostics, parseSessionRecord, redact, uploadDiagnostics } from './core/diagnostics.mjs';
 import { LiveDiagnostics } from './core/live-diagnostics.mjs';
 import { EmulatorWatchdog } from './core/watchdog.mjs';
 import { loadCompatibilityProfiles, resolveCompatibility, compatibilityPatchArgs, compatibilityRuntimeOptions } from './core/compatibility.mjs';
@@ -45,6 +45,10 @@ let setup;
 let metaSession;
 let liveDiagnostics, reviewedDiagnostics = null;
 let emulatorWatchdog;
+// Structured per-game-session records (newest first) shipped in every
+// diagnostics bundle; the run script also writes logs/game/session.json.
+const sessionRecords = [];
+const sessionRecordPath = () => path.join(process.env.AXRB_DATA_HOME || path.join(root, 'out'), 'logs/game/session.json');
 let quitting = false;
 let compatibilityProfiles;
 const ovrport = new Ovrport();
@@ -55,7 +59,14 @@ app.on('before-quit', event => {
   shutdown.abort();
   if (!liveDiagnostics || quitting) return;
   event.preventDefault(); quitting = true;
-  Promise.all([liveDiagnostics.stop(), emulatorWatchdog?.stop()]).finally(() => app.quit());
+  (async () => {
+    await emulatorWatchdog?.stop();
+    const idle = await runtime.adbServerIdle().catch(() => false);
+    liveDiagnostics.append('launcher', idle ? 'Stopping the ADB server; Android is not running.' : 'Leaving the ADB server running for Android or a game session.', { tag: 'runtime' });
+    // Capture stops first so its logcat children end quietly with the launcher.
+    await liveDiagnostics.stop();
+    if (idle) await runtime.stopAdbServer();
+  })().finally(() => app.quit());
 });
 const controllers = new Map();
 const searchResults = new Map();
@@ -103,6 +114,9 @@ function handler(name, callback) {
     } catch (error) {
       const text = message(error);
       if (trace) liveDiagnostics?.append('launcher', `${name} failed: ${text}`, { level: 'E', tag: 'operation' });
+      // A message rewritten for the player keeps the tool's original text as
+      // its cause; diagnostics carry both so nothing the tool said is lost.
+      if (trace && error?.cause) liveDiagnostics?.append('launcher', `${name} failure detail: ${message(error.cause)}`, { level: 'E', tag: 'operation' });
       return { ok: false, error: text };
     }
   });
@@ -326,9 +340,11 @@ window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 window.webContents.on('will-navigate', event => event.preventDefault());
 window.webContents.session.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
 handler('state', () => publicState());
-handler('diagnosticsRead', (afterId = 0) => {
+handler('diagnosticsRead', (afterId = 0, afterEviction = null) => {
   if (!Number.isSafeInteger(afterId) || afterId < 0) throw new Error('Invalid diagnostic cursor.');
-  return liveDiagnostics.snapshot(afterId);
+  if (afterEviction !== null && (!Number.isSafeInteger(afterEviction) || afterEviction < 0)) throw new Error('Invalid diagnostic cursor.');
+  // A reader without an eviction cursor starts from a full snapshot.
+  return liveDiagnostics.snapshot(afterId, afterEviction ?? -1);
 });
 handler('copyText', text => {
   if (typeof text !== 'string' || Buffer.byteLength(text, 'utf8') > 4 * 1024 * 1024) throw new Error('Clipboard text is too large.');
@@ -433,10 +449,17 @@ handler('uninstall', id => exclusive(async () => {
 handler('patch', (id, selected) => exclusive(async () => {
   const game = getGame(id), cli = await configuredCli();
   if (!game.apk) throw new Error('Download or import the APK first.');
-  const input = game.apk;
-  const identity = await runtime.inspect(input);
+  // Patch from the original APK every time. After a patch game.apk points at
+  // the patched copy, and patching that again stacks OVRPort's changes onto
+  // its own output (base-axrb-axrb.apk).
+  let input = game.apk, identity = await runtime.inspect(input);
+  if (identity.patched) {
+    const source = game.sourceApk ? await runtime.inspect(game.sourceApk).catch(() => null) : null;
+    if (!source || source.patched || source.package !== game.package || source.versionCode !== identity.versionCode) throw new Error('This APK is already patched and its original is no longer available. Download or import the original APK to patch it again.');
+    input = game.sourceApk; identity = source;
+  } else game.sourceApk = input;
   if (identity.package !== game.package) throw new Error('APK package no longer matches this game; import it separately.');
-  Object.assign(game, { version: identity.version, versionCode: identity.versionCode, activity: identity.activity, patched: identity.patched });
+  Object.assign(game, { version: identity.version, versionCode: identity.versionCode, activity: identity.activity, patched: input === game.apk ? identity.patched : true });
   await persist();
   const compatibility = resolveCompatibility(compatibilityProfiles, identity);
   let patchArgs;
@@ -469,15 +492,36 @@ handler('play', id => exclusive(async () => {
   try {
     compatibility = resolveCompatibility(compatibilityProfiles, prepared.game);
     liveDiagnostics.append('launcher', `Launching ${game.package}`, { tag: 'game' });
+    const sessionId = randomUUID().slice(0, 8);
+    const sessionStartedAt = new Date().toISOString();
+    liveDiagnostics.resetPerf();
+    liveDiagnostics.append('launcher', `session ${sessionId} started: package=${prepared.game.package}${prepared.game.activity ? ` activity=${prepared.game.activity}` : ''}`, { tag: 'session' });
     runtime.launch(prepared.game, async (code, tail) => {
       liveDiagnostics.append('launcher', `Game process exited (${code ?? 'unknown'}).`, { tag: 'game', level: code ? 'E' : 'I' });
+      // Merge the run script's structured record when present; its exit code
+      // and flags are authoritative over any transcript text.
+      let record = { id: sessionId, package: prepared.game.package, startedAt: sessionStartedAt, endedAt: new Date().toISOString(), exitCode: code ?? null };
+      try {
+        const parsed = parseSessionRecord(await fs.readFile(sessionRecordPath(), 'utf8'), sessionId);
+        // A script that failed early writes nulls; those must not erase the
+        // launcher's own start time or package.
+        const present = Object.fromEntries(Object.entries(parsed ?? {}).filter(([, value]) => value !== null));
+        if (parsed) record = { ...record, ...present, id: sessionId, exitCode: code ?? null };
+      } catch { /* No record means an older script or a failed spawn; the fields above still ship. */ }
+      sessionRecords.unshift(JSON.stringify(record));
+      if (sessionRecords.length > 20) sessionRecords.length = 20;
+      const outcome = record.gameProcessLost ? 'guest crash' : record.hostProcessLost ? 'host crash' : record.closeRequested ? 'user stop' : code ? `exit ${code}` : 'stopped';
+      const save = record.pauseSucceeded && record.syncSucceeded ? 'saved' : 'not confirmed';
+      liveDiagnostics.append('launcher', `session ${sessionId} ended: ${outcome}; save ${save}`, { tag: 'session', level: code ? 'E' : 'I' });
       if (code) {
-        const error = message(new Error(tail || `Game launcher exited with code ${code}.`));
+        const detail = record.gameProcessLost ? 'The game ended unexpectedly on Android (crash or forced stop).'
+          : record.hostProcessLost ? 'The AXRB host window closed unexpectedly (crash or forced stop).' : tail || `Game launcher exited with code ${code}.`;
+        const error = message(new Error(detail));
         state.data.jobs.unshift({ id: randomUUID(), gameId: id, name: game.name, status: 'failed', stage: 'Launch', error });
         if (window && !window.isDestroyed()) window.webContents.send('axrb:launch-error', `${game.name}: ${error}`);
       }
       await persist();
-    }, compatibilityRuntimeOptions(compatibility), { ownsEmulator: prepared.ownsEmulator });
+    }, compatibilityRuntimeOptions(compatibility), { ownsEmulator: prepared.ownsEmulator, sessionId });
   } catch (error) {
     if (prepared.ownsEmulator) await runtime.adb(['emu', 'kill']).catch(cleanupError => liveDiagnostics.append('launcher', `Android shutdown failed: ${message(cleanupError)}`, { tag: 'game', level: 'W' }));
     throw error;
@@ -581,6 +625,8 @@ handler('diagnostics', async ({ upload = false, save = false } = {}) => {
     setupLogs: setup?.status.logs ?? [], hardware: setup?.status.hardware ?? null,
     liveLogs: liveDiagnostics.text(),
     adbProcesses: await listAdbProcesses(),
+    sessions: sessionRecords,
+    perf: liveDiagnostics.perfText(),
   });
   if (save) {
     const result = await dialog.showSaveDialog(window, {

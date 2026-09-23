@@ -417,7 +417,9 @@ switch ($Action) {
         New-Item -ItemType Directory -Force $logs | Out-Null
         # Declare both ports explicitly. This avoids the emulator frontend and
         # raw QEMU clock launcher disagreeing about the ADB port.
-        $arguments = @('-avd', $Avd, '-ports', "$Port,$adbPort", '-gpu', 'host', '-accel', 'on', '-no-boot-anim', '-memory', "$MemoryMB")
+        # -no-metrics answers the metrics question up front: the emulator warns
+        # that it will otherwise become a blocking prompt nobody can answer here.
+        $arguments = @('-avd', $Avd, '-ports', "$Port,$adbPort", '-gpu', 'host', '-accel', 'on', '-no-boot-anim', '-no-metrics', '-memory', "$MemoryMB")
         if ($PSBoundParameters.ContainsKey('CpuCores')) { $arguments += @('-cores', "$CpuCores") }
         if (!$ShowWindow) { $arguments += '-no-window' }
         # Always, not once: the emulator serves /system from a scratch overlay
@@ -551,7 +553,7 @@ switch ($Action) {
                         try { Invoke-ExternalWithTimeout $adb @('reconnect', 'offline') 10 | Out-Null } catch { }
                         $adbReconnectAttempted = $true
                     } elseif (!$adbServerRestarted -and ((Get-Date) - $startedAt).TotalSeconds -ge 90) {
-                        Write-Output 'Android startup diagnostic: restarting ADB server after persistent offline transport.'
+                        Write-Output 'Android startup diagnostic: warning: restarting ADB server after persistent offline transport.'
                         try { Invoke-ExternalWithTimeout $adb @('kill-server') 15 | Out-Null } catch { }
                         try { Invoke-ExternalWithTimeout $adb @('start-server') 15 | Out-Null } catch { }
                         $adbServerRestarted = $true

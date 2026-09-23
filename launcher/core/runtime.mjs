@@ -100,6 +100,18 @@ function parseInstalledIdentity(output, packageName) {
 export class Runtime {
   constructor(root, settings, onOutput = () => {}) { this.root = root; this.settings = settings; this.onOutput = onOutput; this.child = null; }
   adb(args, options) { return run(path.join(this.settings.sdk, 'platform-tools/adb.exe'), ['-s', `emulator-${this.settings.port}`, ...args], options); }
+  // AXRB's private ADB server (port 5038) otherwise outlives the launcher,
+  // holding the port and, in portable mode, an adb.exe inside the folder. It
+  // stays while a game or the emulator still runs: the game's image stream
+  // rides that server's adb reverse, and sessions can outlive the launcher.
+  async adbServerIdle() {
+    if (this.child || !this.settings.sdk) return false;
+    try { await fs.access(path.join(this.settings.sdk, 'platform-tools/adb.exe')); } catch { return false; }
+    return !(await this.status()).running;
+  }
+  stopAdbServer() {
+    return run(path.join(this.settings.sdk, 'platform-tools/adb.exe'), ['-P', '5038', 'kill-server'], { timeout: 5000 }).catch(() => {});
+  }
   async online() { try { return (await this.adb(['get-state'], { timeout: 2500 })).trim() === 'device'; } catch { return false; } }
   // Side-effect-free process + ADB check for the watchdog. Unlike online(),
   // this can tell a genuinely stopped emulator apart from one whose OS process
@@ -286,11 +298,14 @@ export class Runtime {
     // Preparation may have booted Android before the session script runs, so
     // ownership arrives explicitly instead of being inferred from the device.
     const ownsEmulator = options?.ownsEmulator === true;
+    const sessionId = options?.sessionId;
+    if (sessionId !== undefined && !/^[a-f0-9]{8}$/.test(sessionId)) throw new Error('Invalid session identifier.');
     this.fpsHudEvent = `Local\\AXRB.FpsHud.${randomUUID().replaceAll('-', '')}`;
     const args = powershellArgs(path.join(this.root, 'scripts/run/run_windows_game.ps1'), { Avd: this.settings.avd, Port: this.settings.port,
       Sdk: this.settings.sdk, MemoryMB: this.settings.memoryMB, CpuCores: this.settings.cpuCores ?? 4, Package: game.package, Activity: game.activity, GameName: game.name, FpsHud: this.settings.fpsHud === true, FpsHudEventName: this.fpsHudEvent,
       // An absent switch keeps the script's historic device-presence behavior.
       ...(ownsEmulator ? { OwnsEmulator: true } : {}),
+      ...(sessionId ? { SessionId: sessionId } : {}),
       ...(this.settings.precomposeProjectionLayers === true || compatibility.precomposeProjectionLayers === true ? { PrecomposeProjectionLayers: true } : {}),
       ...(this.settings.managedDirectory ? { RuntimeApk: path.join(this.root, 'out/android/runtime-arm64-v8a/axrb-openxr-runtime-debug.apk') } : {}) });
     // Windows PowerShell can exit successfully without executing its command

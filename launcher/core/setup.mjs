@@ -144,7 +144,13 @@ export class Setup {
     this.logPartials = new Map();
   }
   update(value) {
-    if (value.phase && value.phase !== this.status.phase) this.onOutput(`Setup: ${value.phase}\n`);
+    // Name the component so a transcript says what is downloading, not just that something is.
+    const phaseChanged = value.phase && value.phase !== this.status.phase;
+    const componentChanged = 'component' in value && value.component && value.component !== this.status.component;
+    if (phaseChanged || componentChanged) {
+      const component = 'component' in value ? value.component : this.status.component;
+      this.onOutput(`Setup: ${value.phase || this.status.phase}${component ? ` · ${component}` : ''}\n`);
+    }
     if (value.error && value.error !== this.status.error) this.onOutput(`Setup failed: ${value.error}\n`, { level: 'E' });
     Object.assign(this.status, value);
     if (Object.keys(value).every(k => ['completed', 'total'].includes(k)) && Date.now() - (this.lastProgress || 0) < 100) return;
@@ -286,7 +292,7 @@ export class Setup {
     this.runtime.settings = { ...this.runtime.settings, sdk: path.join(this.directory, 'sdk'), avd: managedAvd, storageGB };
     this.environment();
     this.controller = new AbortController();
-    this.update({ phase: 'verify', directory: this.directory, needs, storageGB, active: true, startedAt: Date.now(), cancelling: false, error: '', completed: 0, total: 0, logs: [] });
+    this.update({ phase: 'verify', component: '', directory: this.directory, needs, storageGB, active: true, startedAt: Date.now(), cancelling: false, error: '', completed: 0, total: 0, logs: [] });
     this.task = this.install().catch(error => this.update({ phase: this.controller.signal.aborted ? 'cancelled' : 'error', error: this.controller.signal.aborted ? '' : error.message }))
       .finally(async () => {
         try { await this.refreshCurrent(); }

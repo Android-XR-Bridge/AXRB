@@ -81,7 +81,14 @@ export function diagnosticSources(dataHome) {
     ['guest-vulkan.json', path.join(emulator, 'guest-vulkan.json')],
     ['host.log', path.join(game, 'host.log')],
     ['host.err', path.join(game, 'host.err')],
+    ['session.json', path.join(game, 'session.json')],
   ];
+}
+
+export function parseSessionRecord(text, expectedId) {
+  const record = JSON.parse(String(text).replace(/^\uFEFF/, ''));
+  if (!record || typeof record !== 'object' || Array.isArray(record) || record.id !== expectedId) return null;
+  return record;
 }
 // The library file is deliberately absent: it is megabytes of cover art and a
 // record of everything the user owns, none of which helps diagnose a failure.
@@ -94,7 +101,7 @@ export function adbEnvironment(environment = process.env) {
   const scan = environment.ADB_LOCAL_TRANSPORT_MAX_PORT || '(unset)';
   return `adb env ANDROID_ADB_SERVER_PORT=${port}; ADB_SERVER_SOCKET=${socket}; ADB_LOCAL_TRANSPORT_MAX_PORT=${scan}`;
 }
-export async function collectDiagnostics({ dataHome, version = '', settings = {}, setupLogs = [], hardware = null, liveLogs = '', now = () => new Date(), environment = process.env, adbProcesses = null } = {}) {
+export async function collectDiagnostics({ dataHome, version = '', settings = {}, setupLogs = [], hardware = null, liveLogs = '', sessions = [], perf = '', now = () => new Date(), environment = process.env, adbProcesses = null } = {}) {
   const sections = [`AXRB diagnostics ${now().toISOString()}`,
     `launcher ${version}; ${process.platform} ${os.release()}; ${os.arch()}; node ${process.versions.node}`];
   if (hardware) sections.push(`hardware ${JSON.stringify(hardware)}`);
@@ -102,7 +109,9 @@ export async function collectDiagnostics({ dataHome, version = '', settings = {}
   if (adbProcesses) sections.push(`--- adb processes ---\n${adbProcesses}`);
   const { managedDirectory, sdk, downloadDir, ovrportCli, ...safeSettings } = settings;
   sections.push(`settings ${JSON.stringify({ ...safeSettings, managed: Boolean(managedDirectory) })}`);
+  if (sessions.length) sections.push(`--- game sessions ---\n${sessions.join('\n')}`);
   if (setupLogs.length) sections.push(`--- setup transcript ---\n${setupLogs.join('\n')}`);
+  if (perf) sections.push(`--- performance windows ---\n${perf}`);
   if (liveLogs) sections.push(`--- live diagnostics (host receipt order) ---\n${liveLogs}`);
   for (const [label, file] of diagnosticSources(dataHome)) {
     try { sections.push(`--- ${label} ---\n${condense(await readTail(file))}`); }

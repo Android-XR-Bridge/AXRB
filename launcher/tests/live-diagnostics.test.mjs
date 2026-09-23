@@ -39,7 +39,8 @@ function simulatedAdb(devices) {
         if (args.includes('logcat')) {
           streams.set(serial, child);
           child.stdout.write(`09-21 03:04:05.678  123  456 I ${device.name}: stream for ${device.name}\n`);
-        } else finish(`${device.name}\nOK\n`);
+        // The real emulator console ends each line with \r\r\n.
+        } else finish(`${device.name}\r\r\nOK\r\r\n`);
       }
     });
     return child;
@@ -352,4 +353,322 @@ test('capture stops probing ADB while setup or an operation owns it', async t =>
     await until(() => capture.snapshot().android.state === 'streaming');
     assert.ok(seen.some(command => command.includes('devices')), 'discovery resumes once the gate clears');
   } finally { await capture.stop(); }
+});
+
+test('emulator console floods evict boot chatter before launcher and failing guest lines', () => {
+  const capture = new LiveDiagnostics({ directory: '.', getConfig: () => ({}), maxEntries: 4, maxBytes: 64 * 1024 });
+  capture.append('launcher', 'capture attached to emulator-5584', { tag: 'logcat' });
+  capture.append('emulator', 'warning: guest compositor stalled');
+  capture.append('emulator', 'binder_alloc: 1873: binder_alloc_buf size 2416648 failed, no address space');
+  for (let index = 1; index <= 8; index++) capture.append('emulator', `[    ${index}.000000] init: starting service 'zygote'`);
+  const texts = capture.snapshot().entries.map(entry => entry.text);
+  assert.ok(texts.includes('capture attached to emulator-5584'));
+  assert.ok(texts.includes('warning: guest compositor stalled'));
+  assert.ok(texts.includes('binder_alloc: 1873: binder_alloc_buf size 2416648 failed, no address space'));
+  assert.deepEqual(texts.filter(text => text.includes("service 'zygote'")), ["[    8.000000] init: starting service 'zygote'"]);
+  assert.equal(capture.snapshot().dropped, 7);
+});
+
+test('android logcat floods evict routine lines before setup history, AXRB lines and failures', () => {
+  const capture = new LiveDiagnostics({ directory: '.', getConfig: () => ({}), maxEntries: 5, maxBytes: 64 * 1024 });
+  capture.append('launcher', 'Setup: download · Android Emulator', { tag: 'setup' });
+  capture.append('android', '09-22 23:43:31.628  812  812 E AndroidRuntime: FATAL EXCEPTION: main');
+  capture.append('android', '09-22 23:43:31.700  901  930 I AXRB.Image: connected to local image proxy');
+  for (let index = 0; index < 10; index++) capture.append('android', `09-22 23:43:32.${100 + index}  700  700 D PstnIncomingCallNotifier: Registering: [${index}]`);
+  const texts = capture.snapshot().entries.map(entry => entry.text);
+  assert.ok(texts.includes('Setup: download · Android Emulator'));
+  assert.ok(texts.includes('FATAL EXCEPTION: main'));
+  assert.ok(texts.includes('connected to local image proxy'));
+  assert.deepEqual(texts.filter(text => text.startsWith('Registering')), ['Registering: [8]', 'Registering: [9]']);
+});
+
+test("Android apps' warning floods evict before launcher lines and crashes", () => {
+  const capture = new LiveDiagnostics({ directory: '.', getConfig: () => ({}), maxEntries: 4, maxBytes: 64 * 1024 });
+  capture.append('launcher', 'login completed (50774 ms)', { tag: 'operation' });
+  capture.append('android', '09-23 00:27:16.000  812  812 E AndroidRuntime: FATAL EXCEPTION: main');
+  for (let index = 0; index < 6; index++) capture.append('android', `09-23 00:27:16.${100 + index}  900  930 W PlatformConfigurator: \tat fyac.run(${index})`);
+  const texts = capture.snapshot().entries.map(entry => entry.text);
+  assert.deepEqual(texts, ['login completed (50774 ms)', 'FATAL EXCEPTION: main', '\tat fyac.run(4)', '\tat fyac.run(5)']);
+});
+
+test("AXRB's own debug traces are kept in full but evicted before its info lines", () => {
+  const capture = new LiveDiagnostics({ directory: '.', getConfig: () => ({}), maxEntries: 300, maxBytes: 4 * 1024 * 1024 });
+  capture.append('android', '09-23 01:14:09.000  901  930 I AXRB.Runtime: session created');
+  for (let index = 0; index < 250; index++) capture.append('android', `09-23 01:14:09.000  901  930 D AXRB.Runtime: xrGetInstanceProcAddr(fn${index})`);
+  assert.equal(capture.snapshot().entries.filter(entry => entry.level === 'D').length, 250, 'AXRB traces are not rate-limited');
+  for (let index = 0; index < 100; index++) capture.append('launcher', `step ${index}`, { tag: 'operation' });
+  const texts = capture.snapshot().entries.map(entry => entry.text);
+  assert.ok(texts.includes('session created'));
+  assert.equal(texts.filter(text => text.startsWith('xrGetInstanceProcAddr')).length, 199);
+  assert.equal(texts.filter(text => text.startsWith('step ')).length, 100);
+});
+
+test('a third-party android tag over its budget is summarized, not stored line by line', () => {
+  const capture = new LiveDiagnostics({ directory: '.', getConfig: () => ({}), maxEntries: 1000, maxBytes: 4 * 1024 * 1024 });
+  const at = ms => new Date(Date.parse('2026-09-23T00:27:16.000Z') + ms).toISOString();
+  for (let index = 0; index < 250; index++) capture.append('android', `09-23 00:27:16.000  900  930 W PlatformConfigurator: \tat fyac.run(${index})`, { receivedAt: at(index) });
+  for (let index = 0; index < 150; index++) capture.append('android', `09-23 00:27:16.000  901  931 I AXRB.Image: frame ${index}`, { receivedAt: at(index) });
+  capture.append('android', '09-23 00:27:16.000  812  812 E AndroidRuntime: FATAL EXCEPTION: main', { receivedAt: at(300) });
+  const tagged = tag => capture.snapshot().entries.filter(entry => entry.tag === tag);
+  assert.equal(tagged('PlatformConfigurator').length, 100);
+  assert.equal(tagged('AXRB.Image').length, 150, "AXRB's own lines are never limited");
+  assert.equal(tagged('AndroidRuntime').length, 1);
+  capture.append('android', '09-23 00:27:27.000  900  930 W PlatformConfigurator: next window', { receivedAt: at(11000) });
+  assert.deepEqual(tagged('PlatformConfigurator').slice(-2).map(entry => [entry.level, entry.text]),
+    [['W', '[150 more PlatformConfigurator lines suppressed within 10s]'], ['W', 'next window']]);
+  for (let index = 0; index < 105; index++) capture.append('android', `09-23 00:27:27.000  900  930 W PlatformConfigurator: again ${index}`, { receivedAt: at(11001) });
+  capture.flushSuppressed(true);
+  assert.equal(tagged('PlatformConfigurator').at(-1).text, '[6 more PlatformConfigurator lines suppressed within 10s]', 'a tag that falls silent still reports its count');
+});
+
+test('kernel boot chatter is demoted to debug while real guest failures keep severity', () => {
+  const capture = new LiveDiagnostics({ directory: '.', getConfig: () => ({}), maxEntries: 64, maxBytes: 64 * 1024 });
+  capture.append('emulator', '[    9.412037] ueventd: firmware_load: error -2 opening file');
+  capture.append('emulator', "init: warning: could not parse /vendor/etc/public.libraries.txt");
+  capture.append('emulator', '[   88.290614] cfg80211: failed to load regulatory.db');
+  capture.append('emulator', "[    7.367971] init: Command 'setprop debug.stagefright.ccodec' failed: property doesn't exist");
+  capture.append('emulator', '[    0.365469] ACPI: _OSC evaluation for CPUs failed, trying _PDC');
+  capture.append('emulator', '[   11.676575] platform regulatory.0: Direct firmware load for regulatory.db failed with error -2');
+  capture.append('emulator', '[    0.039569] Speculative Return Stack Overflow: WARNING: See https://kernel.org/doc/html/latest/admin-guide/hw-vuln/srso.html for mitigation options.');
+  capture.append('emulator', "[   98.282931] capability: warning: `wpa_supplicant' uses 32-bit capabilities (legacy support in use)");
+  capture.append('emulator', '[  101.553416] audio: error - unable to handle stream (call trace dumped)');
+  capture.append('emulator', 'binder: 1873:1873 transaction failed 29189/-3, size 0-0 line 3134');
+  capture.append('emulator', '[   38.869677] binder_alloc: 2674: binder_alloc_buf size 1056768 failed, no address space');
+  capture.append('emulator', '[   12.553416] Kernel panic - not syncing: attempted to kill init');
+  assert.deepEqual(capture.snapshot().entries.map(entry => entry.level), ['D', 'D', 'D', 'D', 'D', 'D', 'D', 'D', 'E', 'E', 'E', 'F']);
+});
+
+test("the emulator's own severity label outranks keywords in its message", () => {
+  const capture = new LiveDiagnostics({ directory: '.', getConfig: () => ({}), maxEntries: 16, maxBytes: 64 * 1024 });
+  capture.append('emulator', 'WARNING      | Failed to load snapshot \'default_boot\'');
+  capture.append('emulator', 'INFO         | Checking: hasSufficientHwGpu error budget');
+  capture.append('emulator', 'ERROR        | Unable to connect to adb daemon');
+  capture.append('emulator', 'FATAL        | Cannot start AVD');
+  capture.append('emulator', 'input_len: 0x13e1WARNING      |3 Failed to process .ini file');
+  assert.deepEqual(capture.snapshot().entries.map(entry => entry.level), ['W', 'I', 'E', 'F', 'E']);
+});
+
+test('the boot wait heartbeat is informational until the emulator process dies', () => {
+  const capture = new LiveDiagnostics({ directory: '.', getConfig: () => ({}), maxEntries: 16, maxBytes: 64 * 1024 });
+  capture.append('launcher', 'Android startup diagnostic: 31s elapsed; adb=offline (error: device offline (exit 1)); boot=(getprop failed: adb.exe: device offline (exit 1)); processExited=False');
+  capture.append('launcher', 'Android startup diagnostic: 62s elapsed; adb=unreachable: timed out; boot=; processExited=True');
+  capture.append('launcher', 'Android startup diagnostic: warning: restarting ADB server after persistent offline transport.');
+  capture.append('launcher', 'Android startup diagnostic: SDK failed to verify');
+  assert.deepEqual(capture.snapshot().entries.map(entry => entry.level), ['I', 'E', 'W', 'E']);
+});
+
+test('host loader lines reporting Windows error 0 stay informational', () => {
+  const capture = new LiveDiagnostics({ directory: '.', getConfig: () => ({}), maxEntries: 16, maxBytes: 64 * 1024 });
+  capture.append('host', 'OpenXR.dll loaded (Windows error 0)');
+  capture.append('host', 'controller state remapped (Windows error 0)');
+  capture.append('host', 'driver init error before retry (Windows error 0) unresolved');
+  capture.append('host', 'device failed to load (Windows error 126)');
+  assert.deepEqual(capture.snapshot().entries.map(entry => entry.level), ['I', 'I', 'E', 'E']);
+});
+
+test('discovery misses log the raw device list informationally, once per distinct listing', async t => {
+  const directory = await temporary(t);
+  const devices = [{ serial: 'emulator-5678', name: 'other-avd' }];
+  const adb = simulatedAdb(devices);
+  const capture = new LiveDiagnostics({ directory, getConfig: () => ({}), spawnProcess: adb.spawnProcess });
+  capture.active = true;
+  const discover = () => capture.discover('adb', { port: 5584, avd: 'wanted-avd' }, 0);
+  const reports = () => capture.snapshot().entries.filter(entry => entry.source === 'launcher' && /^No matching Android device/.test(entry.text));
+  assert.equal(await discover(), null);
+  assert.deepEqual(reports().map(entry => entry.level), ['I'], 'no emulator yet is the normal waiting state');
+  assert.match(capture.text(), /emulator-5678\s+device model:test/);
+  assert.match(capture.text(), /emulator-5678 reports AVD name "other-avd"/, 'a connected emulator explains why it was not captured');
+  for (let attempt = 0; attempt < 20; attempt++) await discover();
+  assert.equal(reports().length, 1, 'an idle launcher does not repeat an unchanged listing');
+  devices.push({ serial: 'emulator-5690', name: 'third-avd' });
+  await discover();
+  assert.equal(reports().length, 2, 'a changed listing is reported');
+  devices.length = 0; devices.push({ serial: 'emulator-5584', name: 'wanted-avd' });
+  assert.equal(await discover(), 'emulator-5584');
+  devices.length = 0; devices.push({ serial: 'emulator-5678', name: 'other-avd' });
+  await discover();
+  assert.equal(reports().length, 3, 'a new waiting episode reports its first listing again');
+  devices.length = 0;
+  await discover();
+  assert.equal(reports().at(-1).text, 'No matching Android device; adb reports no devices attached.');
+});
+
+test('a missing adb before setup installs the SDK is a waiting state, not an error', async t => {
+  const directory = await temporary(t);
+  const capture = new LiveDiagnostics({ directory, getConfig: () => ({}) });
+  capture.active = true;
+  await capture.connect({ sdk: path.join(directory, 'not-installed'), port: 5584 }, capture.generation);
+  assert.equal(capture.snapshot().android.state, 'waiting');
+  assert.deepEqual(capture.snapshot().entries.map(entry => [entry.level, entry.text]),
+    [['I', 'Android: ADB is not installed at the configured SDK path. Capture will start when it is available.']]);
+});
+
+test('setup transcript lines name the component each phase works on', async t => {
+  const directory = await temporary(t);
+  const lines = [];
+  const setup = new Setup({ root: directory, directory, runtime: { settings: {} }, changed() {}, onOutput: text => lines.push(text.trim()) });
+  setup.update({ phase: 'verify', component: '' });
+  setup.update({ phase: 'verify', component: 'Android Emulator', completed: 0, total: 10 });
+  setup.update({ phase: 'download' });
+  setup.update({ completed: 5, total: 10 });
+  setup.update({ phase: 'extract', completed: 0, total: 0 });
+  setup.update({ phase: 'boot', component: 'Starting Android' });
+  setup.update({ component: 'Installing AXRB runtime' });
+  setup.update({ phase: 'ready', component: '' });
+  assert.deepEqual(lines, ['Setup: verify', 'Setup: verify · Android Emulator', 'Setup: download · Android Emulator', 'Setup: extract · Android Emulator',
+    'Setup: boot · Starting Android', 'Setup: boot · Installing AXRB runtime', 'Setup: ready']);
+});
+
+test('each logcat attachment records the exact adb argv as a launcher line', async t => {
+  const directory = await temporary(t);
+  await fs.mkdir(path.join(directory, 'platform-tools'));
+  const executable = path.join(directory, 'platform-tools', process.platform === 'win32' ? 'adb.exe' : 'adb');
+  await fs.writeFile(executable, '');
+  const adb = simulatedAdb([{ serial: 'emulator-5584', name: 'test-avd' }]);
+  const capture = new LiveDiagnostics({ directory: path.join(directory, 'history'), getConfig: () => ({ sdk: directory, port: 5584, avd: 'test-avd', dataHome: directory }), spawnProcess: adb.spawnProcess });
+  await capture.start();
+  try {
+    await until(() => capture.snapshot().android.state === 'streaming');
+    assert.deepEqual(capture.snapshot().entries.filter(entry => /logcat -b main/.test(entry.text))
+      .map(entry => [entry.source, entry.level, entry.text]),
+    [['launcher', 'I', `${path.basename(executable)} -P 5038 -s emulator-5584 logcat -b main -b system -b crash -v threadtime -T 200`]]);
+  } finally { await capture.stop(); }
+  assert.equal(adb.children.size, 0);
+});
+
+test('a logcat that keeps failing before any output reports one episode, not every retry', async t => {
+  const directory = await temporary(t);
+  await fs.mkdir(path.join(directory, 'platform-tools'));
+  const executable = path.join(directory, 'platform-tools', process.platform === 'win32' ? 'adb.exe' : 'adb');
+  await fs.writeFile(executable, '');
+  let output = '';
+  const spawnProcess = (_file, args) => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => {};
+    const logcat = args.includes('logcat');
+    queueMicrotask(() => {
+      if (args.includes('devices')) child.stdout.end('List of devices attached\nemulator-5584\tdevice model:test\n');
+      else if (output) child.stdout.write(output);
+      else child.stderr.write('error: device offline\n');
+      child.stdout.end(); child.stderr.end();
+      setTimeout(() => child.emit('close', logcat && !output ? 1 : 0), 5);
+    });
+    return child;
+  };
+  const capture = new LiveDiagnostics({ directory, getConfig: () => ({}), spawnProcess });
+  capture.active = true;
+  const config = { sdk: directory, port: 5584 };
+  const logcatLines = () => capture.snapshot().entries.filter(entry => entry.tag === 'logcat' && !entry.text.startsWith('List of devices'))
+    .map(entry => [entry.level, entry.text.replace(/^\S*adb(?:\.exe)? .*/, 'argv')]);
+  const attach = async () => { await capture.connect(config, capture.generation); await until(() => !capture.stream); };
+  for (let attempt = 0; attempt < 3; attempt++) await attach();
+  assert.deepEqual(logcatLines(), [
+    ['I', 'emulator-5584: ADB is online; waiting for logcat output.'],
+    ['I', 'argv'],
+    ['W', 'error: device offline'],
+    ['E', 'emulator-5584: error: device offline'],
+  ]);
+  assert.equal(capture.snapshot().android.state, 'error', 'the panel still follows every retry');
+  assert.match(capture.text(), /^Android capture: error — error: device offline \(repeated 2 more times\)\n/);
+  output = '09-21 03:04:05.678  123  456 I test: hello\n';
+  await attach();
+  assert.deepEqual(logcatLines().slice(4), [
+    ['W', 'Logcat failure repeated 2 more times: error: device offline'],
+    ['I', 'emulator-5584: Receiving Android logs.'],
+    ['W', 'emulator-5584: Logcat disconnected; waiting to reconnect.'],
+  ], 'recovery reports the suppressed count and closes the episode');
+  assert.doesNotMatch(capture.text().split('\n')[0], /repeated \d+ more time/);
+  output = '';
+  await attach();
+  assert.deepEqual(logcatLines().slice(7).map(([level]) => level), ['I', 'I', 'W', 'E'], 'a failure after recovery is a new episode, reported in full');
+});
+
+test('a streaming logcat that ends because Android shut down is a disconnect, not an error', async t => {
+  const directory = await temporary(t);
+  await fs.mkdir(path.join(directory, 'platform-tools'));
+  await fs.writeFile(path.join(directory, 'platform-tools', process.platform === 'win32' ? 'adb.exe' : 'adb'), '');
+  const spawnProcess = (_file, args) => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => {};
+    queueMicrotask(() => {
+      if (args.includes('devices')) child.stdout.end('List of devices attached\nemulator-5584\tdevice model:test\n');
+      else { child.stdout.write('09-22 23:43:40.000  123  456 I test: shutting down\n'); child.stderr.write('error: device offline\n'); }
+      child.stdout.end(); child.stderr.end();
+      setTimeout(() => child.emit('close', args.includes('logcat') ? 1 : 0), 5);
+    });
+    return child;
+  };
+  const capture = new LiveDiagnostics({ directory, getConfig: () => ({}), spawnProcess });
+  capture.active = true;
+  await capture.connect({ sdk: directory, port: 5584 }, capture.generation);
+  await until(() => !capture.stream);
+  assert.equal(capture.snapshot().android.state, 'disconnected');
+  assert.deepEqual(capture.snapshot().entries.filter(entry => entry.text.startsWith('emulator-5584: error'))
+    .map(entry => entry.level), ['W']);
+});
+
+test('perf counters keep bounded windows, render one line each and warn on sustained slow frames', () => {
+  const capture = new LiveDiagnostics({ directory: '.', getConfig: () => ({}), maxEntries: 100, maxBytes: 1024 * 1024 });
+  const at = seconds => new Date(Date.parse('2026-09-22T10:00:00Z') + seconds * 1000).toISOString();
+  const record = (counter, rate, p95, seconds) =>
+    capture.append('host', `AXRB.Perf ${counter}: rate=${rate}/s avg=0.4ms samples=120 p50=0.200ms p95=${p95}ms p99=0.610ms`, { receivedAt: at(seconds) });
+  assert.equal(capture.perfText(), '');
+  for (let seconds = 0; seconds < 14; seconds++) record('host-end-frame', '75', '120', seconds);
+  record('host-frame-submit', '150.5', '90', 14);
+  capture.append('android', '09-22 10:00:15.000  123  456 I AXRB.Perf: AXRB.Perf end-frame: rate=75/s avg=0.4ms samples=120 p50=0.200ms p95=120ms p99=0.610ms', { receivedAt: at(15) });
+  assert.equal(capture.perfText(), [
+    'host-end-frame: rate=75.0/s p50=0.200ms p95=120.000ms p99=0.610ms (12 windows)',
+    'host-frame-submit: rate=150.5/s p50=0.200ms p95=90.000ms p99=0.610ms (1 window)',
+    'end-frame: rate=75.0/s p50=0.200ms p95=120.000ms p99=0.610ms (1 window)',
+  ].join('\n'));
+  assert.equal(capture.snapshot().entries.filter(entry => entry.tag === 'perf').length, 0);
+  record('host-selected-frame-age', '75', '120', 20);
+  record('host-selected-frame-age', '75', '260', 50);
+  assert.equal(capture.snapshot().entries.filter(entry => entry.tag === 'perf').length, 0);
+  record('host-selected-frame-age', '75', '280', 80);
+  record('host-selected-frame-age', '75', '300', 100);
+  record('host-selected-frame-age', '75', '290', 145);
+  assert.deepEqual(capture.snapshot().entries.filter(entry => entry.tag === 'perf')
+    .map(entry => [entry.source, entry.level, entry.text]), [
+    ['launcher', 'W', 'frame pipeline degraded: host-selected-frame-age p95=280ms sustained'],
+    ['launcher', 'W', 'frame pipeline degraded: host-selected-frame-age p95=290ms sustained'],
+  ]);
+  assert.equal(capture.perfText().split('\n')[3], 'host-selected-frame-age: rate=75.0/s p50=0.200ms p95=290.000ms p99=0.610ms (5 windows)');
+  capture.resetPerf();
+  assert.equal(capture.perfText(), '', 'a new game session starts without the previous windows');
+  record('host-selected-frame-age', '75', '300', 150);
+  record('host-selected-frame-age', '75', '300', 151);
+  assert.equal(capture.snapshot().entries.filter(entry => entry.tag === 'perf').length, 3, 'the warning interval restarts with the session');
+});
+
+test('replayed history keeps its perf warning without repeating it or reviving old windows', async t => {
+  const directory = await temporary(t);
+  const at = seconds => new Date(Date.parse('2026-09-22T10:00:00Z') + seconds * 1000).toISOString();
+  const warnings = capture => capture.snapshot().entries.filter(entry => entry.tag === 'perf').length;
+  for (let run = 1; run <= 3; run++) {
+    const capture = new LiveDiagnostics({ directory, getConfig: () => ({}) });
+    capture.tick = async () => {};
+    await capture.start();
+    if (run === 1) for (const seconds of [0, 10]) capture.append('host', 'AXRB.Perf host-end-frame: rate=75/s avg=1ms p50=1ms p95=300ms p99=400ms', { receivedAt: at(seconds) });
+    assert.equal(warnings(capture), 1, `launch ${run}`);
+    if (run > 1) assert.equal(capture.perfText(), '');
+    await capture.stop();
+  }
+});
+
+test('readers learn which retained entries were evicted from the middle', () => {
+  const capture = new LiveDiagnostics({ directory: '.', getConfig: () => ({}), maxEntries: 3, maxBytes: 64 * 1024 });
+  capture.append('launcher', 'kept');
+  capture.append('emulator', 'chatter 1');
+  capture.append('emulator', 'chatter 2');
+  const first = capture.snapshot(0, -1);
+  assert.equal(first.reset, true);
+  assert.deepEqual(first.entries.map(entry => entry.text), ['kept', 'chatter 1', 'chatter 2']);
+  capture.append('emulator', 'chatter 3');
+  const next = capture.snapshot(first.lastId, first.evictionSeq);
+  assert.equal(next.reset, false);
+  assert.deepEqual(next.evicted, [first.entries[1].id]);
+  assert.deepEqual(next.entries.map(entry => entry.text), ['chatter 3']);
+  assert.deepEqual(capture.snapshot(next.lastId, next.evictionSeq).evicted, []);
+  assert.equal(capture.snapshot(next.lastId, next.evictionSeq - 99).reset, true, 'a cursor older than the log resets');
 });

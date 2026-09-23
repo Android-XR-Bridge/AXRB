@@ -36,7 +36,7 @@ public:
         axrb::protocol::PerfScope scope(stats);
         if (!ensure_connected()) {
             if (!reportedSendSkip_) {
-                __android_log_print(ANDROID_LOG_INFO, "AXRB.Image", "send skipped: no TCP connection");
+                __android_log_print(ANDROID_LOG_WARN, "AXRB.Image", "send skipped: no TCP connection");
                 reportedSendSkip_ = true;
             }
             return false;
@@ -76,7 +76,7 @@ public:
         }
         if (!sent) {
             if (!reportedSendFailure_) {
-                __android_log_print(ANDROID_LOG_INFO, "AXRB.Image", "send failed");
+                __android_log_print(ANDROID_LOG_ERROR, "AXRB.Image", "send failed");
                 reportedSendFailure_ = true;
             }
             close_socket();
@@ -192,6 +192,7 @@ private:
             if (::connect(candidate, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0) {
                 socket_ = candidate;
                 directWindows_ = true;
+                note_connected();
                 __android_log_print(ANDROID_LOG_INFO, "AXRB.Image", "connected to Windows image stream via adb reverse :38491");
                 // Initialize ring buffer transport for GPU metadata (optional)
                 init_ring_transport();
@@ -219,15 +220,15 @@ private:
             int bufferSize = 1024 * 1024;
             setsockopt(candidate, SOL_SOCKET, SO_SNDBUF, &bufferSize, sizeof(bufferSize));
             socket_ = candidate;
+            note_connected();
             __android_log_print(ANDROID_LOG_INFO, "AXRB.Image", "connected to local image proxy");
             return true;
         }
         lastError_ = errno;
-        __android_log_print(ANDROID_LOG_INFO, "AXRB.Image", "local image proxy connect failed errno=%d", lastError_);
         ::close(candidate);
 
         if (!reportedConnectFailure_) {
-            __android_log_print(ANDROID_LOG_INFO, "AXRB.Image", "connect failed: errno=%d", lastError_);
+            __android_log_print(ANDROID_LOG_WARN, "AXRB.Image", "local image proxy connect failed: errno=%d", lastError_);
             reportedConnectFailure_ = true;
         }
         return false;
@@ -255,6 +256,16 @@ private:
             ::close(socket_);
             socket_ = -1;
         }
+    }
+
+    void note_connected()
+    {
+        // A fresh connection closes out the previous outage: re-arm the
+        // one-shot reports so the next failure is visible rather than
+        // silently deduped against a failure from an earlier episode.
+        reportedConnectFailure_ = false;
+        reportedSendSkip_ = false;
+        reportedSendFailure_ = false;
     }
 
     int socket_ = -1;

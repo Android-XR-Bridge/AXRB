@@ -34,6 +34,16 @@ test('SSO callbacks are bound to one challenge and do not expose server token er
   await assert.rejects(auth.complete(`oculus://login?token=${hash}&blob=test`), /expired/);
   await assert.rejects(post('https://test', {}, async () => Response.json({ error: { message: 'OC-SECRET-DO-NOT-LOG', code: 190 } })), e => !e.message.includes('SECRET'));
 });
+test('a refused Meta request names its step and error codes without the server message', async () => {
+  const refuse = body => async () => new Response(body, { status: 400 });
+  await assert.rejects(post('https://meta.graph.meta.com/webview_blobs_decrypt', { access_token: 'FRL|x|y', blob: 'b' },
+    refuse(JSON.stringify({ error: { message: 'OC-SECRET-DO-NOT-LOG', type: 'OAuthException', code: 100, error_subcode: 33 } }))),
+  e => e.message === 'Meta request failed (400, OAuthException code 100 subcode 33) at webview_blobs_decrypt. Try signing in again.');
+  await assert.rejects(post('https://meta.graph.meta.com/graphql', { doc_id: '24112177345042346' }, refuse('<html>OC-SECRET-DO-NOT-LOG</html>')),
+    e => e.message === 'Meta request failed (400) at graphql 24112177345042346. Try signing in again.');
+  await assert.rejects(post('https://meta.graph.meta.com/graphql', {}, refuse(JSON.stringify({ error: { type: 'OC-SECRET token=abc', code: 'x' } }))),
+    e => e.message === 'Meta request failed (400) at graphql. Try signing in again.');
+});
 test('library keeps only Quest entitlements and identifies incomplete results', async () => {
   const api = new QuestStore('test', async () => Response.json({ data: { viewer: { user: { display_name: 'Player', active_entitlements: { nodes: [
     { item: { id: '123456', display_name: 'Quest game', platform: 'ANDROID_6DOF' } },
@@ -107,7 +117,7 @@ test('portable copies and moves keep carried files while preserving external pat
   const state = new State(path.join(original, 'data')); await state.load({ portableRoot: original });
   state.data.settings = { managedDirectory: path.join(original, 'AXRB Runtime'), sdk: path.join(original, 'AXRB Runtime/sdk'),
     downloadDir: path.join(original, 'downloads'), ovrportCli: path.join(dir, 'external-tools/ovrport.jar') };
-  state.put({ id: 'carried', apk, files: [{ path: asset, kind: 'obb' }], owned: true, installed: true });
+  state.put({ id: 'carried', apk, sourceApk: apk, files: [{ path: asset, kind: 'obb' }], owned: true, installed: true });
   state.put({ id: 'external', apk: external, files: [{ path: external, kind: 'apk' }] });
   await state.save();
   await state.stageRuntime(path.join(original, 'AXRB Runtime'), new Set(['com.game.carried']));
@@ -118,6 +128,7 @@ test('portable copies and moves keep carried files while preserving external pat
   const copy = new State(path.join(copied, 'data')); await copy.load({ portableRoot: copied });
   assert.equal(await fs.readFile(copy.data.games[0].apk, 'utf8'), 'copied APK', 'a copy must not keep using the still-existing original');
   assert.equal(await fs.readFile(copy.data.games[0].files[0].path, 'utf8'), 'expansion data');
+  assert.equal(copy.data.games[0].sourceApk, copy.data.games[0].apk, 'the pre-patch original follows the copy too');
   assert.deepEqual(copy.data.settings, { ...state.data.settings, managedDirectory: path.join(copied, 'AXRB Runtime'),
     sdk: path.join(copied, 'AXRB Runtime/sdk'), downloadDir: path.join(copied, 'downloads') });
   assert.equal(copy.data.games[1].apk, external, 'a sibling with the same prefix is not inside the portable root');

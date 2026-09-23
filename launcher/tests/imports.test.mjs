@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { assetDestination, classifyAsset, importGameZip, inspectGameFolder, installFiles, shellQuote } from '../core/game-files.mjs';
+import { assetDestination, classifyAsset, importGameZip, inspectGameFolder, installFiles, shellQuote, describeInstallFailure } from '../core/game-files.mjs';
 import { parseDevices, Quest } from '../core/quest.mjs';
 import { run } from '../core/runtime.mjs';
 import { State } from '../core/state.mjs';
@@ -279,4 +279,15 @@ test('cancellation terminates the transfer subprocess before returning', async (
   const controller = new AbortController();
   const task = run(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { signal: controller.signal });
   controller.abort(); await assert.rejects(task, /Cancelled/);
+});
+
+test('Android install failures read as instructions and keep their code', () => {
+  const raw = new Error('adb.exe: failed to install C:/games/base-axrb.apk: Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: Existing package com.camouflaj.manta signatures do not match newer version; ignoring!]');
+  const described = describeInstallFailure(raw);
+  assert.match(described.message, /^An installed copy of this game is signed differently.*Uninstall the game first \(this deletes its Android data and saves\).*\(Android: INSTALL_FAILED_UPDATE_INCOMPATIBLE\)$/);
+  assert.equal(described.cause, raw);
+  const unknown = new Error('Failure [INSTALL_FAILED_SOMETHING_NEW]');
+  assert.equal(describeInstallFailure(unknown), unknown, 'unrecognised codes keep adb\'s own text');
+  const other = new Error('adb.exe: device offline');
+  assert.equal(describeInstallFailure(other), other);
 });

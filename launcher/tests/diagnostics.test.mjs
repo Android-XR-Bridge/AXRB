@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { collectDiagnostics, condense, diagnosticSources, redact, uploadDiagnostics, DEFAULT_DIAGNOSTICS_ENDPOINT, DIAGNOSTICS_RETENTION_DAYS } from '../core/diagnostics.mjs';
+import { collectDiagnostics, condense, diagnosticSources, parseSessionRecord, redact, uploadDiagnostics, DEFAULT_DIAGNOSTICS_ENDPOINT, DIAGNOSTICS_RETENTION_DAYS } from '../core/diagnostics.mjs';
 
 const identity = { user: 'flori', computer: 'SUPERDUPERGAY', home: 'C:\\Users\\flori' };
 
@@ -74,7 +74,27 @@ test('the bundle carries the useful logs, redacted, and never the game library',
 
 test('diagnostic sources cover the emulator and host logs a failure needs', () => {
   const names = diagnosticSources('C:\\data').map(([label]) => label);
-  assert.deepEqual(names, ['emulator.stdout.log', 'emulator.stderr.log', 'guest-gles.txt', 'guest-vulkan.json', 'host.log', 'host.err']);
+  assert.deepEqual(names, ['emulator.stdout.log', 'emulator.stderr.log', 'guest-gles.txt', 'guest-vulkan.json', 'host.log', 'host.err', 'session.json']);
+});
+
+test('game sessions and performance windows appear as their own bundle sections', async () => {
+  const bundle = await collectDiagnostics({
+    dataHome: 'Z:\\nowhere', sessions: [
+      JSON.stringify({ id: 'ab12de34', package: 'com.meta.samples.NorthStar', exitCode: 3, closeRequested: false, gameProcessLost: true, pauseSucceeded: false, syncSucceeded: false }),
+    ],
+    perf: 'host-end-frame: rate=75.0/s p50=0.212ms p95=0.322ms p99=0.396ms (12 windows)',
+  });
+  assert.match(bundle, /--- game sessions ---\n.*com\.meta\.samples\.NorthStar/);
+  assert.match(bundle, /"gameProcessLost":true/);
+  assert.match(bundle, /--- performance windows ---\nhost-end-frame: rate=75\.0\/s/);
+  const bare = await collectDiagnostics({ dataHome: 'Z:\\nowhere' });
+  assert.doesNotMatch(bare, /game sessions|performance windows/, 'empty sections stay out of the bundle');
+});
+
+test('session records accept Windows PowerShell UTF-8 and reject another launch', () => {
+  const record = { id: 'ab12de34', package: 'com.example.game', gameProcessLost: true };
+  assert.deepEqual(parseSessionRecord(`\uFEFF${JSON.stringify(record)}`, record.id), record);
+  assert.equal(parseSessionRecord(JSON.stringify(record), 'deadbeef'), null);
 });
 
 test('upload posts the bundle and returns the link the service reports', async () => {
