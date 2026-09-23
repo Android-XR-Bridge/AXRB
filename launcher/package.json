@@ -1,6 +1,6 @@
 {
   "name": "axrb-launcher",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "description": "Quest library and native Windows AXRB launcher",
   "license": "MIT",
