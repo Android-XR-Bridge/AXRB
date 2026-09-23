@@ -311,6 +311,33 @@ test('android logcat floods evict routine lines before setup history, AXRB lines
   assert.deepEqual(texts.filter(text => text.startsWith('Registering')), ['Registering: [8]', 'Registering: [9]']);
 });
 
+test("Android apps' warning floods evict before launcher lines and crashes", () => {
+  const capture = new LiveDiagnostics({ directory: '.', getConfig: () => ({}), maxEntries: 4, maxBytes: 64 * 1024 });
+  capture.append('launcher', 'login completed (50774 ms)', { tag: 'operation' });
+  capture.append('android', '09-23 00:27:16.000  812  812 E AndroidRuntime: FATAL EXCEPTION: main');
+  for (let index = 0; index < 6; index++) capture.append('android', `09-23 00:27:16.${100 + index}  900  930 W PlatformConfigurator: \tat fyac.run(${index})`);
+  const texts = capture.snapshot().entries.map(entry => entry.text);
+  assert.deepEqual(texts, ['login completed (50774 ms)', 'FATAL EXCEPTION: main', '\tat fyac.run(4)', '\tat fyac.run(5)']);
+});
+
+test('a third-party android tag over its budget is summarized, not stored line by line', () => {
+  const capture = new LiveDiagnostics({ directory: '.', getConfig: () => ({}), maxEntries: 1000, maxBytes: 4 * 1024 * 1024 });
+  const at = ms => new Date(Date.parse('2026-09-23T00:27:16.000Z') + ms).toISOString();
+  for (let index = 0; index < 250; index++) capture.append('android', `09-23 00:27:16.000  900  930 W PlatformConfigurator: \tat fyac.run(${index})`, { receivedAt: at(index) });
+  for (let index = 0; index < 150; index++) capture.append('android', `09-23 00:27:16.000  901  931 I AXRB.Image: frame ${index}`, { receivedAt: at(index) });
+  capture.append('android', '09-23 00:27:16.000  812  812 E AndroidRuntime: FATAL EXCEPTION: main', { receivedAt: at(300) });
+  const tagged = tag => capture.snapshot().entries.filter(entry => entry.tag === tag);
+  assert.equal(tagged('PlatformConfigurator').length, 100);
+  assert.equal(tagged('AXRB.Image').length, 150, "AXRB's own lines are never limited");
+  assert.equal(tagged('AndroidRuntime').length, 1);
+  capture.append('android', '09-23 00:27:27.000  900  930 W PlatformConfigurator: next window', { receivedAt: at(11000) });
+  assert.deepEqual(tagged('PlatformConfigurator').slice(-2).map(entry => [entry.level, entry.text]),
+    [['W', '[150 more PlatformConfigurator lines suppressed within 10s]'], ['W', 'next window']]);
+  for (let index = 0; index < 105; index++) capture.append('android', `09-23 00:27:27.000  900  930 W PlatformConfigurator: again ${index}`, { receivedAt: at(11001) });
+  capture.flushSuppressed(true);
+  assert.equal(tagged('PlatformConfigurator').at(-1).text, '[6 more PlatformConfigurator lines suppressed within 10s]', 'a tag that falls silent still reports its count');
+});
+
 test('kernel boot chatter is demoted to debug while real guest failures keep severity', () => {
   const capture = new LiveDiagnostics({ directory: '.', getConfig: () => ({}), maxEntries: 64, maxBytes: 64 * 1024 });
   capture.append('emulator', '[    9.412037] ueventd: firmware_load: error -2 opening file');

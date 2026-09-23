@@ -36,14 +36,21 @@ function streamKey(source, metadata) {
   return `${source}:${metadata.stream || ''}:${metadata.tag || ''}:${metadata.level || ''}`;
 }
 
-// Retention classes: routine guest output (emulator V/D/I, and android V/D/I
-// outside AXRB's own tags) is sacrificed first; launcher and host lines, AXRB
-// runtime lines and every W/E/F entry survive floods. A booting Android emits
-// thousands of routine lines a minute, enough to push setup out of the log.
-function isClassB(entry) {
-  if (!'VDI'.includes(entry.level)) return false;
-  return entry.source === 'emulator' || (entry.source === 'android' && !entry.tag.startsWith('AXRB'));
+// Retention tiers, evicted lowest first. 0: routine guest output (emulator
+// V/D/I, android V/D/I outside AXRB's tags). 1: warnings and errors from
+// Android's own apps. 2: launcher, host, emulator failures, AXRB runtime lines
+// and crashes. The emulator's stock Google apps can log hundreds of stack
+// trace lines a second, which must not push the launcher's history out.
+const CRASH_TAGS = new Set(['AndroidRuntime', 'DEBUG', 'libc', 'crash_dump64', 'crash_dump32', 'tombstoned']);
+function retentionTier(entry) {
+  if (entry.source === 'emulator') return 'VDI'.includes(entry.level) ? 0 : 2;
+  if (entry.source !== 'android' || entry.tag.startsWith('AXRB') || entry.level === 'F' || CRASH_TAGS.has(entry.tag)) return 2;
+  return 'VDI'.includes(entry.level) ? 0 : 1;
 }
+// A third-party android tag may log this many lines per window; the rest are
+// counted and reported in one summary line when the window closes.
+const TAG_BUDGET = 100;
+const TAG_WINDOW_MS = 10000;
 
 // Keyword inference alone misreads two measured cases: stock guest boot chatter
 // carries "error"/"warning" words, and a Windows loader that succeeded still
@@ -83,7 +90,7 @@ function tracksFramePipeline(counter) {
 export class LiveDiagnostics {
   constructor({ directory, getConfig, onUpdate = () => {}, spawnProcess = spawn, maxEntries = MAX_DIAGNOSTIC_ENTRIES, maxBytes = MAX_BYTES }) {
     Object.assign(this, { directory, getConfig, onUpdate, spawnProcess, maxEntries, maxBytes });
-    this.entries = []; this.head = 0; this.bytes = 0; this.lastId = 0; this.dropped = 0; this.classB = 0;
+    this.entries = []; this.head = 0; this.bytes = 0; this.lastId = 0; this.dropped = 0; this.tiers = [0, 0, 0]; this.tagWindows = new Map();
     this.evictions = []; this.evictionSeq = 0; this.replaying = false;
     this.partials = new Map(); this.files = new Map(); this.children = new Set();
     this.perf = new Map(); this.perfWarnedAt = new Map(); this.missListing = null; this.attach = freshAttach();
@@ -130,24 +137,21 @@ export class LiveDiagnostics {
         pid: match?.[2] || (metadata.pid == null ? null : String(metadata.pid).slice(0, 32)),
         guestTime: match?.[1] || (metadata.guestTime == null ? null : String(metadata.guestTime).slice(0, 64)),
       };
+      if (!metadata.unlimited && !this.replaying && this.overBudget(fields)) continue;
       const safe = redact((match?.[5] ?? raw).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, ''));
       // Redact before splitting so long lines keep their non-secret context.
       for (let offset = 0; offset < safe.length; offset += MAX_LINE) {
         const entry = { id: ++this.lastId, ...fields, text: safe.slice(offset, offset + MAX_LINE) };
-        const bytes = Buffer.byteLength(JSON.stringify(entry));
-        this.entries.push({ entry, bytes }); this.bytes += bytes;
-        if (isClassB(entry)) this.classB++;
+        const bytes = Buffer.byteLength(JSON.stringify(entry)), tier = retentionTier(entry);
+        this.entries.push({ entry, bytes, tier }); this.bytes += bytes; this.tiers[tier]++;
         while (this.entries.length - this.head > this.maxEntries || this.bytes > this.maxBytes) {
-          // Evict the oldest boot-chatter entry while any exists so guest
-          // floods cannot displace launcher, host and failure lines; only
-          // once no chatter remains does the oldest entry go.
+          // Evict the oldest entry of the lowest tier present, so guest floods
+          // cannot displace launcher, host and crash lines.
+          const floor = this.tiers.findIndex(count => count > 0);
           let victim = this.head;
-          if (this.classB) {
-            for (let index = this.head; index < this.entries.length; index++) if (isClassB(this.entries[index].entry)) { victim = index; break; }
-          }
+          for (let index = this.head; index < this.entries.length; index++) if (this.entries[index].tier === floor) { victim = index; break; }
           const item = this.entries[victim];
-          this.bytes -= item.bytes; this.dropped++;
-          if (isClassB(item.entry)) this.classB--;
+          this.bytes -= item.bytes; this.dropped++; this.tiers[item.tier]--;
           if (victim === this.head) this.head++;
           else {
             // Readers holding this entry cannot infer its removal from firstId.
@@ -165,6 +169,35 @@ export class LiveDiagnostics {
       if (perf) this.recordPerf(perf[1], fields.receivedAt, perf);
     }
     this.notify();
+  }
+  // Rate limit per third-party android tag, on receipt time. AXRB's own tags
+  // and crash output are never limited; tier 2 covers exactly those.
+  overBudget(fields) {
+    if (fields.source !== 'android' || retentionTier(fields) === 2) return false;
+    const now = Date.parse(fields.receivedAt) || Date.now();
+    let window = this.tagWindows.get(fields.tag);
+    if (!window || now - window.start >= TAG_WINDOW_MS) {
+      if (window) this.reportSuppressed(fields.tag, window);
+      window = { start: now, count: 0, suppressed: 0 };
+      this.tagWindows.set(fields.tag, window);
+    }
+    if (++window.count <= TAG_BUDGET) return false;
+    window.suppressed++; this.dropped++;
+    return true;
+  }
+  reportSuppressed(tag, window) {
+    if (!window.suppressed) return;
+    const count = window.suppressed; window.suppressed = 0;
+    this.append('android', `[${count} more ${tag} line${count === 1 ? '' : 's'} suppressed within ${TAG_WINDOW_MS / 1000}s]`, { tag, level: 'W', unlimited: true });
+  }
+  // A tag that falls silent still owes its summary; close expired windows.
+  flushSuppressed(force = false) {
+    const now = Date.now();
+    for (const [tag, window] of this.tagWindows) {
+      if (!force && now - window.start < TAG_WINDOW_MS) continue;
+      this.reportSuppressed(tag, window);
+      this.tagWindows.delete(tag);
+    }
   }
   write(source, chunk, metadata = {}) {
     const key = streamKey(source, metadata);
@@ -278,6 +311,7 @@ export class LiveDiagnostics {
         this.android.lastReceivedAt = null;
         this.setAndroid('waiting', `Waiting for ${config.avd || 'the configured Android device'}.`, '');
       }
+      this.flushSuppressed();
       await this.tailFiles(config.dataHome);
       if (!this.stream && !this.connectTask && Date.now() >= this.nextConnect) {
         this.connectTask = this.connect(config, this.generation).finally(() => { this.connectTask = null; });
@@ -493,7 +527,7 @@ export class LiveDiagnostics {
     await this.connectTask;
     await this.loopTask;
     for (const cursor of this.files.values()) this.write(cursor.source, cursor.decoder.end(), { tag: cursor.label, end: true });
-    this.stream = null; this.flush();
+    this.stream = null; this.flush(); this.flushSuppressed(true);
     this.setAndroid('stopped', 'Capture stopped; retained logs remain available.');
     await this.persist();
   }
