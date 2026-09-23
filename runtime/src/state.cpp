@@ -115,7 +115,9 @@ void log_call(const char* name)
 void log_proc_request(const char* name)
 {
 #if defined(__ANDROID__)
-    __android_log_print(ANDROID_LOG_INFO, "AXRB.Runtime", "xrGetInstanceProcAddr(%s)", name);
+    // One line per function a game looks up, hundreds at startup: useful for a
+    // missing entry point, so kept, but as debug rather than info.
+    __android_log_print(ANDROID_LOG_DEBUG, "AXRB.Runtime", "xrGetInstanceProcAddr(%s)", name);
 #else
     std::fprintf(stderr, "AXRB.Runtime: xrGetInstanceProcAddr(%s)\n", name);
 #endif

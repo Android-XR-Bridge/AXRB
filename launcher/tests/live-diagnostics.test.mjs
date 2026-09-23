@@ -320,6 +320,18 @@ test("Android apps' warning floods evict before launcher lines and crashes", () 
   assert.deepEqual(texts, ['login completed (50774 ms)', 'FATAL EXCEPTION: main', '\tat fyac.run(4)', '\tat fyac.run(5)']);
 });
 
+test("AXRB's own debug traces are kept in full but evicted before its info lines", () => {
+  const capture = new LiveDiagnostics({ directory: '.', getConfig: () => ({}), maxEntries: 300, maxBytes: 4 * 1024 * 1024 });
+  capture.append('android', '09-23 01:14:09.000  901  930 I AXRB.Runtime: session created');
+  for (let index = 0; index < 250; index++) capture.append('android', `09-23 01:14:09.000  901  930 D AXRB.Runtime: xrGetInstanceProcAddr(fn${index})`);
+  assert.equal(capture.snapshot().entries.filter(entry => entry.level === 'D').length, 250, 'AXRB traces are not rate-limited');
+  for (let index = 0; index < 100; index++) capture.append('launcher', `step ${index}`, { tag: 'operation' });
+  const texts = capture.snapshot().entries.map(entry => entry.text);
+  assert.ok(texts.includes('session created'));
+  assert.equal(texts.filter(text => text.startsWith('xrGetInstanceProcAddr')).length, 199);
+  assert.equal(texts.filter(text => text.startsWith('step ')).length, 100);
+});
+
 test('a third-party android tag over its budget is summarized, not stored line by line', () => {
   const capture = new LiveDiagnostics({ directory: '.', getConfig: () => ({}), maxEntries: 1000, maxBytes: 4 * 1024 * 1024 });
   const at = ms => new Date(Date.parse('2026-09-23T00:27:16.000Z') + ms).toISOString();

@@ -1,5 +1,9 @@
 #include "openxr_session.h"
 
+// Pose and controller heartbeats: every 900 samples (10 s at 90 Hz) proves
+// tracking is live without drowning the log; once a second was 7 lines/s.
+constexpr uint64_t kPoseLogInterval = 900;
+
 namespace axrb::host::detail {
 
 namespace {
@@ -170,7 +174,7 @@ axrb::protocol::PoseFrame OpenXrSession::make_frame(uint64_t sequence)
         (location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0) {
         frame.hmd = to_protocol_pose(location.pose);
         frame.hmd_flags = static_cast<uint32_t>(location.locationFlags);
-        if (sequence % 90 == 0) {
+        if (sequence % kPoseLogInterval == 0) {
             std::fprintf(
                 stderr,
                 "AXRB OpenXR: pose seq=%llu hmd=(%.3f %.3f %.3f)\n",
@@ -555,7 +559,7 @@ void OpenXrSession::locate_controller_spaces(axrb::protocol::PoseFrame& frame, X
             std::chrono::steady_clock::now().time_since_epoch()).count()));
 
     if (locatedAny) {
-        if (sequence % 90 == 0) {
+        if (sequence % kPoseLogInterval == 0) {
             std::fprintf(
                 stderr,
                 "AXRB OpenXR: controllers seq=%llu left=(%.3f %.3f %.3f) right=(%.3f %.3f %.3f)\n",

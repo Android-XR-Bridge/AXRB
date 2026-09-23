@@ -37,14 +37,17 @@ function streamKey(source, metadata) {
 }
 
 // Retention tiers, evicted lowest first. 0: routine guest output (emulator
-// V/D/I, android V/D/I outside AXRB's tags). 1: warnings and errors from
+// V/D/I, android V/D/I outside AXRB's tags, AXRB's own V/D). 1: warnings and errors from
 // Android's own apps. 2: launcher, host, emulator failures, AXRB runtime lines
 // and crashes. The emulator's stock Google apps can log hundreds of stack
 // trace lines a second, which must not push the launcher's history out.
 const CRASH_TAGS = new Set(['AndroidRuntime', 'DEBUG', 'libc', 'crash_dump64', 'crash_dump32', 'tombstoned']);
 function retentionTier(entry) {
   if (entry.source === 'emulator') return 'VDI'.includes(entry.level) ? 0 : 2;
-  if (entry.source !== 'android' || entry.tag.startsWith('AXRB') || entry.level === 'F' || CRASH_TAGS.has(entry.tag)) return 2;
+  if (entry.source !== 'android' || entry.level === 'F' || CRASH_TAGS.has(entry.tag)) return 2;
+  // AXRB's own verbose and debug lines (per-call traces) are routine; its info,
+  // perf and failure lines are what a report needs.
+  if (entry.tag.startsWith('AXRB')) return 'VD'.includes(entry.level) ? 0 : 2;
   return 'VDI'.includes(entry.level) ? 0 : 1;
 }
 // A third-party android tag may log this many lines per window; the rest are
@@ -173,7 +176,7 @@ export class LiveDiagnostics {
   // Rate limit per third-party android tag, on receipt time. AXRB's own tags
   // and crash output are never limited; tier 2 covers exactly those.
   overBudget(fields) {
-    if (fields.source !== 'android' || retentionTier(fields) === 2) return false;
+    if (fields.source !== 'android' || fields.tag.startsWith('AXRB') || retentionTier(fields) === 2) return false;
     const now = Date.parse(fields.receivedAt) || Date.now();
     let window = this.tagWindows.get(fields.tag);
     if (!window || now - window.start >= TAG_WINDOW_MS) {
