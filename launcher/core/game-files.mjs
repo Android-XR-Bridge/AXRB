@@ -21,6 +21,39 @@ export function describeInstallFailure(error) {
   if (!code || !INSTALL_FAILURES[code]) return error;
   return new Error(`${INSTALL_FAILURES[code]} (Android: ${code})`, { cause: error });
 }
+// Patching starts from the original APK. Games patched before its path was
+// recorded as sourceApk still have it on disk:
+// - downloads list it in game.files;
+// - an installed build wrote <name>-axrb.apk into an axrb-patched folder beside
+//   it, one level deeper for every re-patch, adding -axrb each time;
+// - a portable build copied imports to <downloads>/import-*/<n>/<name>.apk and
+//   patched into <downloads>/patched/<package>, so it is found by name there.
+// Only an unpatched APK with the same package and version code qualifies.
+export async function findOriginalApk(game, patched, inspect, { searchRoots = [] } = {}) {
+  const candidates = [game.sourceApk, ...(game.files || []).filter(file => file.kind === 'apk').map(file => file.path)];
+  const stem = path.basename(game.apk, path.extname(game.apk)).replace(/(?:-axrb)+$/, '');
+  const name = `${stem}.apk`;
+  let folder = path.dirname(game.apk);
+  while (path.basename(folder).toLowerCase() === 'axrb-patched') folder = path.dirname(folder);
+  candidates.push(path.join(folder, name));
+  // base.apk is every download's name, so folders named after the package go first.
+  const found = [];
+  for (const root of searchRoots.filter(Boolean)) found.push(...await findByName(root, name, 3));
+  candidates.push(...found.sort((a, b) => Number(b.includes(game.package)) - Number(a.includes(game.package))));
+  for (const file of [...new Set(candidates)].slice(0, 24)) {
+    if (!file || file === game.apk) continue;
+    const identity = await inspect(file).catch(() => null);
+    if (identity && !identity.patched && identity.package === game.package && identity.versionCode === patched.versionCode) return { file, identity };
+  }
+  return null;
+}
+async function findByName(directory, name, depth) {
+  let entries;
+  try { entries = await fs.readdir(directory, { withFileTypes: true }); } catch { return []; }
+  const found = entries.filter(entry => entry.isFile() && entry.name.toLowerCase() === name.toLowerCase()).map(entry => path.join(directory, entry.name));
+  if (depth > 0) for (const entry of entries.filter(entry => entry.isDirectory())) found.push(...await findByName(path.join(directory, entry.name), name, depth - 1));
+  return found;
+}
 
 export const shellQuote =value => `'${String(value).replaceAll("'", "'\\''")}'`;
 

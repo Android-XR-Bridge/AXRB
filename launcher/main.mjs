@@ -11,7 +11,7 @@ import { Runtime, openWindowsFeatures, run } from './core/runtime.mjs';
 import { Setup, identifyArchives, avdDirectory, parseStorageGB, planStorageChange, withStorageGB } from './core/setup.mjs';
 import { loadLibraryArtwork } from './core/artwork.mjs';
 import { Quest } from './core/quest.mjs';
-import { importGameZip } from './core/game-files.mjs';
+import { findOriginalApk, importGameZip } from './core/game-files.mjs';
 import { collectDiagnostics, describeSessionEnd, parseSessionRecord, redact, uploadDiagnostics } from './core/diagnostics.mjs';
 import { LiveDiagnostics } from './core/live-diagnostics.mjs';
 import { EmulatorWatchdog } from './core/watchdog.mjs';
@@ -454,10 +454,11 @@ handler('patch', (id, selected) => exclusive(async () => {
   // its own output (base-axrb-axrb.apk).
   let input = game.apk, identity = await runtime.inspect(input);
   if (identity.patched) {
-    const source = game.sourceApk ? await runtime.inspect(game.sourceApk).catch(() => null) : null;
-    if (!source || source.patched || source.package !== game.package || source.versionCode !== identity.versionCode) throw new Error('This APK is already patched and its original is no longer available. Download or import the original APK to patch it again.');
-    input = game.sourceApk; identity = source;
-  } else game.sourceApk = input;
+    const original = await findOriginalApk(game, identity, file => runtime.inspect(file), { searchRoots: [state.data.settings.downloadDir] });
+    if (!original) throw new Error('This APK is already patched and its original is no longer available. Download or import the original APK to patch it again.');
+    ({ file: input, identity } = original);
+  }
+  game.sourceApk = input;
   if (identity.package !== game.package) throw new Error('APK package no longer matches this game; import it separately.');
   Object.assign(game, { version: identity.version, versionCode: identity.versionCode, activity: identity.activity, patched: input === game.apk ? identity.patched : true });
   await persist();
@@ -475,11 +476,26 @@ handler('patch', (id, selected) => exclusive(async () => {
     ? path.join(state.data.settings.downloadDir, 'patched', game.package)
     : path.join(path.dirname(input), 'axrb-patched'));
   const output = portableOutput(portable, path.join(outputDirectory, `${path.basename(input, path.extname(input))}-axrb.apk`));
-  const args = ['patch', `--input=${input}`, `--output=${outputDirectory}`, '--output-name={filename}-axrb.apk', ...patchArgs];
-  await ovrport.run(cli, args, { timeout: 20 * 60 * 1000 });
-  const metadata = await runtime.inspect(output);
-  if (metadata.package !== game.package) throw new Error('Patched APK changed its package name; import it separately.');
-  Object.assign(game, { apk: output, patched: true, version: metadata.version, versionCode: metadata.versionCode, activity: metadata.activity });
+  // A re-patch produces the same file name as the APK the game uses now, and
+  // OVRPort streams straight into its output. Stage it, so a failed or
+  // cancelled run leaves the working APK untouched.
+  // A run that timed out can leave its staging folder behind while java still
+  // holds the file, and a quit skips the cleanup below. Patches never overlap,
+  // so any staging folder left over now is dead.
+  for (const entry of await fs.readdir(outputDirectory).catch(() => [])) {
+    if (entry.startsWith('.staging-')) await fs.rm(path.join(outputDirectory, entry), { recursive: true, force: true }).catch(() => {});
+  }
+  const staging = path.join(outputDirectory, `.staging-${randomUUID().slice(0, 8)}`);
+  const args = ['patch', `--input=${input}`, `--output=${staging}`, '--output-name={filename}-axrb.apk', ...patchArgs];
+  try {
+    await fs.mkdir(staging, { recursive: true });
+    await ovrport.run(cli, args, { timeout: 20 * 60 * 1000 });
+    const staged = path.join(staging, path.basename(output));
+    const metadata = await runtime.inspect(staged);
+    if (metadata.package !== game.package) throw new Error('Patched APK changed its package name; import it separately.');
+    await fs.rename(staged, output);
+    Object.assign(game, { apk: output, patched: true, version: metadata.version, versionCode: metadata.versionCode, activity: metadata.activity });
+  } finally { await fs.rm(staging, { recursive: true, force: true }).catch(() => {}); }
   await persist();
   return { profileLabel: compatibility.status === 'matched' ? compatibility.label : null };
 }));

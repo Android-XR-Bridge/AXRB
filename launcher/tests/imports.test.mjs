@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { assetDestination, classifyAsset, importGameZip, inspectGameFolder, installFiles, shellQuote, describeInstallFailure } from '../core/game-files.mjs';
+import { assetDestination, classifyAsset, importGameZip, inspectGameFolder, installFiles, shellQuote, describeInstallFailure, findOriginalApk } from '../core/game-files.mjs';
 import { parseDevices, Quest } from '../core/quest.mjs';
 import { run } from '../core/runtime.mjs';
 import { State } from '../core/state.mjs';
@@ -290,4 +290,46 @@ test('Android install failures read as instructions and keep their code', () => 
   assert.equal(describeInstallFailure(unknown), unknown, 'unrecognised codes keep adb\'s own text');
   const other = new Error('adb.exe: device offline');
   assert.equal(describeInstallFailure(other), other);
+});
+
+test('a game patched before its original was recorded can still find it', async () => {
+  const identities = {
+    'D:/games/manta/base.apk': { package: 'com.camouflaj.manta', versionCode: '350961', patched: false },
+    'D:/games/manta/axrb-patched/base-axrb.apk': { package: 'com.camouflaj.manta', versionCode: '350961', patched: true },
+    'D:/games/old/base.apk': { package: 'com.camouflaj.manta', versionCode: '100', patched: false },
+  };
+  const inspect = async file => { const identity = identities[file.replaceAll(path.sep, '/')]; if (!identity) throw new Error('missing'); return identity; };
+  const patched = identities['D:/games/manta/axrb-patched/base-axrb.apk'];
+  // A download lists its original in game.files; an older version there does not count.
+  const downloaded = { package: 'com.camouflaj.manta', apk: 'D:/games/manta/axrb-patched/base-axrb.apk', files: [{ kind: 'apk', path: 'D:/games/old/base.apk' }, { kind: 'apk', path: 'D:/games/manta/base.apk' }] };
+  assert.equal((await findOriginalApk(downloaded, patched, inspect)).file, 'D:/games/manta/base.apk');
+  // An imported APK has no file list; its original sits beside the patch
+  // folder, one folder further out for each re-patch an older build made.
+  const imported = { package: 'com.camouflaj.manta', apk: 'D:/games/manta/axrb-patched/base-axrb.apk' };
+  assert.equal((await findOriginalApk(imported, patched, inspect)).file.replaceAll(path.sep, '/'), 'D:/games/manta/base.apk');
+  const repatched = { package: 'com.camouflaj.manta', apk: 'D:/games/manta/axrb-patched/axrb-patched/base-axrb-axrb.apk' };
+  assert.equal((await findOriginalApk(repatched, patched, inspect)).file.replaceAll(path.sep, '/'), 'D:/games/manta/base.apk');
+  // A recorded original that is itself patched, or gone, is not one.
+  assert.equal(await findOriginalApk({ package: 'com.camouflaj.manta', apk: 'D:/x/y.apk', sourceApk: 'D:/games/manta/axrb-patched/base-axrb.apk' }, patched, inspect), null);
+  assert.equal(await findOriginalApk({ package: 'com.camouflaj.manta', apk: 'D:/x/y.apk', sourceApk: 'D:/gone.apk' }, patched, inspect), null);
+});
+
+test('a portable import patched before its original was recorded is found in the downloads folder', async t => {
+  const downloads = await fs.mkdtemp(path.join(os.tmpdir(), 'axrb-original-'));
+  t.after(() => fs.rm(downloads, { recursive: true, force: true }));
+  // A portable build copies an import to import-*/<n>/ and patches into
+  // patched/<package>/; other games' base.apk files sit alongside.
+  const original = path.join(downloads, 'import-abc123', '0', 'base.apk');
+  const other = path.join(downloads, 'quest', 'com.other.game', 'uuid', 'base.apk');
+  const patchedApk = path.join(downloads, 'patched', 'com.camouflaj.manta', 'base-axrb.apk');
+  for (const file of [original, other, patchedApk]) { await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, ''); }
+  const identities = new Map([
+    [original, { package: 'com.camouflaj.manta', versionCode: '350961', patched: false }],
+    [other, { package: 'com.other.game', versionCode: '1', patched: false }],
+    [patchedApk, { package: 'com.camouflaj.manta', versionCode: '350961', patched: true }],
+  ]);
+  const inspect = async file => { if (!identities.has(file)) throw new Error('missing'); return identities.get(file); };
+  const game = { package: 'com.camouflaj.manta', apk: patchedApk };
+  assert.equal(await findOriginalApk(game, identities.get(patchedApk), inspect), null, 'nothing beside the patch folder');
+  assert.equal((await findOriginalApk(game, identities.get(patchedApk), inspect, { searchRoots: [downloads] })).file, original);
 });
