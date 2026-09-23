@@ -20,6 +20,15 @@ test('profile capabilities belong to the configured CLI path', async () => {
   await assert.rejects(cli.requireProfiles('old.jar'), /newer ovrport CLI/);
 });
 
+test('a profile patch the configured CLI lacks is named before patching starts', async () => {
+  const answer = patches => async (_executable, args) => args.includes('--json') ? JSON.stringify(patches) : '--extra-patches=<value>';
+  const old = new Ovrport(answer(catalog));
+  await old.requireProfiles('old.jar');
+  await assert.rejects(old.requireProfiles('old.jar', ['patch_disable_meta_xr_audio_telemetry']), /needs patch_disable_meta_xr_audio_telemetry, which the configured ovrport CLI does not have/);
+  const current = new Ovrport(answer([...catalog, { name: 'patch_disable_meta_xr_audio_telemetry', recommended: false }]));
+  await current.requireProfiles('new.jar', ['patch_disable_meta_xr_audio_telemetry']);
+});
+
 test('manual selections reject unknown patches, duplicates, conflicts and argument injection', () => {
   assert.throws(() => selectedPatchArgs(catalog, []), /at least one/);
   assert.throws(() => selectedPatchArgs(catalog, [{ name: 'patch_typo', arguments: [] }]), /Invalid/);

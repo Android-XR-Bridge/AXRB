@@ -43,13 +43,15 @@ test('bundled database matches The Climb 2 2.2 with patch and runtime actions', 
   assert.deepEqual(compatibilityRuntimeOptions(resolution), { precomposeProjectionLayers: true });
 });
 
-test('bundled database patches Batman and North Star with the recommended set only', async () => {
+test('bundled database patches Batman with the recommended set and North Star with its audio fix', async () => {
   const profiles = await loadCompatibilityProfiles(bundled);
-  for (const game of [{ package: 'com.camouflaj.manta', version: '1.4.1-350961', versionCode: '350961' },
-    { package: 'com.meta.samples.NorthStar', version: '1.0.1', versionCode: '101' }]) {
-    const resolution = resolveCompatibility(profiles, game);
-    assert.equal(resolution.status, 'matched', game.package);
-    assert.deepEqual(compatibilityPatchArgs(resolution), [], 'no extra patches: OVRPort applies its recommended set');
+  const batman = resolveCompatibility(profiles, { package: 'com.camouflaj.manta', version: '1.4.1-350961', versionCode: '350961' });
+  assert.equal(batman.status, 'matched');
+  assert.deepEqual(compatibilityPatchArgs(batman), [], 'no extra patches: OVRPort applies its recommended set');
+  const northStar = resolveCompatibility(profiles, { package: 'com.meta.samples.NorthStar', version: '1.0.1', versionCode: '101' });
+  assert.equal(northStar.status, 'matched');
+  assert.deepEqual(compatibilityPatchArgs(northStar), ['--extra-patches=patch_disable_meta_xr_audio_telemetry']);
+  for (const resolution of [batman, northStar]) {
     assert.deepEqual(compatibilityRuntimeOptions(resolution), {});
     assert.match(resolution.summary, /before installing/);
   }

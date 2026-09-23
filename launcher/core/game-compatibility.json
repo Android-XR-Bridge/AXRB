@@ -23,8 +23,8 @@
       "label": "North Star 1.0.1",
       "package": "com.meta.samples.NorthStar",
       "versions": [{ "versionCode": "101", "versionName": "1.0.1" }],
-      "ovrport": { "recommended": true },
-      "summary": "OVRPort's recommended patches: they pass the Unity Oculus hardware check, without which VR does not start. The game does not use the Meta Platform SDK. Patch before installing."
+      "ovrport": { "extraPatches": ["patch_disable_meta_xr_audio_telemetry"] },
+      "summary": "OVRPort's recommended patches pass the Unity Oculus hardware check, without which VR does not start. patch_disable_meta_xr_audio_telemetry stops Meta XR Audio's telemetry from aborting the game under Android's ARM translation; it needs ovrport 1.2.4 or later. The game does not use the Meta Platform SDK. Patch before installing."
     }
   ]
 }

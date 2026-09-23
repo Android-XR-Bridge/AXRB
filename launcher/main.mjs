@@ -471,7 +471,7 @@ handler('patch', (id, selected) => exclusive(async () => {
   if (compatibility.status === 'matched') {
     if (selected !== undefined) throw new Error('This game now has a verified compatibility profile. Reopen its details to patch.');
     patchArgs = compatibilityPatchArgs(compatibility);
-    if (patchArgs.length) await ovrport.requireProfiles(cli);
+    if (patchArgs.length) await ovrport.requireProfiles(cli, compatibility.profile.ovrport?.extraPatches ?? []);
   } else {
     if (selected === undefined) return { patches: await ovrport.patches(cli) };
     patchArgs = selectedPatchArgs(await ovrport.patches(cli), selected);

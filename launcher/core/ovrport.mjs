@@ -12,9 +12,15 @@ export class Ovrport {
   run(cli, args, options = {}) {
     return this.execute(/\.jar$/i.test(cli) ? 'java' : cli, /\.jar$/i.test(cli) ? ['-jar', cli, ...args] : args, options);
   }
-  async requireProfiles(cli) {
+  // A profile's extra patches can be newer than the configured CLI, which
+  // would otherwise fail with its own "Unknown patch" error mid-patch.
+  async requireProfiles(cli, extraPatches = []) {
     if (!this.help.has(cli)) this.help.set(cli, await this.run(cli, ['patch'], { timeout: CLI_TIMEOUT, requireCompleteOutput: true, timeoutMessage: CLI_TIMEOUT_MESSAGE }));
     if (!this.help.get(cli).includes('--extra-patches=<value>')) throw new Error('This game requires a newer ovrport CLI with compatibility-profile support.');
+    if (!extraPatches.length) return;
+    const available = new Set((await this.patches(cli)).map(patch => patch.name));
+    const missing = extraPatches.filter(name => !available.has(name));
+    if (missing.length) throw new Error(`This game's compatibility profile needs ${missing.join(', ')}, which the configured ovrport CLI does not have. Choose a newer ovrport CLI in Settings.`);
   }
   async patches(cli) {
     const output = await this.run(cli, ['patches', '--json'], { timeout: CLI_TIMEOUT, requireCompleteOutput: true, timeoutMessage: CLI_TIMEOUT_MESSAGE });
