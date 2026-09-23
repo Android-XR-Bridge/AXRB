@@ -259,7 +259,8 @@ Source components are in `ui/`, with shared shadcn components in `ui/components/
   preset automatically; other games and unmatched versions show the configured
   CLI's available patches, with its recommended selection checked. Review the
   options, optionally supply comma-separated advanced arguments, then choose
-  **Apply selected patches**. Cancel leaves the APK untouched.
+  **Apply selected patches** at the top, where Play normally sits. Cancel
+  leaves the APK untouched.
   Use a current CLI with `patches --json` support; profiled patches also require
   `--extra-patches` support. Older CLIs fail visibly instead of silently ignoring
   a preset. AXRB bundles neither ovrport nor Java.

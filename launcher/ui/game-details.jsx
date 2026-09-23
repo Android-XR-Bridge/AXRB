@@ -27,6 +27,9 @@ export function GameDetails({ game, state, local, onClose, run, pending, setPage
     setExtra(null);
   });
   const editPatch = (name, values) => setExtra(current => ({ ...current, items: current.items.map(item => item.name === name ? { ...item, ...values } : item) }));
+  const choosingPatches = extra?.kind === 'patches';
+  const applyPatches = () => patch(extra.items.filter(item => item.selected).map(item => ({ name: item.name, arguments: item.arguments.trim() ? item.arguments.split(',').map(value => value.trim()) : [] })));
+  const resetPatches = () => setExtra(current => ({ ...current, items: current.items.map(item => ({ ...item, selected: item.recommended, arguments: '' })) }));
   const loadExtra = kind => operate(async () => {
     const result = await call(kind, game.id);
     if (kind === 'permissions') { setExtra({ kind, ...result }); return; }
@@ -49,8 +52,17 @@ export function GameDetails({ game, state, local, onClose, run, pending, setPage
         <p className="text-muted-foreground">{game.compatibility.summary}</p>
       </div>}
       <div className="space-y-5 p-6">
-        {extra?.kind !== 'patches' && <Cover game={game} className="aspect-video" />}
+        {!choosingPatches && <Cover game={game} className="aspect-video" />}
+        {/* While patches are being chosen, applying them is the action at hand:
+            it takes the primary row instead of sitting below the whole list,
+            and Play steps aside until the choice is applied or cancelled. */}
         <div className="flex items-center gap-2">
+          {choosingPatches ? <>
+            <Button disabled={busy || !extra.items.some(item => item.selected)} onClick={applyPatches}>Apply selected patches</Button>
+            <Button variant="ghost" disabled={busy} onClick={() => setExtra(null)}>Cancel</Button>
+            <div className="flex-1" />
+            <Button size="sm" variant="outline" disabled={busy} onClick={resetPatches}>Reset to recommended</Button>
+          </> : <>
           {activeJob ? <Button variant="secondary" onClick={() => { onClose(); setPage('downloads'); }}><Loader2 className="animate-spin" />{{ downloading: 'Downloading', installing: 'Installing', importing: 'Importing', uninstalling: 'Uninstalling' }[activeJob.status] || 'Queued'}</Button>
             : running ? <Button disabled={busy} onClick={() => operate(async () => { await call('stop'); notify('Closing game'); })}>Stop</Button>
             : game.installed ? <Button className="min-w-24" disabled={busy || Boolean(state.running)} onClick={() => operate(async () => { const result = await call('play', game.id); if (result?.profileLabel) notify(`Using ${result.profileLabel} compatibility profile`); else if (result?.compatibilityNotice) notify(result.compatibilityNotice); onClose(); })}>Play</Button>
@@ -70,13 +82,13 @@ export function GameDetails({ game, state, local, onClose, run, pending, setPage
               {game.installed && <><DropdownMenuSeparator /><DropdownMenuItem className="text-destructive" disabled={busy || Boolean(state.running) || Boolean(activeJob)} onSelect={() => operate(() => call('uninstall', game.id))}>Uninstall</DropdownMenuItem></>}
             </DropdownMenuContent>
           </DropdownMenu>}
+          </>}
         </div>
         {activeJob?.status === 'installing' ? <div role="status"><div className="break-words text-xs text-muted-foreground">{activeJob.stage}</div><InstallProgress job={activeJob} /></div>
           : pending.has(`game-${game.id}`) && <div role="status" className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" />Working…</div>}
         {extra?.kind === 'patches' && <section data-patch-options className="space-y-3 border-t pt-4" aria-label="Patch options">
           <div className="text-sm font-medium">Patch options</div>
           <p className="text-xs text-muted-foreground">No verified profile for this game version. Recommended CLI patches are selected; review optional patches before applying. Patching writes a separate APK. Install or update it afterward.</p>
-          <Button size="sm" variant="outline" disabled={busy} onClick={() => setExtra(current => ({ ...current, items: current.items.map(item => ({ ...item, selected: item.recommended, arguments: '' })) }))}>Reset to recommended</Button>
           {extra.items.map(item => <div key={item.name} className="space-y-2">
             <label className="flex items-start gap-3 text-xs">
               <input type="checkbox" className="mt-0.5 size-4 shrink-0 accent-primary" checked={item.selected} disabled={busy} data-patch={item.name} onChange={e => editPatch(item.name, { selected: e.target.checked })} />
@@ -84,7 +96,6 @@ export function GameDetails({ game, state, local, onClose, run, pending, setPage
             </label>
             {item.selected && <details className="ml-7 text-xs text-muted-foreground"><summary className="cursor-pointer">Arguments (advanced)</summary><Input className="mt-2" aria-label={`Arguments for ${item.name}`} placeholder="Comma-separated arguments" value={item.arguments} disabled={busy} onChange={e => editPatch(item.name, { arguments: e.target.value })} /></details>}
           </div>)}
-          <div className="flex gap-2"><Button disabled={busy || !extra.items.some(item => item.selected)} onClick={() => patch(extra.items.filter(item => item.selected).map(item => ({ name: item.name, arguments: item.arguments.trim() ? item.arguments.split(',').map(value => value.trim()) : [] })))}>Apply selected patches</Button><Button variant="ghost" disabled={busy} onClick={() => setExtra(null)}>Cancel</Button></div>
         </section>}
         {extra?.kind === 'builds' && <div className="flex items-center gap-2 border-t pt-4">{extra.items.length ? <><Select value={build} onValueChange={setBuild}><SelectTrigger className="min-w-0 flex-1" aria-label="Quest build"><SelectValue /></SelectTrigger><SelectContent>{extra.items.map(b => <SelectItem key={b.id} value={b.id}>{b.version || b.code}</SelectItem>)}</SelectContent></Select><Button disabled={busy || Boolean(activeJob)} onClick={download}>Download</Button></> : <span className="text-muted-foreground">No builds available</span>}</div>}
         {extra?.kind === 'permissions' && <div className="border-t pt-4">
