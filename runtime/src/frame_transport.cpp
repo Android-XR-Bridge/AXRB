@@ -84,6 +84,7 @@ public:
             }
             if (done != sizeof(acknowledgment) || acknowledgment != sequence) { close_socket(); return false; }
         }
+        note_delivered();
         return true;
     }
 
@@ -101,6 +102,7 @@ public:
             done += n;
         }
         if (done != sizeof(ack) || ack != sequence) { close_socket(); return false; }
+        note_delivered();
         return true;
     }
     bool send_batch(const std::vector<axrb::protocol::GpuBatchPart>& parts) {
@@ -131,6 +133,7 @@ public:
             }
         }
         if (done != sizeof(acknowledgment) || acknowledgment != header.sequence) { close_socket(); return false; }
+        note_delivered();
         return true;
     }
 private:
@@ -167,8 +170,7 @@ private:
             if (::connect(candidate, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0) {
                 socket_ = candidate;
                 directWindows_ = true;
-                note_connected();
-                __android_log_print(ANDROID_LOG_INFO, "AXRB.Image", "connected to Windows image stream via adb reverse :38491");
+                note_connected("connected to Windows image stream via adb reverse :38491");
                 return true;
             }
             ::close(candidate);
@@ -193,8 +195,7 @@ private:
             int bufferSize = 1024 * 1024;
             setsockopt(candidate, SOL_SOCKET, SO_SNDBUF, &bufferSize, sizeof(bufferSize));
             socket_ = candidate;
-            note_connected();
-            __android_log_print(ANDROID_LOG_INFO, "AXRB.Image", "connected to local image proxy");
+            note_connected("connected to local image proxy");
             return true;
         }
         lastError_ = errno;
@@ -231,11 +232,24 @@ private:
         }
     }
 
-    void note_connected()
+    void note_connected(const char* route)
     {
-        // A fresh connection closes out the previous outage: re-arm the
-        // one-shot reports so the next failure is visible rather than
-        // silently deduped against a failure from an earlier episode.
+        connectedAtNs_ = monotonic_time_ns();
+        established_ = false;
+        route_ = route;
+    }
+
+    // A connection counts once it has carried frames for a couple of seconds,
+    // and only then is it logged and are the one-shot outage reports re-armed.
+    // adb reverse accepts a connection even when the host drops it straight
+    // away, and a small frame fits in the socket buffer of a connection that
+    // is already dead, so a single successful send proves nothing; re-arming
+    // on one would repeat every report on each reconnect of a long outage.
+    void note_delivered()
+    {
+        if (established_ || monotonic_time_ns() - connectedAtNs_ < 2'000'000'000LL) return;
+        established_ = true;
+        __android_log_print(ANDROID_LOG_INFO, "AXRB.Image", "%s", route_);
         reportedConnectFailure_ = false;
         reportedSendSkip_ = false;
         reportedSendFailure_ = false;
@@ -245,6 +259,9 @@ private:
     bool directWindows_ = false;
     int lastError_ = 0;
     XrTime lastConnectAttemptNs_ = 0;
+    XrTime connectedAtNs_ = 0;
+    bool established_ = false;
+    const char* route_ = "";
     bool reportedConnectFailure_ = false;
     bool reportedSendSkip_ = false;
     bool reportedSendFailure_ = false;
