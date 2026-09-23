@@ -12,7 +12,7 @@ import { Setup, identifyArchives, avdDirectory, parseStorageGB, planStorageChang
 import { loadLibraryArtwork } from './core/artwork.mjs';
 import { Quest } from './core/quest.mjs';
 import { importGameZip } from './core/game-files.mjs';
-import { collectDiagnostics, parseSessionRecord, redact, uploadDiagnostics } from './core/diagnostics.mjs';
+import { collectDiagnostics, describeSessionEnd, parseSessionRecord, redact, uploadDiagnostics } from './core/diagnostics.mjs';
 import { LiveDiagnostics } from './core/live-diagnostics.mjs';
 import { EmulatorWatchdog } from './core/watchdog.mjs';
 import { loadCompatibilityProfiles, resolveCompatibility, compatibilityPatchArgs, compatibilityRuntimeOptions } from './core/compatibility.mjs';
@@ -510,13 +510,11 @@ handler('play', id => exclusive(async () => {
       } catch { /* No record means an older script or a failed spawn; the fields above still ship. */ }
       sessionRecords.unshift(JSON.stringify(record));
       if (sessionRecords.length > 20) sessionRecords.length = 20;
-      const outcome = record.gameProcessLost ? 'guest crash' : record.hostProcessLost ? 'host crash' : record.closeRequested ? 'user stop' : code ? `exit ${code}` : 'stopped';
+      const ending = describeSessionEnd(record, code);
       const save = record.pauseSucceeded && record.syncSucceeded ? 'saved' : 'not confirmed';
-      liveDiagnostics.append('launcher', `session ${sessionId} ended: ${outcome}; save ${save}`, { tag: 'session', level: code ? 'E' : 'I' });
+      liveDiagnostics.append('launcher', `session ${sessionId} ended: ${ending.outcome}; save ${save}`, { tag: 'session', level: code ? 'E' : 'I' });
       if (code) {
-        const detail = record.gameProcessLost ? 'The game ended unexpectedly on Android (crash or forced stop).'
-          : record.hostProcessLost ? 'The AXRB host window closed unexpectedly (crash or forced stop).' : tail || `Game launcher exited with code ${code}.`;
-        const error = message(new Error(detail));
+        const error = message(new Error(ending.detail || tail || `Game launcher exited with code ${code}.`));
         state.data.jobs.unshift({ id: randomUUID(), gameId: id, name: game.name, status: 'failed', stage: 'Launch', error });
         if (window && !window.isDestroyed()) window.webContents.send('axrb:launch-error', `${game.name}: ${error}`);
       }

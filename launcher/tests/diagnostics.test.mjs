@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { collectDiagnostics, condense, diagnosticSources, parseSessionRecord, redact, uploadDiagnostics, DEFAULT_DIAGNOSTICS_ENDPOINT, DIAGNOSTICS_RETENTION_DAYS } from '../core/diagnostics.mjs';
+import { collectDiagnostics, condense, describeSessionEnd, diagnosticSources, parseSessionRecord, redact, uploadDiagnostics, DEFAULT_DIAGNOSTICS_ENDPOINT, DIAGNOSTICS_RETENTION_DAYS } from '../core/diagnostics.mjs';
 
 const identity = { user: 'flori', computer: 'SUPERDUPERGAY', home: 'C:\\Users\\flori' };
 
@@ -95,6 +95,26 @@ test('session records accept Windows PowerShell UTF-8 and reject another launch'
   const record = { id: 'ab12de34', package: 'com.example.game', gameProcessLost: true };
   assert.deepEqual(parseSessionRecord(`\uFEFF${JSON.stringify(record)}`, record.id), record);
   assert.equal(parseSessionRecord(JSON.stringify(record), 'deadbeef'), null);
+});
+
+test('a game that quit by itself is not reported as a crash', () => {
+  const quit = describeSessionEnd({ gameProcessLost: false, gameExit: { kind: 'exited', reason: 'EXIT_SELF', status: 0 } }, 0);
+  assert.deepEqual(quit, { outcome: 'game quit (EXIT_SELF)', detail: null });
+  const crash = describeSessionEnd({ gameProcessLost: true, gameExit: { kind: 'crashed', reason: 'APP CRASH(NATIVE)', status: 11 } }, 3);
+  assert.equal(crash.outcome, 'guest crashed (APP CRASH(NATIVE))');
+  assert.equal(crash.detail, 'The game crashed on Android (APP CRASH(NATIVE)).');
+  const memory = describeSessionEnd({ gameProcessLost: true, gameExit: { kind: 'stopped', reason: 'LOW_MEMORY', status: 0 } }, 3);
+  assert.equal(memory.detail, 'Android stopped the game (LOW_MEMORY).');
+  const failed = describeSessionEnd({ gameProcessLost: true, gameExit: { kind: 'failed', reason: 'EXIT_SELF, exit code 1', status: 1 } }, 3);
+  assert.equal(failed.detail, 'The game exited with an error on Android (EXIT_SELF, exit code 1).');
+  const unreachable = describeSessionEnd({ gameProcessLost: true, gameExit: { kind: 'unreachable', reason: 'adb: error: device offline', status: null } }, 3);
+  assert.equal(unreachable.detail, 'Lost contact with Android while the game was running (adb: error: device offline).');
+  // Records from before the exit reason existed, or where Android kept none.
+  assert.deepEqual(describeSessionEnd({ gameProcessLost: true }, 3), { outcome: 'guest crash', detail: 'The game ended unexpectedly on Android (crash or forced stop).' });
+  assert.equal(describeSessionEnd({ gameProcessLost: true, gameExit: { kind: 'unknown', reason: null } }, 3).outcome, 'guest crash');
+  assert.equal(describeSessionEnd({ hostProcessLost: true }, 4).outcome, 'host crash');
+  assert.deepEqual(describeSessionEnd({ closeRequested: true }, 0), { outcome: 'user stop', detail: null });
+  assert.deepEqual(describeSessionEnd({}, 1), { outcome: 'exit 1', detail: null });
 });
 
 test('upload posts the bundle and returns the link the service reports', async () => {

@@ -79,6 +79,50 @@ function Invoke-Adb([string[]]$Arguments, [int]$TimeoutMs = 10000) {
     } finally { $child.Dispose() }
 }
 
+# pidof only says the game is gone. Android records why each process ended, so
+# ask it: a Quit from the game's own menu must not read as a crash. Reason
+# names can hold brackets themselves ("APP CRASH(NATIVE)"), hence the lazy
+# match up to the field that follows.
+function Get-ExitRecords {
+    $info = $null
+    try { $info = Invoke-Adb @('shell', 'dumpsys', 'activity', 'exit-info', $Package) } catch { return }
+    if ($info.Code -ne 0) { return }
+    [regex]::Matches($info.Text, '(timestamp=\S+ \S+ pid=(\d+))[^\r\n]*\r?\n\s*process=\S+ reason=(\d+) \((.*?)\)(?: subreason=\d+ \((.*?)\))? status=(-?\d+)')
+}
+# Records outlive reboots and an emulator that boots the same way reuses pids,
+# so a record that already existed when the game started is never this one.
+function Get-GameExit([string]$ProcessId, [string[]]$Known = @()) {
+    for ($attempt = 0; $ProcessId -and $attempt -lt 3; $attempt++) {
+        if ($attempt) { Start-Sleep -Seconds 1 }
+        $record = @(Get-ExitRecords) | Where-Object { $_.Groups[2].Value -eq $ProcessId -and $Known -notcontains $_.Groups[1].Value } | Select-Object -First 1
+        if (!$record) { continue }
+        $reason = [int]$record.Groups[3].Value
+        $status = [int]$record.Groups[6].Value
+        $name = $record.Groups[4].Value
+        if ($record.Groups[5].Success -and $record.Groups[5].Value -ne 'UNKNOWN') { $name += " / $($record.Groups[5].Value)" }
+        # EXIT_SELF with status 0 is a normal exit; any other status is the
+        # game giving up, for example on a failed engine start. A bare SIGKILL
+        # is usually the game killing itself, which is how Unity's
+        # Application.Quit ends, unless the kernel's OOM killer did it: lmkd
+        # kills are recorded as LOW_MEMORY, the kernel's only in its log.
+        $kind = switch ($reason) {
+            1 { if ($status -eq 0) { 'exited' } else { $name += ", exit code $status"; 'failed' } }
+            2 {
+                if ($status -ne 9) { $name += ", signal $status"; 'crashed' }
+                else {
+                    $oom = $null
+                    try { $oom = Invoke-Adb @('shell', 'su', '0', 'dmesg', '|', 'grep', '-w', "Killed.process.$ProcessId") } catch { }
+                    if ($oom -and $oom.Code -eq 0 -and $oom.Text) { $name = 'kernel out-of-memory kill'; 'stopped' } else { 'exited' }
+                }
+            }
+            { $_ -in 4, 5, 6, 7 } { 'crashed' }
+            default { 'stopped' }
+        }
+        return [ordered]@{ kind = $kind; reason = $name; status = $status }
+    }
+    return [ordered]@{ kind = 'unknown'; reason = $null; status = $null }
+}
+
 # Play preparation may have started Android before this script runs, so a
 # present device never implies a user-owned emulator. Ownership arrives
 # explicitly and only this session's emulator is ever shut down below.
@@ -87,6 +131,9 @@ $bridgeProcess = $null
 $gameStarted = $false
 $closeRequested = $false
 $gameLost = $false
+$androidLost = $false
+$adbError = ''
+$gameExit = $null
 $pauseSucceeded = $false
 $syncSucceeded = $false
 $sessionStartedAt = $null
@@ -197,17 +244,41 @@ try {
         if ($LASTEXITCODE -eq 0) { Write-Output "SteamVR identity: $identityResult" }
         else { Write-Output 'Warning: SteamVR process identification failed; using the OpenXR application name.' }
     }
+    $knownExits = @(Get-ExitRecords | ForEach-Object { $_.Groups[1].Value })
     $launch = Invoke-Adb @('shell', 'am', 'start', '-W', '-n', $Activity) 60000
     if ($launch.Code -ne 0 -or $launch.Text -match 'Error:') { throw "Game launch failed: $($launch.Text) $($launch.Error)" }
     $gameStarted = $true
     Write-Output "$GameName | AXRB is running. Closing its window stops this game session."
     $missing = 0
+    $gamePid = $null
+    $adbFailingSince = $null
     while (!$bridgeProcess.HasExited) {
         if ($closeRequest.WaitOne(0)) { $closeRequested = $true; break }
-        $game = Invoke-Adb @('shell', 'pidof', $Package)
-        if ($game.Code -eq 0 -and $game.Text) { $missing = 0 } else { $missing++ }
+        $game = $null
+        try { $game = Invoke-Adb @('shell', 'pidof', $Package) } catch { $adbError = $_.Exception.Message }
+        if ($game -and $game.Code -eq 0 -and $game.Text) {
+            $missing = 0; $adbFailingSince = $null
+            $gamePid = ($game.Text -split '\s+')[0]
+        } elseif ($game -and !$game.Error) {
+            # pidof ran and found nothing.
+            $missing++; $adbFailingSince = $null
+        } else {
+            # adb itself failed (offline, timed out), which says nothing about
+            # the game. Only a sustained outage ends the session.
+            if ($game) { $adbError = $game.Error }
+            if (!$adbFailingSince) { $adbFailingSince = Get-Date }
+            if (((Get-Date) - $adbFailingSince).TotalSeconds -ge 30) { $androidLost = $true; $gameLost = $true; break }
+        }
         if ($missing -ge 2) { $gameLost = $true; break }
         Start-Sleep -Milliseconds 500
+    }
+    if ($gameLost -and !$androidLost) {
+        $gameExit = Get-GameExit $gamePid $knownExits
+        Write-Output "Game process ended on Android: $($gameExit.kind)$(if ($gameExit.reason) { " ($($gameExit.reason), status $($gameExit.status))" })."
+        if ($gameExit.kind -eq 'exited') { $gameLost = $false }
+    } elseif ($androidLost) {
+        $gameExit = [ordered]@{ kind = 'unreachable'; reason = "adb: $adbError"; status = $null }
+        Write-Output "Warning: lost contact with Android for 30 seconds ($adbError)."
     }
     # Closing the host window sets the close event first, so a host that exits
     # without one ended on its own. Checked here, before cleanup closes it.
@@ -255,6 +326,7 @@ try {
         endedAt = (Get-Date).ToString('o')
         closeRequested = [bool]$closeRequested
         gameProcessLost = [bool]($gameLost -and !$closeRequested)
+        gameExit = $gameExit
         hostProcessLost = [bool]$hostLost
         pauseSucceeded = [bool]$pauseSucceeded
         syncSucceeded = [bool]$syncSucceeded
@@ -262,7 +334,8 @@ try {
     try { $session | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $logs 'session.json') -Encoding UTF8 } catch { Write-Output "Warning: could not write session record: $_" }
     Write-Output 'AXRB game session stopped.'
 }
-# A lost game or host process is a crash, not a clean stop; the launcher keys
-# its failure card on these exit codes. Everything else stays 0 like before.
+# A lost game or host process is a failure, not a clean stop; the launcher keys
+# its failure card on these exit codes. A game that quit by itself, like
+# everything else, stays 0.
 if ($gameLost -and !$closeRequested) { exit 3 }
 if ($hostLost) { exit 4 }

@@ -90,6 +90,25 @@ export function parseSessionRecord(text, expectedId) {
   if (!record || typeof record !== 'object' || Array.isArray(record) || record.id !== expectedId) return null;
   return record;
 }
+// The run script asks Android why the game process ended. Its reason beats a
+// guess: a Quit from the game's own menu is not a crash, and a low-memory kill
+// needs a different fix than a native crash.
+export function describeSessionEnd(record, code) {
+  const exit = record.gameExit && typeof record.gameExit === 'object' ? record.gameExit : {};
+  const reason = exit.reason ? ` (${exit.reason})` : '';
+  if (record.gameProcessLost) {
+    const detail = exit.kind === 'crashed' ? `The game crashed on Android${reason}.`
+      : exit.kind === 'failed' ? `The game exited with an error on Android${reason}.`
+      : exit.kind === 'stopped' ? `Android stopped the game${reason}.`
+      : exit.kind === 'unreachable' ? `Lost contact with Android while the game was running${reason}.`
+      : 'The game ended unexpectedly on Android (crash or forced stop).';
+    return { outcome: `guest ${exit.kind && exit.kind !== 'unknown' ? exit.kind : 'crash'}${reason}`, detail };
+  }
+  if (record.hostProcessLost) return { outcome: 'host crash', detail: 'The AXRB host window closed unexpectedly (crash or forced stop).' };
+  if (record.closeRequested) return { outcome: 'user stop', detail: null };
+  if (exit.kind === 'exited') return { outcome: `game quit${reason}`, detail: null };
+  return { outcome: code ? `exit ${code}` : 'stopped', detail: null };
+}
 // The library file is deliberately absent: it is megabytes of cover art and a
 // record of everything the user owns, none of which helps diagnose a failure.
 // Every ADB report so far has left the same question open: whose ADB is it?
