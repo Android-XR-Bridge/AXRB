@@ -456,10 +456,15 @@ handler('patch', (id, selected) => exclusive(async () => {
   // Patch from the original APK every time. After a patch game.apk points at
   // the patched copy, and patching that again stacks OVRPort's changes onto
   // its own output (base-axrb-axrb.apk).
-  let input = game.apk, identity = await runtime.inspect(input);
-  if (identity.patched) {
-    const original = await findOriginalApk(game, identity, file => runtime.inspect(file), { searchRoots: [state.data.settings.downloadDir] });
-    if (!original) throw new Error('This APK is already patched and its original is no longer available. Download or import the original APK to patch it again.');
+  // Older builds kept only the patched copy's path, and that copy may since
+  // have been deleted while the original still sits beside where it was.
+  const present = await exists(game.apk);
+  let input = game.apk, identity = present ? await runtime.inspect(input) : null;
+  if (!identity || identity.patched) {
+    const original = await findOriginalApk(game, identity ?? { versionCode: game.versionCode }, file => runtime.inspect(file), { searchRoots: [state.data.settings.downloadDir] });
+    if (!original) throw new Error(present
+      ? 'This APK is already patched and its original is no longer available. Download or import the original APK to patch it again.'
+      : "This game's APK is no longer on disk. Download or import it again to patch it.");
     ({ file: input, identity } = original);
   }
   game.sourceApk = input;

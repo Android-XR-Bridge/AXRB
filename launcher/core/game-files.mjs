@@ -27,11 +27,15 @@ export function describeInstallFailure(error) {
 // - an installed build wrote <name>-axrb.apk into an axrb-patched folder beside
 //   it, one level deeper for every re-patch, adding -axrb each time;
 // - a portable build copied imports to <downloads>/import-*/<n>/<name>.apk and
-//   patched into <downloads>/patched/<package>, so it is found by name there.
-// Only an unpatched APK with the same package and version code qualifies.
+//   patched into <downloads>/patched/<package>, so it is found by name there;
+// - earlier builds let OVRPort name its output: <name>.output.apk or
+//   <name>-ovrport.apk beside the original.
+// Only an unpatched APK with the same package qualifies, and with the same
+// version code when it is known. A patched copy that was deleted leaves no
+// version code to compare, and the original sits in its folder.
 export async function findOriginalApk(game, patched, inspect, { searchRoots = [] } = {}) {
   const candidates = [game.sourceApk, ...(game.files || []).filter(file => file.kind === 'apk').map(file => file.path)];
-  const stem = path.basename(game.apk, path.extname(game.apk)).replace(/(?:-axrb)+$/, '');
+  const stem = path.basename(game.apk, path.extname(game.apk)).replace(/(?:-axrb|-ovrport|\.output)+$/, '');
   const name = `${stem}.apk`;
   let folder = path.dirname(game.apk);
   while (path.basename(folder).toLowerCase() === 'axrb-patched') folder = path.dirname(folder);
@@ -43,7 +47,7 @@ export async function findOriginalApk(game, patched, inspect, { searchRoots = []
   for (const file of [...new Set(candidates)].slice(0, 24)) {
     if (!file || file === game.apk) continue;
     const identity = await inspect(file).catch(() => null);
-    if (identity && !identity.patched && identity.package === game.package && identity.versionCode === patched.versionCode) return { file, identity };
+    if (identity && !identity.patched && identity.package === game.package && (!patched.versionCode || identity.versionCode === patched.versionCode)) return { file, identity };
   }
   return null;
 }

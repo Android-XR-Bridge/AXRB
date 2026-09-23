@@ -314,6 +314,25 @@ test('a game patched before its original was recorded can still find it', async 
   assert.equal(await findOriginalApk({ package: 'com.camouflaj.manta', apk: 'D:/x/y.apk', sourceApk: 'D:/gone.apk' }, patched, inspect), null);
 });
 
+test('a patched copy an older build named, and later deleted, still leads back to its original', async () => {
+  const identities = {
+    'D:/AXRB/5812519008825194/6814366978640387/base.apk': { package: 'com.Ubisoft.ACNexusVR', versionCode: '207706', patched: false },
+    'D:/AXRB/other/base.apk': { package: 'com.other.game', versionCode: '1', patched: false },
+  };
+  const inspect = async file => { const identity = identities[file.replaceAll(path.sep, '/')]; if (!identity) throw new Error('missing'); return identity; };
+  // OVRPort's own default name, and the one before it; the file itself is gone,
+  // so there is no version code to compare, only the package.
+  for (const name of ['base.output.apk', 'base-ovrport.apk']) {
+    const game = { package: 'com.Ubisoft.ACNexusVR', apk: `D:/AXRB/5812519008825194/6814366978640387/${name}` };
+    assert.equal((await findOriginalApk(game, {}, inspect)).file.replaceAll(path.sep, '/'), 'D:/AXRB/5812519008825194/6814366978640387/base.apk', name);
+  }
+  // A known version code is still enforced.
+  const game = { package: 'com.Ubisoft.ACNexusVR', apk: 'D:/AXRB/5812519008825194/6814366978640387/base.output.apk' };
+  assert.equal(await findOriginalApk(game, { versionCode: '1' }, inspect), null);
+  // Another game's base.apk never stands in for a vanished download.
+  assert.equal(await findOriginalApk({ package: 'com.camouflaj.manta', apk: 'D:/AXRB/gone/base.output.apk', files: [{ kind: 'apk', path: 'D:/AXRB/other/base.apk' }] }, {}, inspect), null);
+});
+
 test('a portable import patched before its original was recorded is found in the downloads folder', async t => {
   const downloads = await fs.mkdtemp(path.join(os.tmpdir(), 'axrb-original-'));
   t.after(() => fs.rm(downloads, { recursive: true, force: true }));
