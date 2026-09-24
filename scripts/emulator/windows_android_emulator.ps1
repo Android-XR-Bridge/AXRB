@@ -469,25 +469,18 @@ switch ($Action) {
             $arguments += '-no-snapshot'
         }
         if ($GuestClock -ne 'Default') {
-            # Request the CPU clock. Plain Tsc keeps Linux's stability checks:
-            # without the WHPX clock hook nothing stops QEMU resetting the TSC,
-            # and the watchdog is what catches a real cross-vCPU warp.
-            # With the hook, tsc=reliable lets the kernel trust the preserved
-            # TSC instead of falling back to HPET after a minor warp, and
-            # nohpet removes the HPET timer the fallback would use. The clock
-            # launcher fails closed: it terminates QEMU if the hook does not
-            # initialize, so these options never reach a guest without it.
-            # no_timer_check skips the boot-time IO-APIC timer IRQ test, which
-            # misfires under virtualisation.
+            # Request the CPU clock while leaving Linux's cross-vCPU
+            # synchronization and watchdog checks enabled. The WHPX hook
+            # corrects the register writes; only the guest can verify that
+            # its TSC is stable enough to use.
             # QEMU's extra kernel options are appended to the Android defaults.
             # Keep this last; everything after -qemu goes to QEMU, not the emulator.
             $tscOptions = 'clocksource=tsc'
-            if ($GuestClock -eq 'TscCorrected') { $tscOptions += ' tsc=reliable no_timer_check nohpet' }
             # Start-Process -ArgumentList joins the array with spaces and does
             # not quote the elements, so a multi-word value has to carry its own
             # quotes. Without them the kernel options after the first arrive as
             # separate arguments, QEMU treats them as disk images, and the guest
-            # dies at startup with "Could not open 'tsc=reliable'".
+            # dies at startup with "Could not open '<kernel option>'".
             $arguments += @('-show-kernel', '-qemu', '-append', ('"' + $tscOptions + '"'))
         }
         $oldLayerPath = $env:VK_LAYER_PATH
@@ -636,7 +629,7 @@ switch ($Action) {
             [string]$clock = ''
             try { $clock = ((Invoke-ExternalWithTimeout $adb @('-s', $serial, 'shell', 'su', '0', 'cat', '/sys/devices/system/clocksource/clocksource0/current_clocksource') 10) -join '').Trim() }
             catch { $clock = "unknown ($(($_.Exception.Message -replace '\s+', ' ').Trim()))" }
-            if ($clock -eq 'tsc' -and $GuestClock -eq 'TscCorrected') { Write-Output 'Guest clock: TSC (trusted as reliable under clock correction).' }
+            if ($clock -eq 'tsc' -and $GuestClock -eq 'TscCorrected') { Write-Output 'Guest clock: TSC (accepted by Linux after WHPX synchronization).' }
             elseif ($clock -eq 'tsc') { Write-Output 'Guest clock: TSC (accepted by Linux stability checks).' }
             else { Write-Output "Android startup diagnostic: warning: guest retained '$clock'; the requested TSC optimization is not active. Stability checks were not overridden." }
         }

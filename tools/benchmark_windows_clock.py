@@ -16,13 +16,14 @@ PATTERN = re.compile(r'host-image-arrival: rate=([\d.]+)/s avg=([\d.]+)ms max=([
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--serial', default='emulator-5580')
+    parser.add_argument('--adb', type=Path, default=Path(os.environ['LOCALAPPDATA'])/'Android/Sdk/platform-tools/adb.exe')
     parser.add_argument('--seconds', type=int, default=35)
     parser.add_argument('--host-log', type=Path, default=Path('out/logs/game/host.err'))
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     if args.seconds < 20 or args.output.exists():
         parser.error('Use at least 20 seconds per phase and a new output path')
-    adb = str(Path(os.environ['LOCALAPPDATA'])/'Android/Sdk/platform-tools/adb.exe')
+    adb = str(args.adb)
     def shell(command):
         return subprocess.check_output([adb,'-s',args.serial,'shell',command],text=True,timeout=15).strip()
     clock_dir = '/sys/devices/system/clocksource/clocksource0/'
