@@ -10,6 +10,7 @@ export function performanceScanArgs(root, settings = {}, { seconds = 10, version
   if (!Number.isInteger(seconds) || seconds < 3 || seconds > 60) throw new Error('Choose a scan window between 3 and 60 seconds.');
   return powershellArgs(path.join(root, SCAN_SCRIPT), {
     ...(settings.sdk ? { Sdk: settings.sdk } : {}),
+    ...(settings.managedDirectory ? { DataHome: path.join(settings.managedDirectory, 'output') } : {}),
     ...(settings.port ? { Port: settings.port } : {}),
     Seconds: seconds,
     ...(packageName ? { Package: packageName } : {}),

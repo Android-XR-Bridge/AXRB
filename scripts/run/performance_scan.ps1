@@ -19,6 +19,7 @@ Runs a ten-second scan while a game is playing and writes the report to a file.
 #>
 param(
     [string]$Sdk = "$env:LOCALAPPDATA\Android\Sdk",
+    [string]$DataHome = '',
     [ValidateRange(5554, 5682)][int]$Port = 5580,
     # Long enough to average out a slow frame, short enough that nobody takes
     # the headset off waiting for it.
@@ -37,6 +38,11 @@ trap { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }
 # culture would write 22,127 for twenty-two milliseconds.
 [System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::InvariantCulture
 . "$PSScriptRoot/../paths.ps1"
+if ($DataHome) { $AxrbOut = [IO.Path]::GetFullPath($DataHome) }
+elseif (!$env:AXRB_DATA_HOME -and (Test-Path -LiteralPath (Join-Path (Split-Path $Sdk -Parent) 'output/logs/game/host.err'))) {
+    # A hand-run scan of a managed installation has no launcher environment.
+    $AxrbOut = Join-Path (Split-Path $Sdk -Parent) 'output'
+}
 # The launcher runs its own ADB daemon on this port; talking to the default one
 # would start a second server and find no device.
 $env:ANDROID_ADB_SERVER_PORT = '5038'

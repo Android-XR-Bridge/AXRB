@@ -8,7 +8,7 @@ import { performanceScanArgs, performanceScanTimeout, SCAN_SCRIPT } from '../cor
 // The launcher passes the repository root, not its own directory: the scripts
 // sit beside it, and in a packaged build beside the unpacked runtime.
 const root = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))));
-const settings = { sdk: 'C:\\Users\\someone\\Android\\Sdk', port: 5580 };
+const settings = { sdk: 'C:\\Users\\someone\\Android\\Sdk', port: 5580, managedDirectory: 'D:\\AXRB Runtime' };
 const value = (args, name) => args[args.indexOf(name) + 1];
 
 test('the script the launcher runs is the one in the repository', async () => {
@@ -21,6 +21,7 @@ test('the scan is pointed at the running session', () => {
   const args = performanceScanArgs('C:\\runtime', settings, { seconds: 10, version: '0.1.4', packageName: 'com.example.game' });
   assert.equal(value(args, '-File'), path.join('C:\\runtime', SCAN_SCRIPT));
   assert.equal(value(args, '-Sdk'), settings.sdk);
+  assert.equal(value(args, '-DataHome'), path.join(settings.managedDirectory, 'output'));
   assert.equal(value(args, '-Port'), '5580');
   assert.equal(value(args, '-Seconds'), '10');
   assert.equal(value(args, '-Package'), 'com.example.game');
