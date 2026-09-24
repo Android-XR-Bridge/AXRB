@@ -57,11 +57,10 @@ nothing like a shader-bound one. `nvidia-smi`, when present, adds the power
 draw and clocks that tell a loaded card from an idling one.
 
 **Android guest** — per-thread CPU inside the game, split into user and system
-time. This split is the one that matters: user time is translated ARM code, and
-system time is syscalls, which for a Vulkan title is the graphics pipe out of
-the guest. The emulator has no PMU, so `simpleperf` cannot sample here and this
-split is the available discriminator. Involuntary context switches per second
-separate a thread that is genuinely busy from one being preempted by the host.
+time. User time includes the game, ARM translator, and native libraries; system
+time includes all kernel calls. This split identifies where to collect more
+detail, but it cannot assign the cost to a specific function. Involuntary
+context switches show how often the guest scheduler preempted a thread.
 
 **Bridge timings** — the five-second summaries both sides already publish, with
 only the most recent window of each counter kept. `host-image-arrival` is the
@@ -77,7 +76,7 @@ threshold that could be checked without a human.
 ## The shape of the usual answer
 
 A session limited by one guest thread at nearly 100% of a core, while the other
-vCPUs idle and the GPU sits in the low tens of percent, is the common case. It
-is not a transport problem and not a resolution problem: it is single-threaded
-translated ARM code, and neither more vCPUs nor a smaller render target moves
-it much. See `docs/performance_backlog.md` for what has been measured there.
+vCPUs idle and the GPU sits in the low tens of percent, has a serial CPU limit.
+More vCPUs cannot divide that thread's work. Call stacks are needed to tell
+whether the cost is in game logic, translation, graphics commands, or system
+calls. See `docs/performance_backlog.md` for earlier measurements.

@@ -167,7 +167,7 @@ foreach ($cpu in @(Get-CimInstance Win32_Processor)) {
     Emit ("cpu     {0} -- {1} cores / {2} threads" -f $cpu.Name.Trim(), $cpu.NumberOfCores, $cpu.NumberOfLogicalProcessors)
 }
 $logical = [int]$env:NUMBER_OF_PROCESSORS
-Emit ("memory  {0:N1} GB total, {1:N1} GB free" -f ($osInfo.TotalVisibleMemorySize / 1MB), ($osInfo.FreePhysicalMemory / 1MB))
+Emit ("memory  {0:N1} GB total, {1:N1} GB free, {2:N1} GB commit headroom" -f ($osInfo.TotalVisibleMemorySize / 1MB), ($osInfo.FreePhysicalMemory / 1MB), ($osInfo.FreeVirtualMemory / 1MB))
 foreach ($adapter in @(Get-CimInstance Win32_VideoController)) {
     Emit ("gpu     {0} -- driver {1}" -f $adapter.Name, $adapter.DriverVersion)
 }
@@ -448,13 +448,12 @@ if ($gpu) {
 if ($script:topThread -and $script:vcpus) {
     $headroom = $script:vcpus * 100 - $script:guestBusy
     if ($script:topThread.Total -gt 80 -and $headroom -gt 120) {
-        # User time is translated game code; system time is syscalls, which for
-        # a Vulkan title means the gfxstream pipe. They point at different
-        # fixes, so the split decides which sentence is honest here.
+        # The split cannot attribute user time to game code versus the native
+        # bridge or Vulkan layer, nor system time to graphics versus other I/O.
         $where = $(if ($script:topThread.User -gt $script:topThread.Total * 0.6) {
-            'translated ARM game code, which no amount of extra vCPUs can split up'
+            'user space (game code, ARM translation, or native libraries)'
         } else {
-            'kernel time, which for a Vulkan title is the graphics pipe out of the guest'
+            'kernel calls (which need call stacks to separate graphics, waits, and I/O)'
         })
         $notes += ("{0} is using {1:N0}% of one core while {2:N1} vCPUs sit idle. One thread is the limit, and it is spending that time in {3}." -f $script:topThread.Label, $script:topThread.Total, ($headroom / 100), $where)
     }
