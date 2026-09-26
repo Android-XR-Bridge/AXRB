@@ -73,6 +73,24 @@ set(ANDROID_CLANG "${QB_ANDROID_NDK}/toolchains/llvm/prebuilt/windows-x86_64/bin
 if(NOT EXISTS "${ANDROID_CLANG}")
     message(FATAL_ERROR "Set QB_ANDROID_NDK or ANDROID_NDK_HOME to an installed Android NDK")
 endif()
+set(VULKAN_HEADERS "${QB_ANDROID_NDK}/toolchains/llvm/prebuilt/windows-x86_64/sysroot/usr/include")
+# Copy only Vulkan headers, avoiding Android's C runtime headers on the host.
+file(COPY "${VULKAN_HEADERS}/vulkan" "${VULKAN_HEADERS}/vk_video" DESTINATION "${CMAKE_BINARY_DIR}/vulkan-headers")
+target_include_directories(qb-test PRIVATE "${CMAKE_BINARY_DIR}/vulkan-headers")
+target_sources(qb-test PRIVATE guest/xr_layers.cpp)
+set(LAYER_SHADER "${CMAKE_BINARY_DIR}/xr_layers.spv")
+add_custom_command(OUTPUT "${LAYER_SHADER}"
+    COMMAND "${QB_ANDROID_NDK}/shader-tools/windows-x86_64/glslc.exe"
+        --target-env=vulkan1.0 -O "${CMAKE_SOURCE_DIR}/guest/xr_layers.comp" -o "${LAYER_SHADER}"
+    DEPENDS guest/xr_layers.comp VERBATIM)
+add_custom_target(xr_layer_shader DEPENDS "${LAYER_SHADER}")
+add_dependencies(qb-test xr_layer_shader)
+add_executable(qb-xr-layers-test guest/xr_layers_test.cpp)
+target_include_directories(qb-xr-layers-test PRIVATE "${CMAKE_BINARY_DIR}/vulkan-headers" "${OPENXR_DIR}/include")
+add_dependencies(qb-xr-layers-test xr_layer_shader)
+add_dependencies(qb-test qb-xr-layers-test)
+add_custom_command(TARGET qb-test POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${LAYER_SHADER}" $<TARGET_FILE_DIR:qb-test> VERBATIM)
 set(GRID_SO ${CMAKE_BINARY_DIR}/libgrid.so)
 add_custom_command(
     OUTPUT ${GRID_SO}
@@ -302,3 +320,5 @@ add_test(NAME qb-jit-differential COMMAND qb-test)
 set_tests_properties(qb-jit-differential PROPERTIES TIMEOUT 60 ENVIRONMENT "QB_JITFUZZ=5000")
 add_test(NAME qb-unity-exit COMMAND qb-test "${CMAKE_BINARY_DIR}/$<CONFIG>/libunityexittest.so" JNI_OnLoad)
 set_tests_properties(qb-unity-exit PROPERTIES TIMEOUT 5 ENVIRONMENT "QB_DRIVE=1000" PASS_REGULAR_EXPRESSION "1 passed, 0 failed")
+add_test(NAME qb-xr-layers COMMAND qb-xr-layers-test)
+set_tests_properties(qb-xr-layers PROPERTIES TIMEOUT 30 PASS_REGULAR_EXPRESSION "GPU compositor shader and frame translation checks passed")

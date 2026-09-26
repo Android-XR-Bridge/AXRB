@@ -30,6 +30,7 @@
 
 #include "android.h"
 #include "xr_table.h"
+#include "xr_layers.h"
 
 #include <openxr/openxr.h>
 
@@ -107,6 +108,8 @@ const std::vector<std::pair<const char*, uint32_t>> kEmulated = {
     {"XR_FB_foveation_configuration", 1},
     {"XR_FB_swapchain_update_state", 3},
     {"XR_FB_swapchain_update_state_vulkan", 1},
+    // Reprojected into standard stereo projection layers by xr_layers.cpp.
+    {"XR_KHR_composition_layer_equirect2", 1},
 };
 
 bool is_emulated(const std::string& extension) {
@@ -306,7 +309,10 @@ bool GuestLibc::openxr_call(const std::string& name, GuestCpu& cpu) {
         std::vector<const char*> kept;
         for (uint32_t i = 0; i < info.enabledExtensionCount; ++i) {
             const char* extension = info.enabledExtensionNames[i];
-            if (host.count(extension) && !hidden_from_guest(extension)) kept.push_back(extension);
+            if (host.count(extension) && !hidden_from_guest(extension)) {
+                if (std::find_if(kept.begin(), kept.end(), [&](const char* e) { return std::strcmp(e, extension) == 0; }) == kept.end())
+                    kept.push_back(extension);
+            }
             else if (is_emulated(extension)) std::printf("openxr: instance extension %s is emulated here\n", extension);
             else if (!kAndroidOnly.count(extension))
                 std::printf("openxr: instance extension %s is not on this host, left out\n", extension);
@@ -342,6 +348,7 @@ bool GuestLibc::openxr_call(const std::string& name, GuestCpu& cpu) {
             std::lock_guard<std::mutex> held(g_lock);
             g_instance = *out;
             g_resolved.clear();
+            xr_layers_instance(g_get_proc, *out, kept);
         }
         std::printf("openxr: xrCreateInstance with %zu extensions -> %d\n", kept.size(), (int)result);
         for (const char* one : kept) std::printf("openxr:   %s\n", one);
@@ -488,13 +495,23 @@ bool GuestLibc::openxr_call(const std::string& name, GuestCpu& cpu) {
             }
         }
         auto create = reinterpret_cast<PFN_xrCreateSwapchain>(host_function(name));
-        XrResult result = create ? create((XrSession)arg(0), reinterpret_cast<const XrSwapchainCreateInfo*>(info),
+        auto copied = *reinterpret_cast<const XrSwapchainCreateInfo*>(info);
+        if (!copied.width || !copied.height || !copied.arraySize || !copied.sampleCount || !copied.faceCount || !copied.mipCount) {
+            for (auto it = unlinked.rbegin(); it != unlinked.rend(); ++it) it->first->next = it->second;
+            std::fprintf(stderr, "openxr: rejected zero-sized swapchain %ux%u format %lld\n", copied.width, copied.height, (long long)copied.format);
+            ret(XR_ERROR_VALIDATION_FAILURE);
+            return true;
+        }
+        if (copied.usageFlags & XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT)
+            copied.usageFlags |= XR_SWAPCHAIN_USAGE_TRANSFER_SRC_BIT;
+        XrResult result = create ? create((XrSession)arg(0), &copied,
                                           reinterpret_cast<XrSwapchain*>(arg(2)))
                                  : XR_ERROR_FUNCTION_UNSUPPORTED;
         for (auto it = unlinked.rbegin(); it != unlinked.rend(); ++it) it->first->next = it->second;
         {
             uint64_t args[3] = {arg(0), arg(1), arg(2)};
             xr_capture_note(name, args, result);
+            xr_layers_note(name, args, result);
         }
         if (trace) {
             const XrSwapchainCreateInfo* c = reinterpret_cast<const XrSwapchainCreateInfo*>(info);
@@ -508,6 +525,7 @@ bool GuestLibc::openxr_call(const std::string& name, GuestCpu& cpu) {
     }
 
     if (name == "xrDestroyInstance") {
+        xr_layers_destroy(name, arg(0));
         auto destroy = reinterpret_cast<PFN_xrDestroyInstance>(host_function(name));
         XrResult result = destroy ? destroy((XrInstance)arg(0)) : XR_ERROR_HANDLE_INVALID;
         std::lock_guard<std::mutex> held(g_lock);
@@ -650,8 +668,51 @@ bool GuestLibc::openxr_call(const std::string& name, GuestCpu& cpu) {
         }
     }
     auto call_start = std::chrono::steady_clock::now();
-    uint64_t result = reinterpret_cast<HostFn>(fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9],
-                                                  a[10], a[11]);
+    if (name == "xrDestroySession" || name == "xrDestroySwapchain") xr_layers_destroy(name, a[0]);
+    if (name == "xrReleaseSwapchainImage") {
+        // A failed optional snapshot must not strand the guest's acquired image.
+        // A layer that needs that snapshot will report the failure at EndFrame.
+        xr_layers_before_release(reinterpret_cast<XrSwapchain>(a[0]));
+    }
+    uint64_t result = name == "xrEndFrame"
+        ? (uint64_t)(int64_t)xr_layers_end(reinterpret_cast<XrSession>(a[0]), reinterpret_cast<const XrFrameEndInfo*>(a[1]))
+        : reinterpret_cast<HostFn>(fn)(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11]);
+    xr_layers_note(name, a, (XrResult)(int32_t)(uint32_t)result);
+    if (name == "xrEndFrame" && a[1]) {
+        static std::atomic<unsigned> reports{0};
+        const int32_t code = (int32_t)(uint32_t)result;
+        if ((code < 0 || trace) && reports.fetch_add(1) < 8) {
+            const auto* frame = reinterpret_cast<const XrFrameEndInfo*>(a[1]);
+            std::printf("openxr: frame result %d time %lld blend %d layers %u\n", code,
+                (long long)frame->displayTime, (int)frame->environmentBlendMode, frame->layerCount);
+            for (uint32_t i = 0; frame->layers && i < frame->layerCount && i < 16; ++i) {
+                const auto* layer = frame->layers[i];
+                if (!layer) continue;
+                std::printf("openxr:   layer %u type %d flags %llx space %llx\n", i, (int)layer->type,
+                    (unsigned long long)layer->layerFlags, (unsigned long long)layer->space);
+                if (layer->type == XR_TYPE_COMPOSITION_LAYER_EQUIRECT2_KHR) {
+                    const auto* eq = reinterpret_cast<const XrCompositionLayerEquirect2KHR*>(layer);
+                    std::printf("openxr:     equirect radius %g angles %g %g %g rect %d,%d %dx%d\n",
+                        eq->radius, eq->centralHorizontalAngle, eq->upperVerticalAngle, eq->lowerVerticalAngle,
+                        eq->subImage.imageRect.offset.x, eq->subImage.imageRect.offset.y,
+                        eq->subImage.imageRect.extent.width, eq->subImage.imageRect.extent.height);
+                }
+                auto* next = reinterpret_cast<const XrBaseInStructure*>(layer->next);
+                for (unsigned chain = 0; next && chain < 16; ++chain, next = next->next) {
+                    std::printf("openxr:     next type %d\n", (int)next->type);
+                    if (next->type == XR_TYPE_COMPOSITION_LAYER_COLOR_SCALE_BIAS_KHR) {
+                        const auto* color = reinterpret_cast<const XrCompositionLayerColorScaleBiasKHR*>(next);
+                        std::printf("openxr:       scale %g %g %g %g bias %g %g %g %g\n",
+                            color->colorScale.r, color->colorScale.g, color->colorScale.b, color->colorScale.a,
+                            color->colorBias.r, color->colorBias.g, color->colorBias.b, color->colorBias.a);
+                    }
+                    if (next->type == XR_TYPE_COMPOSITION_LAYER_IMAGE_LAYOUT_FB)
+                        std::printf("openxr:       layout flags %llx\n", (unsigned long long)
+                            reinterpret_cast<const XrCompositionLayerImageLayoutFB*>(next)->flags);
+                }
+            }
+        }
+    }
     if (name == "xrWaitFrame" || name == "xrEndFrame" || name == "xrBeginFrame") {
         int64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - call_start).count();
         (name == "xrWaitFrame" ? g_wait_ns : name == "xrEndFrame" ? g_end_ns : g_begin_ns) += ns;

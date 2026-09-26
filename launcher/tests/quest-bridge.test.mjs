@@ -63,11 +63,12 @@ test('preparation merges splits, caches content, keeps saves across updates and 
   await fs.writeFile(path.join(sdk, 'build-tools/36.0.0/aapt2.exe'), 'fixture');
   await fs.writeFile(path.join(bin, 'qb-test.exe'), 'fixture'); await fs.writeFile(path.join(bin, 'libz.so'), 'zlib');
   const apk = path.join(dir, 'base.apk'), split = path.join(dir, 'split.apk'), asset = path.join(dir, 'main.7.com.example.game.obb');
-  await zip(apk, [['assets/data', 'base']]); await zip(split, [['lib/arm64-v8a/libcustom.so', elf()]]); await fs.writeFile(asset, 'expansion');
+  await zip(apk, [['assets/data', 'base'], ['lib/arm64-v8a/libconfig.so', '{"setting":true}']]); await zip(split, [['lib/arm64-v8a/libcustom.so', elf()]]); await fs.writeFile(asset, 'expansion');
   const game = { package: 'com.example.game', apk, files: [{ kind: 'split', path: split }, { kind: 'obb', path: asset, name: path.basename(asset) }] };
   let version = '7';
   const args = { root: dir, directory: path.join(dir, 'profile'), sdk, game, execute: async (_, argv) => argv[1] === 'badging' ? `package: name='com.example.game' versionCode='${version}'` : '' };
   const first = await prepareBridge(args);
+  assert.equal(await fs.readFile(path.join(first.root, 'data/app/com.example.game/lib/arm64/libconfig.so'), 'utf8'), '{"setting":true}');
   assert.match(await fs.readFile(path.join(first.root, 'proc/meminfo'), 'utf8'), /MemTotal:\s+8388608 kB/);
   assert.equal(await fs.readFile(path.join(first.root, 'sys/devices/system/cpu/possible'), 'utf8'), '0-5\n');
   assert.equal((await fs.readFile(path.join(first.root, 'proc/cpuinfo'), 'utf8')).match(/processor\t:/g).length, 6);

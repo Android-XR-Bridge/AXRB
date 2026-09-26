@@ -40,6 +40,10 @@ Branch: `experiment/quest-bridge`. The normal **Play** action still uses Android
 - Place APKs, OBBs and external assets in Android-shaped paths without editing APKs.
 - Generate shared Android CPU, memory and device-property files expected by the
   native/JNI shims; refresh them for cached builds too.
+- Preserve configuration files packaged with `.so` names without treating them
+  as executable ELF libraries, including launcher-patched APKs.
+- Translate unsupported panoramic layers and panorama/quad image transforms
+  with the [Vulkan composition fallback](quest_bridge_compositor.md).
 - Cache prepared content by SHA-256, including split/asset changes and guest zlib.
   Repeated launches verify inputs but skip extraction. New builds preserve saves.
 - Keep JIT enabled and strip inherited `QB_*` debugging/patch switches. Use the

@@ -68,6 +68,50 @@ checks that Unity's render-exit return stops further calls.
 Validation after the changes: all 214 launcher tests and all 18 native CTests
 passed. The native build also completed successfully.
 
-Next: capture submitted OpenXR layer structures and Vulkan validation output to
-isolate the device-loss/unsupported-layer failure before attempting a performance
-comparison. The existing emulator remains the supported path for this title.
+## Follow-up: layer translation and Vulkan validation
+
+Further testing on the same date reproduced the frame failure with an APK-only
+startup harness. The full-content preparation was blocked by its approximately
+17 GiB space requirement (16.3 GiB free before these follow-up artifacts). These
+APK-only runs intentionally lack the expansion content and are not gameplay tests.
+
+Frame diagnostics identified seven layers: one projection, four equirectangular
+panoramas and two quads. SteamVR did not advertise equirectangular layers. The
+panoramas/quads also carried vertical-flip and color-scale/bias structures. These
+are visible composition features, so simply dropping those layers is not a fix.
+
+The new [shared GPU compositor](quest_bridge_compositor.md) converts panoramas
+to stereo projection layers, applies panorama/quad image transforms and selects
+the runtime's actual color formats. Synthetic GPU and frame-lifecycle tests
+pass under Vulkan validation. The final Nexus startup attempt created several
+converted stereo swapchains, but a complete translated game frame was not
+verified: other layers had no valid released-image snapshot.
+
+Vulkan validation also exposed a separate problem: Nexus/OVRPlugin requests
+zero-sized Application SpaceWarp motion-vector/depth swapchains, followed by
+incompatible image views and synchronization errors. The bridge now rejects
+the zero-sized requests before forwarding them to the driver. Nexus still
+continues with invalid handles after those failures and does not recover cleanly.
+This identifies a concrete next investigation; it does not prove that all
+remaining faults have the same cause.
+
+The launcher-patched APK was tested as well. Its preparation initially failed
+because `liboverport.config.so` is JSON, not ELF; preparation now preserves such
+files and excludes them from executable entry-point detection. That APK contains
+`disable_space_warp: 1`, but its APK-only bridge run still requested zero-sized
+motion-vector images. Preserving a patcher's configuration file does not establish
+that the native bridge implements the patcher's runtime behavior.
+
+Follow-up logs are the `nexus-original-2026-09-26T19-*`,
+`nexus-original-2026-09-26T20-*` and `nexus-patched-*` files under
+`out/quest-bridge`. `compositor-validation.txt` records the synthetic GPU test;
+`nexus-compositor-build.txt` and `nexus-tweak-launcher-tests.txt` record regression
+checks. All 214 launcher tests and 19 native CTests pass after the changes.
+The temporary APK-only prepared builds and downloaded SDK archive were removed
+after testing; diagnostic logs, the extracted validation layer and experimental
+save folders were retained.
+
+Next: rerun with all expansion content once sufficient disk space is available,
+then resolve the unsupported SpaceWarp setup and remaining image/synchronization
+errors. No playable launch, headset image or performance improvement is claimed.
+The existing emulator remains the supported path for this title.

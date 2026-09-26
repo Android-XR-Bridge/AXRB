@@ -190,7 +190,14 @@ export async function prepareBridge({ root, directory, sdk, game, execute, onOut
       await fs.rm(unpacked, { recursive: true });
     }
     const libraries = new Map();
-    for (const name of await fs.readdir(libRoot)) if (name.endsWith('.so')) libraries.set(name, elfExports(await fs.readFile(path.join(libRoot, name))));
+    for (const name of await fs.readdir(libRoot)) if (name.endsWith('.so')) {
+      const bytes = await fs.readFile(path.join(libRoot, name));
+      // Android packages can store native-side configuration under a .so name
+      // so the package manager extracts it. Preserve it, but do not parse it as ELF.
+      if (bytes.toString('hex', 0, 4) !== '7f454c46') continue;
+      try { libraries.set(name, elfExports(bytes)); }
+      catch (error) { throw new Error(`Invalid native library ${name}: ${error.message}`, { cause: error }); }
+    }
     const selected = selectBridgeEntry(libraries, identity.metadata);
     await fs.mkdir(apkRoot, { recursive: true });
     await fs.writeFile(path.join(apkRoot, 'meta-data.txt'), Object.entries(identity.metadata).map(([k, v]) => `${k}=${String(v).replace(/[\r\n]/g, '')}`).join('\n'));

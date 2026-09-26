@@ -1,0 +1,43 @@
+#version 450
+layout(local_size_x=8, local_size_y=8) in;
+layout(binding=0) uniform sampler2D sourceImage;
+layout(binding=1, rgba8) uniform writeonly image2D targetImage;
+layout(push_constant) uniform Params {
+    vec4 camera, inverseSphere, originRadius, tangents;
+    vec4 anglesFlags, rect, colorScale, colorBias;
+} p;
+vec3 rotate(vec4 q, vec3 v) { return v + 2 * cross(q.xyz, cross(q.xyz,v) + q.w*v); }
+void main() {
+    ivec2 pixel=ivec2(gl_GlobalInvocationID.xy), size=imageSize(targetImage);
+    if(any(greaterThanEqual(pixel,size))) return;
+    int flags=int(p.anglesFlags.w);
+    vec2 uv=(vec2(pixel)+.5)/vec2(size);
+    vec4 color=vec4(0);
+    bool visible=(flags&4)==0;
+    // Same ray/sphere mapping as host/src/equirect_renderer.cpp. A negative
+    // radius selects a planar copy (quads and projection image transforms).
+    if(p.originRadius.w>=0 && visible) {
+        vec3 ray=normalize(vec3(mix(p.tangents.x,p.tangents.y,uv.x),mix(p.tangents.z,p.tangents.w,uv.y),-1));
+        ray=rotate(p.inverseSphere,rotate(p.camera,ray));
+        vec3 direction=ray;
+        if(p.originRadius.w>0) {
+            float b=dot(p.originRadius.xyz,ray);
+            float determinant=b*b-dot(p.originRadius.xyz,p.originRadius.xyz)+p.originRadius.w*p.originRadius.w;
+            float distance=-b+sqrt(max(0,determinant));
+            visible=determinant>=0 && distance>0;
+            direction=normalize(p.originRadius.xyz+distance*ray);
+        }
+        float longitude=atan(direction.x,-direction.z), latitude=asin(clamp(direction.y,-1,1));
+        visible=visible && abs(longitude)<=p.anglesFlags.x*.5 && latitude<=p.anglesFlags.y && latitude>=p.anglesFlags.z;
+        uv=vec2(longitude/p.anglesFlags.x+.5,(p.anglesFlags.y-latitude)/(p.anglesFlags.y-p.anglesFlags.z));
+    }
+    if(visible) {
+        if((flags&1)!=0) uv.y=1-uv.y;
+        vec2 halfPixel=.5/vec2(textureSize(sourceImage,0));
+        uv=clamp(p.rect.xy+uv*p.rect.zw,p.rect.xy+halfPixel,p.rect.xy+p.rect.zw-halfPixel);
+        color=textureLod(sourceImage,uv,0);
+        if((flags&2)==0) color.a=1;
+        color=color*p.colorScale+p.colorBias;
+    }
+    imageStore(targetImage,pixel,color);
+}

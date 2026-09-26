@@ -25,6 +25,7 @@
 #define NOMINMAX
 #endif
 #include "qb_env.h"
+#include "vk_queue.h"
 #include <windows.h>
 
 #include "android.h"
@@ -194,6 +195,7 @@ struct VkFast {
 VkFast g_vk_fast[1 << 16];
 
 bool vk_special(const std::string& name) {
+    if (name.compare(0, 7, "vkQueue") == 0 || name == "vkDeviceWaitIdle") return true;
     static const char* special[] = {"vkCreateAndroidSurfaceKHR", "vkCreateDevice", "vkCreateInstance",
                                     "vkEnumerateDeviceLayerProperties", "vkEnumerateInstanceExtensionProperties",
                                     "vkEnumerateInstanceLayerProperties", "vkGetDeviceProcAddr",
@@ -723,6 +725,8 @@ bool GuestLibc::vulkan_fast(int index, const std::string& name, GuestCpu& cpu) {
 }
 
 bool GuestLibc::vulkan_call(const std::string& name, GuestCpu& cpu) {
+    std::unique_lock<std::recursive_mutex> queueLock(guest_vulkan_queue_mutex(), std::defer_lock);
+    if (name.compare(0, 7, "vkQueue") == 0 || name == "vkDeviceWaitIdle") queueLock.lock();
     load();
     auto arg = [&](int n) { return cpu.x[n]; };
     auto ret = [&](uint64_t value) { cpu.x[0] = value; };
