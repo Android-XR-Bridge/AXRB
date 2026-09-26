@@ -23,6 +23,9 @@ DartConfiguration.tcl
 
 # Vendored dependencies and SDK checkouts
 third_party/
+!experimental/quest-bridge/third_party/
+!experimental/quest-bridge/third_party/**
+!scripts/build/
 
 # Runtime logs and local traces
 *.log

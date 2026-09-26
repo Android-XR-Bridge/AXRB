@@ -1,0 +1,7 @@
+{
+    "file_format_version": "1.0.0",
+    "runtime": {
+        "name": "Quest Bridge",
+        "library_path": "qb_runtime.dll"
+    }
+}

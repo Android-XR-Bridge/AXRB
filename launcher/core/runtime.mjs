@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { installFiles } from './game-files.mjs';
+import { bridgeEnvironment } from './quest-bridge.mjs';
 import { describePermissionFailure, parsePermissionPrompt, parseRuntimePermissions, validPermission } from './permissions.mjs';
 
 // Package-manager queries wait behind background compilation after an
@@ -297,14 +298,15 @@ export class Runtime {
   launch(game, onExit, compatibility = {}, options = {}) {
     if (this.child) throw new Error('A game is already running.');
     validPackage(game.package);
-    if (!/^[A-Za-z0-9_./]+$/.test(game.activity || '') || game.activity.split('/')[0] !== game.package) throw new Error('Invalid launch activity. Refresh installed games.');
+    const bridge = options.bridge;
+    if (!bridge && (!/^[A-Za-z0-9_./]+$/.test(game.activity || '') || game.activity.split('/')[0] !== game.package)) throw new Error('Invalid launch activity. Refresh installed games.');
     // Preparation may have booted Android before the session script runs, so
     // ownership arrives explicitly instead of being inferred from the device.
     const ownsEmulator = options?.ownsEmulator === true;
     const sessionId = options?.sessionId;
     if (sessionId !== undefined && !/^[a-f0-9]{8}$/.test(sessionId)) throw new Error('Invalid session identifier.');
     this.fpsHudEvent = `Local\\AXRB.FpsHud.${randomUUID().replaceAll('-', '')}`;
-    const args = powershellArgs(path.join(this.root, 'scripts/run/run_windows_game.ps1'), { Avd: this.settings.avd, Port: this.settings.port,
+    const args = bridge ? [] : powershellArgs(path.join(this.root, 'scripts/run/run_windows_game.ps1'), { Avd: this.settings.avd, Port: this.settings.port,
       Sdk: this.settings.sdk, MemoryMB: this.settings.memoryMB, CpuCores: this.settings.cpuCores ?? 4, Package: game.package, Activity: game.activity, GameName: game.name, FpsHud: this.settings.fpsHud === true, FpsHudEventName: this.fpsHudEvent,
       // An absent switch keeps the script's historic device-presence behavior.
       ...(ownsEmulator ? { OwnsEmulator: true } : {}),
@@ -313,7 +315,13 @@ export class Runtime {
       ...(this.settings.managedDirectory ? { RuntimeApk: path.join(this.root, 'out/android/runtime-arm64-v8a/axrb-openxr-runtime-debug.apk') } : {}) });
     // Windows PowerShell can exit successfully without executing its command
     // when CREATE_NEW_PROCESS_GROUP/detached is combined with no console.
-    const child = spawn('powershell.exe', args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    this.bridgeStopEvent = bridge ? `Local\\AXRB.QuestBridge.${randomUUID().replaceAll('-', '')}` : null;
+    if (bridge) this.fpsHudEvent = null;
+    const child = bridge
+      ? spawn(bridge.executable, [path.join(bridge.root, bridge.library), bridge.entry], {
+        windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], cwd: path.dirname(bridge.executable),
+        env: bridgeEnvironment(process.env, bridge, this.bridgeStopEvent) })
+      : spawn('powershell.exe', args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     this.child = child; this.game = game.id;
     let tail = '';
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
@@ -330,7 +338,7 @@ export class Runtime {
       finished = true; clearTimeout(drain);
       child.stdout.destroy(); child.stderr.destroy();
       endStdout(); endStderr();
-      this.child = null; this.game = null; this.fpsHudEvent = null;
+      this.child = null; this.game = null; this.fpsHudEvent = null; this.bridgeStopEvent = null;
       onExit(code, error || tail);
     };
     child.on('error', async e => {
@@ -357,6 +365,10 @@ export class Runtime {
   async stop() {
     const pid = this.child?.pid;
     if (!pid) return;
+    if (this.bridgeStopEvent) {
+      await run('powershell.exe', powershellArgs(path.join(this.root, 'scripts/run/stop_quest_bridge.ps1'), { EventName: this.bridgeStopEvent, ProcessId: pid }), { timeout: 40000, onOutput: this.onOutput });
+      return;
+    }
     await run('powershell.exe', powershellArgs(path.join(this.root, 'scripts/run/stop_game.ps1'), { ParentPid: pid }));
   }
 }

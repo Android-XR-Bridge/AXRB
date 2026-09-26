@@ -8,6 +8,7 @@ import { MetaAuth, QuestStore, appId } from './core/meta.mjs';
 import { downloadFile, safeName, checkSpace } from './core/download.mjs';
 import { State } from './core/state.mjs';
 import { Runtime, openWindowsFeatures, run } from './core/runtime.mjs';
+import { prepareBridge } from './core/quest-bridge.mjs';
 import { Setup, identifyArchives, avdDirectory, parseStorageGB, planStorageChange, withStorageGB } from './core/setup.mjs';
 import { loadLibraryArtwork } from './core/artwork.mjs';
 import { Quest } from './core/quest.mjs';
@@ -65,6 +66,7 @@ app.on('before-quit', event => {
     // anything AXRB itself is still starting keeps the server.
     const watched = emulatorWatchdog?.snapshot().phase;
     emulatorWatchdog?.stop();
+    if (runtime.bridgeStopEvent) await runtime.stop().catch(error => liveDiagnostics.append('launcher', `Quest Bridge shutdown failed: ${message(error)}`, { tag: 'runtime', level: 'E' }));
     const idle = !busy && !setup?.status?.active && await runtime.adbServerIdle(watched).catch(() => false);
     liveDiagnostics.append('launcher', idle ? 'Stopping the ADB server; Android is not running.' : 'Leaving the ADB server running for Android or a game session.', { tag: 'runtime' });
     // Capture stops first so its logcat children end quietly with the launcher.
@@ -508,15 +510,17 @@ handler('patch', (id, selected) => exclusive(async () => {
   await persist();
   return { profileLabel: compatibility.status === 'matched' ? compatibility.label : null };
 }));
-handler('play', id => exclusive(async () => {
+handler('play', (id, backend = 'android') => exclusive(async () => {
   const game = getGame(id);
-  if (!game.installed) throw new Error('Install the game first.');
+  if (!['android', 'quest-bridge'].includes(backend)) throw new Error('Unknown runtime backend.');
+  if (backend === 'android' && !game.installed) throw new Error('Install the game first.');
   if (runtime.child) throw new Error('A game is already running.');
-  const prepared = await runtime.prepareLaunch(game);
+  const bridge = backend === 'quest-bridge' ? await prepareBridge({ root, directory: path.join(state.directory, 'quest-bridge'), sdk: runtime.settings.sdk, game, execute: run, onOutput: runtime.onOutput }) : null;
+  const prepared = bridge ? { game: { ...game, versionCode: bridge.versionCode }, ownsEmulator: false } : await runtime.prepareLaunch(game);
   let compatibility;
   try {
-    compatibility = resolveCompatibility(compatibilityProfiles, prepared.game);
-    liveDiagnostics.append('launcher', `Launching ${game.package}`, { tag: 'game' });
+    compatibility = resolveCompatibility(bridge ? [] : compatibilityProfiles, prepared.game);
+    liveDiagnostics.append('launcher', `Launching ${game.package} with ${backend}`, { tag: 'game' });
     const sessionId = randomUUID().slice(0, 8);
     const sessionStartedAt = new Date().toISOString();
     liveDiagnostics.resetPerf();
@@ -525,7 +529,7 @@ handler('play', id => exclusive(async () => {
       liveDiagnostics.append('launcher', `Game process exited (${code ?? 'unknown'}).`, { tag: 'game', level: code ? 'E' : 'I' });
       // Merge the run script's structured record when present; its exit code
       // and flags are authoritative over any transcript text.
-      let record = { id: sessionId, package: prepared.game.package, startedAt: sessionStartedAt, endedAt: new Date().toISOString(), exitCode: code ?? null };
+      let record = { id: sessionId, backend, package: prepared.game.package, startedAt: sessionStartedAt, endedAt: new Date().toISOString(), exitCode: code ?? null };
       try {
         const parsed = parseSessionRecord(await fs.readFile(sessionRecordPath(), 'utf8'), sessionId);
         // A script that failed early writes nulls; those must not erase the
@@ -544,7 +548,7 @@ handler('play', id => exclusive(async () => {
         if (window && !window.isDestroyed()) window.webContents.send('axrb:launch-error', `${game.name}: ${error}`);
       }
       await persist();
-    }, compatibilityRuntimeOptions(compatibility), { ownsEmulator: prepared.ownsEmulator, sessionId });
+    }, compatibilityRuntimeOptions(compatibility), { ownsEmulator: prepared.ownsEmulator, sessionId, bridge });
   } catch (error) {
     if (prepared.ownsEmulator) await runtime.adb(['emu', 'kill']).catch(cleanupError => liveDiagnostics.append('launcher', `Android shutdown failed: ${message(cleanupError)}`, { tag: 'game', level: 'W' }));
     throw error;

@@ -22,6 +22,10 @@ compositor with shared GPU textures.
 
 ## Runtime model
 
+An optional development branch adds a native ARM64/JIT backend for comparison.
+See the [Quest Bridge experiment](docs/quest_bridge_experiment.md) for building,
+the launcher test action, and its feature gaps. Normal Play keeps using Android.
+
 The Android guest provides the application environment and ARM64 translation.
 The Windows host supplies the physical GPU, OpenXR session and headset output.
 The runtime keeps Android and Windows responsibilities separate:
