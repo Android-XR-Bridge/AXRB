@@ -85,6 +85,30 @@ export function bridgeEnvironment(base, prepared, stopEvent) {
     ...(prepared.engine === 'unity' ? { QB_DRIVE: '2147483647' } : {}) };
 }
 
+export async function writeBridgeDeviceFiles(root) {
+  // Match the runtime's default sysconf/sysinfo device. Engines read procfs and
+  // sysfs too; leaving them absent gives Unity zero cores and uninitialized RAM.
+  const cpus = 6, files = {
+    'props.txt': '[ro.product.manufacturer]: [Oculus]\n[ro.product.brand]: [Oculus]\n[ro.product.model]: [Quest 3]\n[ro.product.device]: [axrb]\n[ro.product.name]: [axrb]\n[ro.product.cpu.abi]: [arm64-v8a]\n[ro.product.cpu.abilist]: [arm64-v8a]\n[ro.build.version.sdk]: [34]\n[ro.build.version.release]: [14]\n[persist.sys.locale]: [en-US]\n[ro.product.locale]: [en-US]\n',
+    'proc/meminfo': 'MemTotal:        8388608 kB\nMemFree:         5242880 kB\nMemAvailable:    5242880 kB\nBuffers:               0 kB\nCached:                0 kB\nSwapTotal:             0 kB\nSwapFree:              0 kB\n',
+    'proc/cpuinfo': Array.from({ length: cpus }, (_, i) => `processor\t: ${i}\nBogoMIPS\t: 38.40\nFeatures\t: fp asimd aes pmull sha1 sha2 crc32 atomics\nCPU implementer\t: 0x41\nCPU architecture: 8\nCPU variant\t: 0x0\nCPU part\t: 0xd4b\nCPU revision\t: 0\n`).join('\n'),
+    'sys/devices/system/cpu/possible': '0-5\n',
+    'sys/devices/system/cpu/present': '0-5\n',
+    'sys/devices/system/cpu/online': '0-5\n',
+    'sys/devices/system/cpu/kernel_max': '5\n',
+  };
+  for (let cpu = 0; cpu < cpus; cpu++) {
+    const dir = `sys/devices/system/cpu/cpu${cpu}`;
+    Object.assign(files, { [`${dir}/online`]: '1\n', [`${dir}/cpu_capacity`]: '1024\n',
+      [`${dir}/topology/core_id`]: `${cpu}\n`, [`${dir}/topology/physical_package_id`]: '0\n',
+      [`${dir}/cpufreq/cpuinfo_max_freq`]: '2800000\n', [`${dir}/cpufreq/cpuinfo_min_freq`]: '300000\n',
+      [`${dir}/cpufreq/scaling_cur_freq`]: '2800000\n' });
+  }
+  for (const [name, value] of Object.entries(files)) {
+    const file = archivePath(root, name); await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, value);
+  }
+}
+
 export async function prepareBridge({ root, directory, sdk, game, execute, onOutput = () => {} }) {
   const executable = path.join(root, 'out/quest-bridge/Release/qb-test.exe');
   try { await fs.access(executable); } catch { throw new Error('Build Quest Bridge first: powershell -File scripts/build/quest_bridge.ps1'); }
@@ -131,7 +155,7 @@ export async function prepareBridge({ root, directory, sdk, game, execute, onOut
       await fs.symlink(persistent, link, 'junction');
     }
   };
-  if (cached) { await connectSaves(target); return { ...cached, root: target, executable }; }
+  if (cached) { await connectSaves(target); await writeBridgeDeviceFiles(target); return { ...cached, root: target, executable }; }
   const stage = path.join(home, 'builds', `.prepare-${randomUUID()}`);
   await fs.mkdir(stage, { recursive: true });
   try {
@@ -173,6 +197,7 @@ export async function prepareBridge({ root, directory, sdk, game, execute, onOut
     // The runner's zlib is compiled from the selected NDK; games can supply their own.
     if (!libraries.has('libz.so')) await fs.copyFile(path.join(path.dirname(executable), 'libz.so'), path.join(libRoot, 'libz.so'));
     await connectSaves(stage);
+    await writeBridgeDeviceFiles(stage);
     for (const folder of ['proc/self', 'dev', 'tmp', `sdcard/Android/obb/${identity.package}`]) await fs.mkdir(path.join(stage, folder), { recursive: true });
     for (const file of assets) {
       const destination = archivePath(stage, file.remote.slice(1));

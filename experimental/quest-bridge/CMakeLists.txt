@@ -230,7 +230,15 @@ add_custom_command(OUTPUT ${LIFECYCLE_SO}
     DEPENDS ${CMAKE_SOURCE_DIR}/guest/lifecycletest.c VERBATIM)
 add_custom_target(lifecycle_so DEPENDS ${LIFECYCLE_SO})
 add_dependencies(qb-test lifecycle_so)
+set(UNITYEXIT_SO ${CMAKE_BINARY_DIR}/libunityexittest.so)
+add_custom_command(OUTPUT ${UNITYEXIT_SO}
+    COMMAND ${ANDROID_CLANG} --target=aarch64-linux-android29 -shared -fPIC -O2
+        -Wl,--unresolved-symbols=ignore-all ${CMAKE_SOURCE_DIR}/guest/unityexittest.c -o ${UNITYEXIT_SO}
+    DEPENDS ${CMAKE_SOURCE_DIR}/guest/unityexittest.c VERBATIM)
+add_custom_target(unityexit_so DEPENDS ${UNITYEXIT_SO})
+add_dependencies(qb-test unityexit_so)
 add_custom_command(TARGET qb-test POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${UNITYEXIT_SO} $<TARGET_FILE_DIR:qb-test>
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${LIFECYCLE_SO} $<TARGET_FILE_DIR:qb-test> VERBATIM)
 
 add_custom_command(TARGET qb-test POST_BUILD
@@ -292,3 +300,5 @@ foreach(probe neontest libctest linktest tlstest threadtest egltest jnitest glue
 endforeach()
 add_test(NAME qb-jit-differential COMMAND qb-test)
 set_tests_properties(qb-jit-differential PROPERTIES TIMEOUT 60 ENVIRONMENT "QB_JITFUZZ=5000")
+add_test(NAME qb-unity-exit COMMAND qb-test "${CMAKE_BINARY_DIR}/$<CONFIG>/libunityexittest.so" JNI_OnLoad)
+set_tests_properties(qb-unity-exit PROPERTIES TIMEOUT 5 ENVIRONMENT "QB_DRIVE=1000" PASS_REGULAR_EXPRESSION "1 passed, 0 failed")

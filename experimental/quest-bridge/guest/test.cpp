@@ -837,16 +837,25 @@ int main(int argc, char** argv) {
             uint64_t render = native("nativeRender");
             if (!render) { std::fprintf(stderr, "bridge: Unity nativeRender was not registered\n"); return 1; }
             double window_ms = 0;
+            int window_frames = 0;
+            auto report_at = std::chrono::steady_clock::now();
             for (int i = 0; i < frames && render; ++i) {
                 if (stop_event && WaitForSingleObject(stop_event, 0) == WAIT_OBJECT_0) break;
                 auto frame_start = std::chrono::steady_clock::now();
                 uint64_t got = g_libc.call_guest_args(render, {env, player});
+                if (!got) {
+                    std::printf("bridge: Unity nativeRender requested application exit\n");
+                    break;
+                }
                 window_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - frame_start).count();
+                ++window_frames;
                 if (QB_ENV("QB_TRACE")) std::printf("drive: frame %d rendered, returned %llx\n", i, (unsigned long long)got);
-                /* How long the main thread's frame takes, over the last 20. */
-                if (i % 20 == 19) {
-                    std::printf("drive: nativeRender takes %.1f ms on average\n", window_ms / 20);
+                /* Time-bounded reporting also keeps an idle engine from flooding diagnostics. */
+                if (std::chrono::steady_clock::now() - report_at >= std::chrono::seconds(1)) {
+                    std::printf("drive: nativeRender takes %.1f ms on average\n", window_ms / window_frames);
                     window_ms = 0;
+                    window_frames = 0;
+                    report_at = std::chrono::steady_clock::now();
                 }
                 std::fflush(stdout);
             }

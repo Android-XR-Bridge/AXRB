@@ -38,6 +38,8 @@ Branch: `experiment/quest-bridge`. The normal **Play** action still uses Android
   inherited Unreal startup shim supplies OBB paths and manifest metadata. This is
   shared engine support, not verified compatibility for every engine version.
 - Place APKs, OBBs and external assets in Android-shaped paths without editing APKs.
+- Generate shared Android CPU, memory and device-property files expected by the
+  native/JNI shims; refresh them for cached builds too.
 - Cache prepared content by SHA-256, including split/asset changes and guest zlib.
   Repeated launches verify inputs but skip extraction. New builds preserve saves.
 - Keep JIT enabled and strip inherited `QB_*` debugging/patch switches. Use the
@@ -96,8 +98,10 @@ prepares its ARM64 library, verifies typed metadata and runs it from a Unicode
 profile path. All 17 native tests and the launcher regression suite passed; the
 launcher renderer builds with Vite.
 
-No commercial-game headset run or controlled Android/Berberis comparison was
-performed. The zip's claimed performance advantage is **unverified**. Compare
+An [Assassin's Creed Nexus startup test](quest_bridge_nexus_test.md) reached an
+OpenXR session but failed frame submission. No playable commercial-game headset
+run or controlled Android/Berberis comparison has been verified. The zip's
+claimed performance advantage is **unverified**. Compare
 the same game version, scene, headset refresh rate and render resolution; record
 startup time, CPU/GPU frame times, dropped frames, audio and save/relaunch behavior.
 JIT/interpreter instruction throughput alone cannot establish VR performance.

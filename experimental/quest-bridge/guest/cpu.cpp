@@ -1364,7 +1364,12 @@ bool guest_run(GuestCpu& cpu, GuestMem& mem, GuestThunk thunk, void* user, int m
         }
         /* An undefined instruction is SIGILL, taken by the guest's own
            handler if it has one (feature probes rely on exactly that). */
-        if (stepped == 0 && g_undefined_hook && g_undefined_hook(cpu)) continue;
+        if (stepped == 0 && g_undefined_hook) {
+            std::fprintf(stderr, "qb-guest: failed step before guest signal at %s instruction %08x x0=%llx x8=%llx lr=%s sp=%llx\n",
+                guest_describe(at).c_str(), load32(mem, at), (unsigned long long)cpu.x[0], (unsigned long long)cpu.x[8],
+                guest_describe(cpu.x[30]).c_str(), (unsigned long long)cpu.sp);
+            if (g_undefined_hook(cpu)) continue;
+        }
         if (stepped <= 0) {
             std::fprintf(stderr, "qb-guest: %s at %s on %08x, sp %llx, lr %s, fp %llx, tp %llx\n",
                          stepped < 0 ? "fault" : "stopped", guest_describe(at).c_str(), load32(mem, at),

@@ -68,9 +68,16 @@ test('preparation merges splits, caches content, keeps saves across updates and 
   let version = '7';
   const args = { root: dir, directory: path.join(dir, 'profile'), sdk, game, execute: async (_, argv) => argv[1] === 'badging' ? `package: name='com.example.game' versionCode='${version}'` : '' };
   const first = await prepareBridge(args);
+  assert.match(await fs.readFile(path.join(first.root, 'proc/meminfo'), 'utf8'), /MemTotal:\s+8388608 kB/);
+  assert.equal(await fs.readFile(path.join(first.root, 'sys/devices/system/cpu/possible'), 'utf8'), '0-5\n');
+  assert.equal((await fs.readFile(path.join(first.root, 'proc/cpuinfo'), 'utf8')).match(/processor\t:/g).length, 6);
+  assert.match(await fs.readFile(path.join(first.root, 'props.txt'), 'utf8'), /\[ro.product.manufacturer\]: \[Oculus\]/);
   assert.equal(first.engine, 'native'); assert.equal(await fs.readFile(path.join(first.root, 'sdcard/Android/obb/com.example.game', path.basename(asset)), 'utf8'), 'expansion');
   const save = path.join(first.root, 'data/data/com.example.game/save'); await fs.writeFile(save, 'progress');
   assert.equal((await prepareBridge(args)).root, first.root);
+  await fs.rm(path.join(first.root, 'proc/meminfo'));
+  await prepareBridge(args);
+  assert.match(await fs.readFile(path.join(first.root, 'proc/meminfo'), 'utf8'), /MemTotal:/);
   await zip(apk, [['assets/data', 'updated']]); const updated = await prepareBridge(args);
   assert.notEqual(updated.root, first.root); assert.equal(await fs.readFile(path.join(updated.root, 'data/data/com.example.game/save'), 'utf8'), 'progress');
   await assert.rejects(prepareBridge({ ...args, execute: async (_, argv) => argv[1] === 'badging' ? `package: name='com.example.game' versionCode='${argv[2] === split ? '8' : '7'}'` : '' }), /Split APK/);
