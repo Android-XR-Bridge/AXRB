@@ -111,7 +111,28 @@ The temporary APK-only prepared builds and downloaded SDK archive were removed
 after testing; diagnostic logs, the extracted validation layer and experimental
 save folders were retained.
 
-Next: rerun with all expansion content once sufficient disk space is available,
-then resolve the unsupported SpaceWarp setup and remaining image/synchronization
-errors. No playable launch, headset image or performance improvement is claimed.
+Next: rerun with all expansion content and a connected headset, then resolve the
+unsupported SpaceWarp setup and remaining image/synchronization errors.
+No playable launch, headset image or performance improvement is claimed.
 The existing emulator remains the supported path for this title.
+
+## Full-content retry: 2026-09-27
+
+After disk cleanup, preparation succeeded with the original APK and all 34
+external content files. The isolated prepared build is retained for the next
+run; it no longer needs to be copied again. Original game files and Android
+saves were not changed.
+
+The 90-second run used the updated compositor with Vulkan synchronization
+validation enabled. SteamVR initially failed instance creation while starting,
+then `xrCreateInstance` succeeded. `xrGetSystem` returned
+`XR_ERROR_FORM_FACTOR_UNAVAILABLE`, and SteamVR's client log explicitly recorded
+`VRInitError_Init_HmdNotFound`. No OpenXR session or frame submission was reached
+in this attempt, so it cannot validate the compositor changes or establish a
+rendering regression. Unity continued reporting null-reference exceptions and
+attachment-clear/synchronization validation errors without an XR system.
+The harness stopped the process using its bounded forced-exit fallback.
+
+Evidence: `out/quest-bridge/nexus-original-2026-09-27T11-54-01-936Z.log` and its
+JSON record, plus `nexus-full-content-validation.txt`. A headset recognized by
+SteamVR is required for the next rendering test.
