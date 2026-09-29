@@ -7,7 +7,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { MetaAuth, QuestStore, appId } from './core/meta.mjs';
 import { downloadFile, safeName, checkSpace } from './core/download.mjs';
 import { State } from './core/state.mjs';
-import { Runtime, openWindowsFeatures, run } from './core/runtime.mjs';
+import { Runtime, run } from './core/runtime.mjs';
 import { prepareBridge } from './core/quest-bridge.mjs';
 import { Setup, identifyArchives, avdDirectory, parseStorageGB, planStorageChange, withStorageGB } from './core/setup.mjs';
 import { loadLibraryArtwork } from './core/artwork.mjs';
@@ -403,7 +403,6 @@ handler('chooseSetupArchives', async () => {
   if (choice.filePaths.length > components.length) throw new Error(`Select at most ${components.length} Android setup archives.`);
   return identifyArchives(choice.filePaths, components);
 });
-handler('setupFeatures', () => openWindowsFeatures(root));
 handler('setupLicense', async () => { const error = await shell.openPath(path.join(app.isPackaged ? process.resourcesPath : directory, 'licenses/android-sdk.txt')); if (error) throw new Error(error); });
 handler('login', async () => { await login(); return syncMeta(); });
 handler('logout', async () => {

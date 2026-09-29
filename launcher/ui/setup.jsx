@@ -70,8 +70,8 @@ export function SetupScreen({ setup }) {
       <Button variant="outline" onClick={() => invoke('setupCheck')}>Check again</Button>
     </> : setup.phase === 'hypervisor' ? <>
       <p>Enable Windows Hypervisor Platform to run Android.</p>
-      <ol className="list-decimal space-y-2 pl-5 text-sm text-muted-foreground"><li>Open Windows Features and enable <strong>Windows Hypervisor Platform</strong>.</li><li>Restart your PC, then reopen AXRB.</li><li>If it remains unavailable, enable Intel VT-x or AMD SVM in your BIOS.</li></ol>
-      <div className="flex gap-3"><Button onClick={() => invoke('setupFeatures')}>Windows Features</Button><Button variant="outline" onClick={() => invoke('setupCheck')}>Check again</Button></div>
+      <ol className="list-decimal space-y-2 pl-5 text-sm text-muted-foreground"><li>Open the Windows Start menu, search for <strong>Turn Windows features on or off</strong>, and open it.</li><li>Select <strong>Windows Hypervisor Platform</strong>, click <strong>OK</strong>, and wait for Windows to apply the change.</li><li>Restart your PC, then reopen AXRB.</li><li>If it remains unavailable, enable Intel VT-x or AMD SVM in your BIOS/UEFI settings.</li></ol>
+      <Button variant="outline" onClick={() => invoke('setupCheck')}>Check again</Button>
     </> : setup.active || setup.phase === 'checking' ? <>
       <div className="flex items-center gap-3" role="status"><Loader2 className="size-4 animate-spin" /><span>{labels[setup.phase] || setup.phase}{setup.component ? ` · ${setup.component}` : ''}</span>{setup.active && <span className="ml-auto tabular-nums text-sm text-muted-foreground" aria-label="Elapsed time">{elapsedText}</span>}</div>
       {setup.total > 0 && <><progress aria-label="Setup progress" value={setup.completed} max={setup.total} className="h-2 w-full accent-primary" /><div className="flex justify-between text-sm text-muted-foreground"><span>{setup.phase === 'download' ? `${(setup.completed / 1024 ** 2).toFixed(0)} / ${(setup.total / 1024 ** 2).toFixed(0)} MB` : 'Files'}</span><span>{percent}%</span></div></>}

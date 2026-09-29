@@ -1,6 +1,6 @@
 {
   "name": "axrb-launcher",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "Quest library and native Windows AXRB launcher",
   "license": "GPL-3.0-or-later",
