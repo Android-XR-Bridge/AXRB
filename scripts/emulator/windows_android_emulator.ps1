@@ -276,6 +276,22 @@ function Verify-Abi {
         Write-Output "ARM64 native bridge: $bridge; guest ABIs: $abis"
     }
 }
+function Set-MaximumMediaVolume {
+    # Keep Android at full media volume so Windows/headset volume controls the
+    # listening level. Query the actual range instead of assuming 15 steps.
+    try {
+        [string]$volume = (Invoke-Adb @('-s', $serial, 'shell', 'cmd', 'media_session', 'volume', '--stream', '3', '--get') 15) -join "`n"
+        if ($volume -notmatch 'volume is \d+ in range \[\d+\.\.(\d+)\]') {
+            throw 'Android did not report its media volume range.'
+        }
+        $maximum = $Matches[1]
+        [string]$result = (Invoke-Adb @('-s', $serial, 'shell', 'cmd', 'media_session', 'volume', '--stream', '3', '--set', $maximum, '--get') 15) -join "`n"
+        if ($result -notmatch "volume is $maximum in range") { throw 'Android did not confirm maximum media volume.' }
+        Write-Output "Android media volume: $maximum/$maximum."
+    } catch {
+        Write-Output "Android startup diagnostic: warning: could not set maximum media volume ($($_.Exception.Message -replace '\s+', ' '))."
+    }
+}
 function Get-GuestFeatures {
     return @(Invoke-Adb @('-s', $serial, 'shell', 'pm', 'list', 'features') 60 |
         ForEach-Object { ($_ -replace '^feature:', '').Trim() } | Where-Object { $_ })
@@ -670,6 +686,7 @@ switch ($Action) {
             elseif ($clock -eq 'tsc') { Write-Output 'Guest clock: TSC (accepted by Linux stability checks).' }
             else { Write-Output "Android startup diagnostic: warning: guest retained '$clock'; the requested TSC optimization is not active. Stability checks were not overridden." }
         }
+        Set-MaximumMediaVolume
         Run $adb @('-s', $serial, 'reverse', 'tcp:38490', 'tcp:38490') | Out-Null
         Run $adb @('-s', $serial, 'reverse', 'tcp:38491', 'tcp:38491') | Out-Null
         Run $adb @('-s', $serial, 'shell', 'setprop', 'debug.axrb.gpu_share', $(if ($GpuSharing) { '1' } else { '0' })) | Out-Null
