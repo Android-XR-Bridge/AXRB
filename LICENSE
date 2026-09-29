@@ -1,21 +1,37 @@
-MIT License
+AXRB licensing map
+==================
 
-Copyright (c) 2026 Feline Reintgen
+This repository contains separately licensed components. It is not licensed
+in its entirety under MIT or under the AXRB Source-Available License.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+1. New AXRB-owned contributions in licenses/source-available-files.txt,
+   introduced after baseline commit
+   19653e2c29e9cd93c25f8d0c906fa54e4c05b3c3, are offered under the AXRB
+   Source-Available License 1.0 in licenses/AXRB-Source-Available-1.0.txt.
+   Only contributions whose relevant rights the Licensor controls are covered.
+   Listing a file does not assert ownership of its pre-existing contents.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+2. The launcher is distributed under GPL-3.0-or-later; see launcher/LICENSE
+   and launcher/THIRD_PARTY_NOTICES.md. The source-available restrictions do
+   not apply to the launcher, its modifications, or other GPL-covered work.
+   Previously MIT-licensed launcher portions retain their separate grant.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+3. Previously released MIT code retains the permissions granted with those
+   copies. The original MIT notice is preserved in licenses/MIT-legacy.txt.
+   This change does not revoke or narrow any earlier license grant.
+
+4. Third-party code, imported experiments, generated third-party material and
+   dependencies retain their respective licenses and notices. Those notices
+   take precedence over the coverage list. See launcher/THIRD_PARTY_NOTICES.md
+   and the individual source files. This license grants no third-party rights.
+
+5. Unlisted AXRB-owned files retain the previous MIT terms unless they carry
+   another explicit license. New files are not automatically source-available:
+   they must be deliberately added to the coverage list after a rights check.
+
+Restrictions apply to covered code, not merely to the AXRB name: renaming a
+derivative does not remove them. Independent programs, including the GPL
+launcher, retain their own rights even when distributed alongside AXRB.
+
+Read CONTRIBUTING.md before submitting changes. Request separate permissions
+from the maintainers at https://github.com/Android-XR-Bridge/AXRB.

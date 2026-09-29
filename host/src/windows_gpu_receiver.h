@@ -6,6 +6,8 @@
 #include <chrono>
 #include "windows_gpu_frame.h"
 #include "gpu_completion.h"
+#include "image_frame.h"
+#include "layer_color_renderer.h"
 
 namespace axrb::host {
 class WindowsGpuReceiver {
@@ -18,16 +20,23 @@ public:
     // as this copy finishes, even when OpenXR rotates through swapchain images.
     bool enqueue_receive(ID3D11Device* device, ID3D11DeviceContext* context,
                  const protocol::WindowsGpuFrame& frame, uint64_t sequence,
-                 UINT width, UINT height, DXGI_FORMAT targetFormat) {
+                 UINT width, UINT height, DXGI_FORMAT targetFormat,
+                 LayerColorRenderer* colorRenderer=nullptr, const protocol::ImageProjection* projection=nullptr) {
         if (session_ == frame.session && sequence_ == sequence && cached_) return true;
         if (!frame.session || (frame.formats[1] && frame.formats[0] != frame.formats[1])) return false;
-        const UINT eyeCount = frame.formats[1] ? 2u : 1u;
-        if (session_ != frame.session || width_ != width || height_ != height || eyeCount_ != eyeCount) {
+        const UINT sourceEyeCount = frame.formats[1] ? 2u : 1u;
+        // A mono export can feed two independent packed quad layers. When
+        // either has a transform, keep independent copies so their colors and
+        // alpha conventions cannot bleed into each other.
+        const UINT eyeCount = sourceEyeCount == 1 && projection && projection->quad_count() == 2 &&
+            (!projection->colors[0].identity() || !projection->colors[1].identity()) ? 2u : sourceEyeCount;
+        if (session_ != frame.session || width_ != width || height_ != height || eyeCount_ != eyeCount ||
+            sourceEyeCount_ != sourceEyeCount || targetFormat_ != targetFormat) {
             cached_.Reset(); renderCache_.Reset(); shared_[0].Reset(); shared_[1].Reset();
             if (cacheHandle_) { CloseHandle(cacheHandle_); cacheHandle_ = nullptr; }
             Microsoft::WRL::ComPtr<ID3D11Device1> device1;
             if (FAILED(device->QueryInterface(IID_PPV_ARGS(&device1)))) return false;
-            for (UINT eye = 0; eye < eyeCount; ++eye) {
+            for (UINT eye = 0; eye < sourceEyeCount; ++eye) {
                 wchar_t name[96]; swprintf_s(name, L"Local\\AXRB_GPU_%016llx_%u", frame.session, eye);
                 if (FAILED(device1->OpenSharedResourceByName(name, DXGI_SHARED_RESOURCE_READ, IID_PPV_ARGS(&shared_[eye])))) return false;
                 D3D11_TEXTURE2D_DESC source{}; shared_[eye]->GetDesc(&source);
@@ -47,20 +56,28 @@ public:
             if (FAILED(cached_.As(&resource)) || FAILED(resource->CreateSharedHandle(nullptr,
                     DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, nullptr, &cacheHandle_))) return false;
             session_ = frame.session; width_ = width; height_ = height; eyeCount_ = eyeCount;
+            sourceEyeCount_ = sourceEyeCount; targetFormat_ = targetFormat;
             static bool reportedMono = false;
             if (eyeCount == 1 && !reportedMono) {
                 std::fprintf(stderr, "AXRB GPU: mono layers use one shared image and one receive copy\n");
                 reportedMono = true;
             }
         }
-        for (UINT eye = 0; eye < eyeCount; ++eye) context->CopySubresourceRegion(cached_.Get(), eye, 0, 0, 0, shared_[eye].Get(), 0, nullptr);
+        for (UINT eye = 0; eye < eyeCount; ++eye) {
+            const UINT sourceEye = sourceEyeCount == 1 ? 0u : eye;
+            if (projection && !projection->colors[eye].identity()) {
+                if (!colorRenderer || !colorRenderer->render(device,context,shared_[sourceEye].Get(),cached_.Get(),eye,
+                        projection->colors[eye],protocol::image_layer_flags(*projection,eye),frame.formats[sourceEye]==43)) return false;
+            } else context->CopySubresourceRegion(cached_.Get(), eye, 0, 0, 0, shared_[sourceEye].Get(), 0, nullptr);
+        }
         return true;
     }
     void commit_receive(uint64_t sequence) { sequence_ = sequence; }
     bool receive(ID3D11Device* device, ID3D11DeviceContext* context,
                  const protocol::WindowsGpuFrame& frame, uint64_t sequence,
-                 UINT width, UINT height, DXGI_FORMAT targetFormat) {
-        if (!enqueue_receive(device, context, frame, sequence, width, height, targetFormat) ||
+                 UINT width, UINT height, DXGI_FORMAT targetFormat,
+                 LayerColorRenderer* colorRenderer=nullptr, const protocol::ImageProjection* projection=nullptr) {
+        if (!enqueue_receive(device, context, frame, sequence, width, height, targetFormat,colorRenderer,projection) ||
             !receiveCompletion_.wait(device, context)) return false;
         commit_receive(sequence);
         return true;
@@ -93,6 +110,8 @@ public:
 private:
     uint64_t session_ = 0, sequence_ = UINT64_MAX;
     UINT width_ = 0, height_ = 0, eyeCount_ = 2;
+    UINT sourceEyeCount_ = 0;
+    DXGI_FORMAT targetFormat_ = DXGI_FORMAT_UNKNOWN;
     HANDLE cacheHandle_ = nullptr;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> shared_[2], cached_, renderCache_;
     GpuCompletion receiveCompletion_, renderCompletion_;

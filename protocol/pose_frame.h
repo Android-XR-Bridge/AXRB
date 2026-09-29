@@ -6,7 +6,7 @@
 namespace axrb::protocol {
 
 constexpr uint32_t kPoseFrameMagic = 0x42525841; // AXRB, little-endian.
-constexpr uint16_t kPoseFrameVersion = 6;
+constexpr uint16_t kPoseFrameVersion = 7;
 constexpr uint32_t kMaxEyeDimension = 8192;
 constexpr uint16_t kPoseFrameType = 1;
 
@@ -47,6 +47,13 @@ struct ViewFov {
     float angle_left = 0, angle_right = 0, angle_up = 0, angle_down = 0;
 };
 
+struct Vector3 { float x = 0, y = 0, z = 0; };
+// OpenXR validity bits, linear m/s and angular rad/s in the tracking world.
+struct SpaceVelocity {
+    uint64_t flags = 0;
+    Vector3 linear, angular;
+};
+
 struct PoseFrame {
     uint32_t magic = kPoseFrameMagic;
     uint16_t version = kPoseFrameVersion;
@@ -75,6 +82,10 @@ struct PoseFrame {
     ViewFov view_fov[2]; // v6: actual host per-eye optical FOV, in radians.
     uint32_t view_fov_valid = 0;
     uint32_t reserved_v6 = 0;
+    SpaceVelocity hmd_velocity; // v7, preserves the entire 2448-byte v6 prefix.
+    SpaceVelocity grip_velocity[2];
+    SpaceVelocity aim_velocity[2];
+    SpaceVelocity local_origin_velocity;
 };
 
 inline bool valid_view_fov(const ViewFov& fov) {
@@ -105,6 +116,7 @@ inline uint32_t display_period_or_default(const PoseFrame& frame) {
 static_assert(sizeof(Pose) == 28);
 static_assert(sizeof(ControllerInput) == 24);
 static_assert(sizeof(ViewFov) == 16);
-static_assert(sizeof(PoseFrame) == 2448);
+static_assert(sizeof(SpaceVelocity) == 32);
+static_assert(sizeof(PoseFrame) == 2640);
 
 } // namespace axrb::protocol

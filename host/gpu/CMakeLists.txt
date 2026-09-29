@@ -35,7 +35,7 @@ file(GENERATE OUTPUT "$<TARGET_FILE_DIR:axrb_gpu_layer>/axrb_gpu_layer.json" CON
 add_executable(axrb_gpu_receiver_probe receiver_probe.cpp)
 target_include_directories(axrb_gpu_receiver_probe PRIVATE ../../protocol)
 target_compile_definitions(axrb_gpu_receiver_probe PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-target_link_libraries(axrb_gpu_receiver_probe PRIVATE d3d11 dxgi)
+target_link_libraries(axrb_gpu_receiver_probe PRIVATE d3d11 dxgi d3dcompiler)
 
 enable_testing()
 add_test(NAME descriptor_template COMMAND axrb_descriptor_template_smoke)

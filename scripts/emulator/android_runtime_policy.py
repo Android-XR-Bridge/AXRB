@@ -77,14 +77,18 @@ def main():
         if limit < 1048576: raise RuntimeError('Memory mapping policy did not apply')
     source = root / 'runtime/vulkan/android_vulkan_layer.cpp'
     header = root / 'runtime/vulkan/vulkan_descriptor_template.h'
+    cached_header = root / 'runtime/vulkan/cached_buffer_policy.h'
+    accel_headers = list((root / 'runtime/vulkan/guest_accel').glob('*.h'))
+    accel_headers += [f for f in (root / 'runtime/vulkan/texture').rglob('*') if f.suffix in ('.h', '.c', '.cpp', '.o')]
+    bc7e = [str(root / 'runtime/vulkan/texture/bc7e' / name) for name in ('bc7e.o', 'bc7e_sse4.o', 'bc7e_avx2.o')]
     output = root / 'out/android/vulkan/libVkLayer_AXRB_runtime.so'
     bundled = bundled_library(root, 'out/android/vulkan/libVkLayer_AXRB_runtime.so')
     if not bundled:
         output.parent.mkdir(parents=True, exist_ok=True)
-    if not bundled and (not output.exists() or output.stat().st_mtime < max(source.stat().st_mtime, header.stat().st_mtime)):
+    if not bundled and (not output.exists() or output.stat().st_mtime < max([source.stat().st_mtime, header.stat().st_mtime, cached_header.stat().st_mtime] + [h.stat().st_mtime for h in accel_headers])):
         compiler = ndk_compiler(args.sdk, cxx=True)
         subprocess.run([str(compiler), '-std=c++17', '-shared', '-fPIC', '-O2', '-static-libstdc++',
-                        '-Wl,-Bsymbolic', str(source), '-llog', '-o', str(output)], check=True, timeout=120)
+                        '-Wl,-Bsymbolic', str(source), *bc7e, '-llog', '-o', str(output)], check=True, timeout=120)
     directory = '/data/local/debug/vulkan'
     remote = directory + '/libVkLayer_AXRB_runtime.so'
     expected = hashlib.sha256(output.read_bytes()).hexdigest()

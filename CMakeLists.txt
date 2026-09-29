@@ -10,6 +10,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(AXRB_BUILD_ANDROID_RUNTIME "Build Android OpenXR runtime shim" ON)
 option(AXRB_BUILD_HOST_BRIDGE "Build host bridge service" ON)
+option(AXRB_ENABLE_PERFORMANCE_OVERLAY "Build optional fresh-frame performance overlay" OFF)
 option(AXRB_BUILD_TESTS "Build native tests" ON)
 
 add_subdirectory(protocol)

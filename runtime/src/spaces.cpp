@@ -1,6 +1,36 @@
 #include "runtime_internal.h"
+#include "openxr_dispatch/space_velocity_types.h"
+#include "space_velocity.h"
+#include <atomic>
 
 namespace axrb::runtime::detail {
+
+namespace {
+axrb::protocol::Pose velocity_pose(const XrPosef& p) {
+    return {p.position.x,p.position.y,p.position.z,p.orientation.x,p.orientation.y,p.orientation.z,p.orientation.w};
+}
+axrb::protocol::SpaceVelocity world_velocity(const SpaceRecord& record, const axrb::protocol::PoseFrame& f) {
+    using axrb::protocol::SpaceVelocity;
+    SpaceVelocity v{};
+    if (record.kind == SpaceKind::Reference) v.flags=3; // Fixed tracking-world reference.
+    else if (f.version >= 7) {
+        switch(record.kind) {
+            case SpaceKind::Local: v=f.local_origin_velocity; break;
+            case SpaceKind::View: v=f.hmd_velocity; break;
+            case SpaceKind::LeftHand: v=f.grip_velocity[0]; break;
+            case SpaceKind::RightHand: v=f.grip_velocity[1]; break;
+            case SpaceKind::LeftAim: v=f.aim_velocity[0]; break;
+            case SpaceKind::RightAim: v=f.aim_velocity[1]; break;
+            default: break;
+        }
+    }
+    auto parent=record;
+    parent.offsetInParent=identity_pose();
+    const auto pose=velocity_pose(world_pose_for_space(parent,f));
+    const auto& p=record.offsetInParent.position;
+    return axrb::protocol::offset_velocity(v,axrb::protocol::rotate(pose,{p.x,p.y,p.z}));
+}
+}
 
 XrResult XRAPI_CALL xrEnumerateReferenceSpaces_impl(
     XrSession session,
@@ -155,6 +185,29 @@ XrResult XRAPI_CALL xrLocateSpace_impl(
     const XrPosef spaceWorld = world_pose_for_space(*spaceRecord, poseFrame);
     const XrPosef baseWorld = world_pose_for_space(*baseRecord, poseFrame);
     location->pose = multiply_pose(inverse_pose(baseWorld), spaceWorld);
+    struct Chain { XrStructureType type; void* next; };
+    for (auto* chain=static_cast<Chain*>(location->next); chain; chain=static_cast<Chain*>(chain->next)) {
+        if (chain->type != XR_TYPE_SPACE_VELOCITY) continue;
+        auto* velocity=reinterpret_cast<XrSpaceVelocity*>(chain);
+        axrb::protocol::SpaceVelocity v{};
+        if ((location->locationFlags & 3) == 3) {
+            if (space == baseSpace) v.flags=3;
+            else v=axrb::protocol::relative_velocity(world_velocity(*spaceRecord,poseFrame),
+                world_velocity(*baseRecord,poseFrame),velocity_pose(spaceWorld),velocity_pose(baseWorld));
+        }
+        velocity->velocityFlags=v.flags;
+        velocity->linearVelocity={v.linear.x,v.linear.y,v.linear.z};
+        velocity->angularVelocity={v.angular.x,v.angular.y,v.angular.z};
+#if defined(__ANDROID__)
+        // Bounded evidence that the game requests and receives velocity. No per-frame log flood.
+        static std::atomic<uint64_t> calls{0};
+        const auto sample=calls.fetch_add(1,std::memory_order_relaxed);
+        if (sample<12 || sample%900==0) __android_log_print(ANDROID_LOG_INFO,"AXRB.Velocity",
+            "request=%llu kind=%d base=%d protocol=%u flags=%llu linear=(%.3f %.3f %.3f)",
+            static_cast<unsigned long long>(sample),static_cast<int>(spaceRecord->kind),static_cast<int>(baseRecord->kind),
+            poseFrame.version,static_cast<unsigned long long>(v.flags),v.linear.x,v.linear.y,v.linear.z);
+#endif
+    }
     return XR_SUCCESS;
 }
 

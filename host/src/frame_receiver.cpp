@@ -27,7 +27,8 @@ bool OpenXrSession::receive_image(const axrb::protocol::ImageFrameHeader& header
         pendingGpuFrame_.reset(); pendingMixedCount_ = 0;
         if (!valid_gpu_batch(header, pixels.data(), pixels.size())) return false;
         std::vector<GpuBatchPart> parts(header.reserved);
-        std::memcpy(parts.data(), pixels.data(), pixels.size());
+        for (uint32_t i=0;i<header.reserved;++i)
+            parts[i]=decode_gpu_batch_part(pixels.data(),pixels.size()/header.reserved,i);
         // Validate every part before issuing any GPU work.
         for (uint32_t i = 0; i < header.reserved; ++i)
             if (parts[i].header.width > projectionWidth_ || parts[i].header.height > projectionHeight_) return false;
@@ -39,7 +40,8 @@ bool OpenXrSession::receive_image(const axrb::protocol::ImageFrameHeader& header
             const auto& input = parts[i];
             auto& part = frame->parts[i];
             if (!part.receiver.enqueue_receive(receiveDevice_.get(), receiveContext_.get(), input.gpu,
-                    input.header.sequence, input.header.width, input.header.height, static_cast<DXGI_FORMAT>(projectionFormat_))) {
+                    input.header.sequence, input.header.width, input.header.height, static_cast<DXGI_FORMAT>(projectionFormat_),
+                    &receiveColorRenderer_,&input.projection)) {
                 queued = false; break;
             }
             part.header = input.header; part.projection = input.projection;
@@ -87,7 +89,7 @@ bool OpenXrSession::receive_image(const axrb::protocol::ImageFrameHeader& header
         // This slot is exclusively owned by the receiver. No publication lock
         // is held while copying, opening shared resources or waiting for the GPU.
         if (!part.receiver.receive(receiveDevice_.get(), receiveContext_.get(), gpu, header.sequence,
-                header.width, header.height, static_cast<DXGI_FORMAT>(projectionFormat_))) {
+                header.width, header.height, static_cast<DXGI_FORMAT>(projectionFormat_),&receiveColorRenderer_,&projection)) {
             gpuFrames_.retire(pendingGpuFrame_);
             pendingGpuFrame_.reset(); pendingMixedCount_ = 0; return false;
         }
@@ -110,6 +112,17 @@ bool OpenXrSession::receive_image(const axrb::protocol::ImageFrameHeader& header
         header.version == axrb::protocol::kWindowsGpuFrameVersion ||
         axrb::protocol::equirect_gpu_version(header.version) || header.version == axrb::protocol::kQuadGpuFrameVersion) return false;
 #endif
+    // CPU-transfer fallback uses the same layer-local fade semantics.
+    const size_t eyeBytes=static_cast<size_t>(header.width)*header.height*4;
+    for(uint32_t eye=0;eye<header.layers && eye<2;++eye) {
+        const auto& color=projection.colors[eye];
+        if(color.identity()) continue;
+        for(size_t at=eye*eyeBytes;at<(eye+1)*eyeBytes && at+3<pixels.size();at+=4) {
+            float value[4];for(int c=0;c<4;++c)value[c]=pixels[at+c]/255.f;
+            protocol::apply_layer_color(value,color,protocol::image_layer_flags(projection,eye));
+            for(int c=0;c<4;++c)pixels[at+c]=static_cast<uint8_t>((std::max)(0.f,(std::min)(1.f,value[c]))*255.f+0.5f);
+        }
+    }
     imageFrame_->store(header, std::move(pixels), projection);
     return true;
 }

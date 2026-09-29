@@ -634,6 +634,13 @@ struct XrCompositionLayerImageLayoutFB {
     const void* next;
     uint64_t flags;
 };
+constexpr XrStructureType XR_TYPE_COMPOSITION_LAYER_COLOR_SCALE_BIAS_KHR = static_cast<XrStructureType>(1000034000);
+struct XrCompositionLayerColorScaleBiasKHR {
+    XrStructureType type;
+    const void* next;
+    float colorScale[4];
+    float colorBias[4];
+};
 struct XrCompositionLayerBaseHeader {
     XrStructureType type;
     const void* next;

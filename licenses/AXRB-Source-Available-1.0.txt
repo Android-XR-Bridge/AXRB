@@ -1,0 +1,91 @@
+AXRB Source-Available License 1.0
+
+1. Scope
+
+"Covered Software" means only the copyrightable AXRB-owned contributions
+expressly designated by the repository's LICENSE and coverage list. "Licensor"
+means their copyright holder offering them under these terms. "You" means an
+individual or legal entity exercising these rights. The "Official Project" is
+https://github.com/Android-XR-Bridge/AXRB or its expressly designated successor.
+
+This license does not claim or restrict third-party code, earlier separately
+licensed versions, GPL-covered work, independent programs, or rights granted
+by applicable law without the Licensor's permission. No rights are granted on
+behalf of another copyright holder.
+
+2. Permission to use and share unchanged copies
+
+Subject to these terms, the Licensor grants You a worldwide, royalty-free,
+non-exclusive copyright license to use, inspect, run and compile the Covered
+Software for any lawful purpose, including commercial use; to modify it for
+Your personal use or internal use within Your organization; and to copy and
+redistribute its unmodified source and unmodified official binaries. This
+includes public unchanged repository forks and mirrors.
+
+You may distribute builds from unmodified source, identifying them as Your
+builds rather than official releases. Differences caused solely by toolchains,
+target platforms or generated build metadata do not make such a build modified.
+Unchanged copies may accompany independent works in a collection. This does not
+authorize incorporating Covered Software into a modified or derived product.
+Ordinary installation, user configuration and interoperability through public
+interfaces are not prohibited by this license.
+
+3. Contributions
+
+You may publish modifications as patches, pull requests and clearly identified
+contribution forks or branches for review and incorporation into the Official
+Project. This exception permits collaboration on the Official Project, not
+alternative distributions or separately maintained products. It does not
+permit modified binary releases. Contribution history may remain public after
+review ends.
+
+You retain ownership of Your contribution. By submitting it under this
+exception, You grant the Official Project's maintainers a non-exclusive,
+worldwide, royalty-free license to use, modify and distribute it as part of
+the Official Project under this license. Identify any third-party material
+and its separate terms. GPL-covered contributions remain governed by their
+applicable GPL terms rather than this section.
+
+4. Modified distributions require permission
+
+Except for section 3, You may not distribute or make available modified
+versions, adaptations incorporating Covered Software, or patches intended to
+constitute a separately distributed modified product without prior written
+permission from the applicable Licensor. This applies whether free or paid,
+renamed or credited to AXRB. You may not grant recipients rights in Covered
+Software that You do not have.
+
+Private modifications are allowed; publishing derivative projects is not
+generally licensed. This is a source-available license, not an open-source
+license. Independent implementations that do not copy protected expression
+from Covered Software are not restricted.
+
+5. Notices and identity
+
+Preserve applicable copyright, license and third-party notices, the repository
+licensing map, and this license with copies. Do not misrepresent authorship or
+imply official endorsement of an unofficial build or distribution. No trademark
+rights are granted except truthful identification of the source; legally
+permitted descriptive references are not restricted.
+
+6. Termination
+
+Rights under this license terminate upon violation. They are automatically
+reinstated if You cure the violation within 30 days of becoming aware of it,
+unless the Licensor previously terminated Your rights for an earlier violation.
+Compliant recipients retain their rights. This does not withdraw rights under
+another applicable license or mandatory law.
+
+7. Disclaimer
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE COVERED SOFTWARE IS PROVIDED "AS IS",
+WITHOUT WARRANTY OF ANY KIND, INCLUDING MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE OR NONINFRINGEMENT. THE LICENSOR IS NOT LIABLE FOR CLAIMS,
+DAMAGES OR OTHER LIABILITY ARISING FROM THE SOFTWARE, WHETHER IN CONTRACT,
+TORT OR OTHERWISE. LIABILITY THAT CANNOT LAWFULLY BE EXCLUDED IS NOT EXCLUDED.
+
+8. Separate rights
+
+Relevant copyright holders may grant additional written permissions. Other
+components' licenses remain independently effective; this license adds no
+restrictions to their grants.

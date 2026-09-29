@@ -16,6 +16,30 @@ bool ok(VkResult result, const char* operation) {
     __android_log_print(ANDROID_LOG_ERROR, "AXRB.Vulkan", "%s failed: %d", operation, result);
     return false;
 }
+bool finish_trace_requested() {
+    static const bool enabled = [] {
+        char value[PROP_VALUE_MAX]{};
+        __system_property_get("debug.axrb.vulkan_finish_trace", value);
+        return std::strcmp(value, "1") == 0;
+    }();
+    return enabled;
+}
+struct VulkanFinishTrace {
+    using Clock = std::chrono::steady_clock;
+    Clock::time_point start = Clock::now();
+    axrb::protocol::PerfStats prepare{"vulkan-finish-prepare"};
+    axrb::protocol::PerfStats submit{"vulkan-queue-submit"};
+    axrb::protocol::PerfStats wait{"vulkan-fence-wait"};
+    bool active() const { return Clock::now() - start < std::chrono::seconds(180); }
+    void record(Clock::time_point entered, Clock::time_point prepared,
+                Clock::time_point submitted, Clock::time_point completed) {
+        // Wall intervals include scheduler/driver waits; NOT GPU execution time.
+        // Record after the final fence, without changing submission or ownership.
+        prepare.record(std::chrono::duration<double, std::milli>(prepared-entered).count());
+        submit.record(std::chrono::duration<double, std::milli>(submitted-prepared).count());
+        wait.record(std::chrono::duration<double, std::milli>(completed-submitted).count());
+    }
+};
 }
 VkPhysicalDevice VulkanBackend::choose_device(VkInstance instance) {
     if (!instance) return VK_NULL_HANDLE;
@@ -141,10 +165,20 @@ bool VulkanBackend::begin() {
     return ok(vkBeginCommandBuffer(cmd_, &info), "begin commands");
 }
 bool VulkanBackend::finish() {
+    VulkanFinishTrace* trace = nullptr;
+    if (finish_trace_requested()) {
+        static thread_local VulkanFinishTrace diagnostic;
+        if (diagnostic.active()) trace = &diagnostic;
+    }
+    const auto entered = trace ? VulkanFinishTrace::Clock::now() : VulkanFinishTrace::Clock::time_point{};
     if (!ok(vkEndCommandBuffer(cmd_), "end commands") || !ok(vkResetFences(device_, 1, &fence_), "reset fence")) return false;
     VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO}; submit.commandBufferCount = 1; submit.pCommandBuffers = &cmd_;
-    return ok(vkQueueSubmit(queue_, 1, &submit, fence_), "submit") &&
-        ok(vkWaitForFences(device_, 1, &fence_, VK_TRUE, UINT64_MAX), "wait fence");
+    const auto prepared = trace ? VulkanFinishTrace::Clock::now() : VulkanFinishTrace::Clock::time_point{};
+    if (!ok(vkQueueSubmit(queue_, 1, &submit, fence_), "submit")) return false;
+    const auto submitted = trace ? VulkanFinishTrace::Clock::now() : VulkanFinishTrace::Clock::time_point{};
+    const bool completed = ok(vkWaitForFences(device_, 1, &fence_, VK_TRUE, UINT64_MAX), "wait fence");
+    if (trace) trace->record(entered, prepared, submitted, VulkanFinishTrace::Clock::now());
+    return completed;
 }
 void VulkanBackend::barrier(VkImage image, uint32_t layers, VkImageLayout before, VkImageLayout after,
                             VkAccessFlags src, VkAccessFlags dst, VkImageAspectFlags aspect, uint32_t mips) {

@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { installFiles } from './game-files.mjs';
 import { bridgeEnvironment } from './quest-bridge.mjs';
+import { selectGuestClock } from './clock-policy.mjs';
 import { describePermissionFailure, parsePermissionPrompt, parseRuntimePermissions, validPermission } from './permissions.mjs';
 
 // Package-manager queries wait behind background compilation after an
@@ -137,11 +138,14 @@ export class Runtime {
   async startEmulator({ onOutput, coldBoot = false, recoverUnresponsive = false }) {
     // Allow the script's 180-second graceful shutdown, full boot deadline,
     // and bounded ADB verification retries before timing out its wrapper.
-    const timeout = ((this.settings.guestClock || 'Default') === 'TscCorrected' ? 40 : 30) * 60 * 1000;
+    const guestClock = await selectGuestClock(this.root, this.settings);
+    const timeout = (guestClock === 'TscCorrected' ? 40 : 30) * 60 * 1000;
+    onOutput?.(`Android clock: ${guestClock}${this.settings.guestClock === 'Auto' || !this.settings.guestClock ? ' (automatic)' : ''}.\n`);
     return run('powershell.exe', powershellArgs(path.join(this.root, 'scripts/emulator/windows_android_emulator.ps1'), {
       Action: 'Start', Avd: this.settings.avd, Port: this.settings.port, Sdk: this.settings.sdk,
       ApiLevel: 36, Abi: 'arm64-v8a', MemoryMB: this.settings.memoryMB, CpuCores: this.settings.cpuCores ?? 4,
-      GuestClock: this.settings.guestClock || 'Default', GpuSharing: true, ColdBoot: coldBoot, RecoverUnresponsive: recoverUnresponsive
+      GuestClock: guestClock, GpuSharing: true, ColdBoot: coldBoot, RecoverUnresponsive: recoverUnresponsive,
+      ...(this.settings.localApic ? { LocalApic: this.settings.localApic } : {})
     }), { timeout, onOutput });
   }
   async ensure({ onOutput = this.onOutput } = {}) {
@@ -308,6 +312,9 @@ export class Runtime {
     this.fpsHudEvent = `Local\\AXRB.FpsHud.${randomUUID().replaceAll('-', '')}`;
     const args = bridge ? [] : powershellArgs(path.join(this.root, 'scripts/run/run_windows_game.ps1'), { Avd: this.settings.avd, Port: this.settings.port,
       Sdk: this.settings.sdk, MemoryMB: this.settings.memoryMB, CpuCores: this.settings.cpuCores ?? 4, Package: game.package, Activity: game.activity, GameName: game.name, FpsHud: this.settings.fpsHud === true, FpsHudEventName: this.fpsHudEvent,
+      // Recovery inside the game script must use the same CPU policy as ensure().
+      GuestClock: this.settings.guestClock || 'Auto',
+      ...(this.settings.localApic ? { LocalApic: this.settings.localApic } : {}),
       // An absent switch keeps the script's historic device-presence behavior.
       ...(ownsEmulator ? { OwnsEmulator: true } : {}),
       ...(sessionId ? { SessionId: sessionId } : {}),
@@ -361,6 +368,24 @@ export class Runtime {
       }), { timeout: 5000 });
     }
     this.settings.fpsHud = enabled;
+  }
+  async stopEmulator() {
+    const child = this.child;
+    if (child) {
+      await this.stop();
+      const deadline = Date.now() + 60000;
+      while (this.child === child && child.exitCode === null && child.signalCode === null) {
+        if (Date.now() >= deadline) throw new Error('The game is still stopping. Wait for it to finish, then close AXRB again.');
+        await new Promise(resolve => setTimeout(resolve, 250));
+      }
+    }
+    if (!(await this.status()).running) return;
+    await this.adb(['emu', 'kill'], { timeout: 10000 });
+    const deadline = Date.now() + 180000;
+    while ((await this.status()).running) {
+      if (Date.now() >= deadline) throw new Error('The emulator has not finished shutting down. AXRB will stay open; try again after it finishes saving.');
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
   }
   async stop() {
     const pid = this.child?.pid;

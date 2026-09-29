@@ -11,7 +11,11 @@
 #include <shared_mutex>
 #include <chrono>
 #include <vector>
+#include <atomic>
 #include "vulkan_descriptor_template.h"
+#include "cached_buffer_policy.h"
+#include "guest_accel/guest_accel.h"
+#include "texture/astc_substitution.h"
 
 namespace {
 constexpr const char* layerName="VK_LAYER_AXRB_runtime";
@@ -25,11 +29,14 @@ struct Device {
     PFN_vkUpdateDescriptorSetWithTemplate updateTemplate = nullptr;
     PFN_vkUpdateDescriptorSets updateSets = nullptr;
     PFN_vkAllocateMemory allocate = nullptr;
+    axrb::CachedBufferPolicy cachedBuffers;
     // Set when the application enabled VK_KHR_external_memory_fd and only this
     // layer published it; the driver's own entry points otherwise.
     bool syntheticMemoryFd = false;
     PFN_vkGetMemoryFdKHR getMemoryFd = nullptr;
     PFN_vkGetMemoryFdPropertiesKHR getMemoryFdProperties = nullptr;
+    // Set when ASTC images are stored as BC7 on this device.
+    std::shared_ptr<const axrb::texture::DeviceCalls> astc;
 };
 std::shared_mutex mutex;
 std::map<void*,Instance> instances;
@@ -97,6 +104,23 @@ const char* alias(const char* name){
     return name;
 }
 PFN_vkVoidFunction intercept(const char*);
+// Buffers prefer cached host-visible memory: the guest maps the uncached types
+// uncached, which made CPU-written vertex data hundreds of times slower to
+// write (docs/cpu_pressure.md). debug.axrb.cached_buffer_memory=0 opts out.
+bool cachedBufferMemory(){
+    static const bool active=[] {char value[PROP_VALUE_MAX]{};
+        __system_property_get("debug.axrb.cached_buffer_memory",value);
+        return std::strcmp(value,"0")!=0;}();
+    return active;
+}
+void filterBufferMemory(const Device& d,VkMemoryRequirements* requirements){
+    const uint32_t before=requirements->memoryTypeBits;
+    requirements->memoryTypeBits=d.cachedBuffers.filter(before);
+    static std::atomic<unsigned> reports{0};
+    if(before!=requirements->memoryTypeBits&&reports.fetch_add(1,std::memory_order_relaxed)<12)
+        __android_log_print(ANDROID_LOG_INFO,"AXRB.CachedBuffers","requirements size=%llu types=%x -> %x",
+            (unsigned long long)requirements->size,before,requirements->memoryTypeBits);
+}
 bool brokenDebugNames(){
     char value[PROP_VALUE_MAX]{};
     __system_property_get("debug.axrb.gfxstream_debug_names",value);
@@ -146,8 +170,10 @@ VKAPI_ATTR VkResult VKAPI_CALL vkGetMemoryFdPropertiesKHR(VkDevice h,VkExternalM
 // or read-only, so they are copied, never relinked: every structure ahead of
 // the request must be one whose size is known here, and a chain with anything
 // else passes through unchanged.
-VKAPI_ATTR VkResult VKAPI_CALL vkAllocateMemory(VkDevice h,const VkMemoryAllocateInfo* info,const VkAllocationCallbacks* alloc,VkDeviceMemory* out){
-    auto s=device(h);
+VkResult allocateMemory(Device s,VkDevice h,const VkMemoryAllocateInfo* info,const VkAllocationCallbacks* alloc,VkDeviceMemory* out){
+    if(cachedBufferMemory()&&info){static std::atomic<unsigned> reports{0};
+        if(reports.fetch_add(1,std::memory_order_relaxed)<32)__android_log_print(ANDROID_LOG_INFO,
+            "AXRB.CachedBuffers","allocate type=%u size=%llu",info->memoryTypeIndex,(unsigned long long)info->allocationSize);}
     if(!s.syntheticMemoryFd||!info)return s.allocate(h,info,alloc,out);
     auto size=[](VkStructureType type)->size_t{
         switch(type){
@@ -181,6 +207,11 @@ VKAPI_ATTR VkResult VKAPI_CALL vkAllocateMemory(VkDevice h,const VkMemoryAllocat
     auto head=*info;head.pNext=rest;
     return s.allocate(h,&head,alloc,out);
 }
+VKAPI_ATTR VkResult VKAPI_CALL vkAllocateMemory(VkDevice h,const VkMemoryAllocateInfo* info,const VkAllocationCallbacks* alloc,VkDeviceMemory* out){
+    auto s=device(h);auto result=allocateMemory(s,h,info,alloc,out);
+    if(result==VK_SUCCESS&&s.astc)axrb::texture::AstcSubstitution::instance().allocated_memory(h,info,*out);
+    return result;
+}
 VKAPI_ATTR VkResult VKAPI_CALL vkEnumerateInstanceLayerProperties(uint32_t* count,VkLayerProperties* out){
     if(!out){*count=1;return VK_SUCCESS;}if(!*count)return VK_INCOMPLETE;
     *out={};std::strcpy(out->layerName,layerName);std::strcpy(out->description,"AXRB Android runtime compatibility");
@@ -206,6 +237,8 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateInstance(const VkInstanceCreateInfo* info
     chain->u.pLayerInfo=chain->u.pLayerInfo->pNext;
     auto result=create(info,alloc,out);
     if(result==VK_SUCCESS){std::lock_guard lock(mutex);instances[key(*out)]={*out,gipa};__android_log_print(ANDROID_LOG_INFO,"AXRB.SystemVulkan","Runtime layer active");}
+    // The engine library is loaded before its renderer creates an instance.
+    axrb::accel::install_guest_accel_once();
     return result;
 }
 VKAPI_ATTR void VKAPI_CALL vkDestroyInstance(VkInstance h,const VkAllocationCallbacks* alloc){
@@ -229,9 +262,29 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice physical,const Vk
         if(!promoted&&!stripped)names.push_back(n);
     }
     auto modified=*info;modified.enabledExtensionCount=names.size();modified.ppEnabledExtensionNames=names.data();
+    // ASTC images are stored as BC7 (texture/astc_substitution.h), which needs
+    // BC sampling enabled: in the application's feature structure if it has
+    // one (restored after the call), else in a copy of its plain features.
+    bool astc=false;VkPhysicalDeviceFeatures features{};VkPhysicalDeviceFeatures2* features2=nullptr;VkBool32 previousBC=VK_FALSE;
+    if(axrb::texture::astc_to_bc7_enabled()){
+        VkPhysicalDeviceFeatures supported{};function<PFN_vkGetPhysicalDeviceFeatures>(s,"vkGetPhysicalDeviceFeatures")(physical,&supported);
+        for(auto* node=static_cast<const VkBaseInStructure*>(info->pNext);node;node=node->pNext)
+            if(node->sType==VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2)features2=reinterpret_cast<VkPhysicalDeviceFeatures2*>(const_cast<VkBaseInStructure*>(node));
+        astc=supported.textureCompressionBC;
+        if(astc&&features2){previousBC=features2->features.textureCompressionBC;features2->features.textureCompressionBC=VK_TRUE;}
+        else if(astc){if(info->pEnabledFeatures)features=*info->pEnabledFeatures;features.textureCompressionBC=VK_TRUE;modified.pEnabledFeatures=&features;}
+    }
     auto result=create(physical,&modified,alloc,out);
+    if(features2&&astc)features2->features.textureCompressionBC=previousBC;
     if(result==VK_SUCCESS){
         Device state{*out,gdpa};
+        if(cachedBufferMemory()){
+            VkPhysicalDeviceMemoryProperties props{};
+            function<PFN_vkGetPhysicalDeviceMemoryProperties>(s,"vkGetPhysicalDeviceMemoryProperties")(physical,&props);
+            state.cachedBuffers=axrb::CachedBufferPolicy::from(props);
+            __android_log_print(ANDROID_LOG_INFO,"AXRB.CachedBuffers","enabled cached=%x uncached=%x",
+                state.cachedBuffers.cached,state.cachedBuffers.uncached);
+        }
         state.createTemplate=function<PFN_vkCreateDescriptorUpdateTemplate>(state,"vkCreateDescriptorUpdateTemplate");
         if(!state.createTemplate)state.createTemplate=function<PFN_vkCreateDescriptorUpdateTemplate>(state,"vkCreateDescriptorUpdateTemplateKHR");
         state.destroyTemplate=function<PFN_vkDestroyDescriptorUpdateTemplate>(state,"vkDestroyDescriptorUpdateTemplate");
@@ -245,12 +298,45 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice physical,const Vk
             state.getMemoryFd=function<PFN_vkGetMemoryFdKHR>(state,"vkGetMemoryFdKHR");
             state.getMemoryFdProperties=function<PFN_vkGetMemoryFdPropertiesKHR>(state,"vkGetMemoryFdPropertiesKHR");
         }
+        if(astc){
+            axrb::texture::DeviceCalls calls;calls.device=*out;
+            function<PFN_vkGetPhysicalDeviceMemoryProperties>(s,"vkGetPhysicalDeviceMemoryProperties")(physical,&calls.memory);
+#define AXRB_CALL(field,name) calls.field=function<decltype(calls.field)>(state,#name)
+            AXRB_CALL(createImage,vkCreateImage);AXRB_CALL(destroyImage,vkDestroyImage);AXRB_CALL(createImageView,vkCreateImageView);
+            AXRB_CALL(createBuffer,vkCreateBuffer);AXRB_CALL(destroyBuffer,vkDestroyBuffer);AXRB_CALL(bufferRequirements,vkGetBufferMemoryRequirements);
+            AXRB_CALL(bindBufferMemory,vkBindBufferMemory);AXRB_CALL(bindBufferMemory2,vkBindBufferMemory2);
+            AXRB_CALL(allocateMemory,vkAllocateMemory);AXRB_CALL(freeMemory,vkFreeMemory);AXRB_CALL(mapMemory,vkMapMemory);AXRB_CALL(unmapMemory,vkUnmapMemory);
+            AXRB_CALL(allocateCommandBuffers,vkAllocateCommandBuffers);AXRB_CALL(freeCommandBuffers,vkFreeCommandBuffers);
+            AXRB_CALL(resetCommandPool,vkResetCommandPool);AXRB_CALL(destroyCommandPool,vkDestroyCommandPool);
+            AXRB_CALL(beginCommandBuffer,vkBeginCommandBuffer);AXRB_CALL(resetCommandBuffer,vkResetCommandBuffer);
+            AXRB_CALL(copyBufferToImage,vkCmdCopyBufferToImage);AXRB_CALL(copyBufferToImage2,vkCmdCopyBufferToImage2);
+            AXRB_CALL(copyImageToBuffer,vkCmdCopyImageToBuffer);AXRB_CALL(executeCommands,vkCmdExecuteCommands);
+            AXRB_CALL(queueSubmit,vkQueueSubmit);AXRB_CALL(queueSubmit2,vkQueueSubmit2);
+#undef AXRB_CALL
+            if(!calls.bindBufferMemory2)calls.bindBufferMemory2=function<PFN_vkBindBufferMemory2>(state,"vkBindBufferMemory2KHR");
+            if(!calls.copyBufferToImage2)calls.copyBufferToImage2=function<PFN_vkCmdCopyBufferToImage2>(state,"vkCmdCopyBufferToImage2KHR");
+            if(!calls.queueSubmit2)calls.queueSubmit2=function<PFN_vkQueueSubmit2>(state,"vkQueueSubmit2KHR");
+            state.astc=std::make_shared<const axrb::texture::DeviceCalls>(calls);
+            axrb::texture::AstcSubstitution::instance().add_device(calls);
+        }
         std::lock_guard lock(mutex);devices[key(*out)]=state;
     }
     return result;
 }
+VKAPI_ATTR void VKAPI_CALL vkGetBufferMemoryRequirements(VkDevice h,VkBuffer buffer,VkMemoryRequirements* out){
+    auto s=device(h);function<PFN_vkGetBufferMemoryRequirements>(s,"vkGetBufferMemoryRequirements")(h,buffer,out);
+    filterBufferMemory(s,out);
+}
+VKAPI_ATTR void VKAPI_CALL vkGetBufferMemoryRequirements2(VkDevice h,const VkBufferMemoryRequirementsInfo2* info,VkMemoryRequirements2* out){
+    auto s=device(h);auto next=function<PFN_vkGetBufferMemoryRequirements2>(s,"vkGetBufferMemoryRequirements2");
+    if(!next)next=function<PFN_vkGetBufferMemoryRequirements2>(s,"vkGetBufferMemoryRequirements2KHR");
+    next(h,info,out);filterBufferMemory(s,&out->memoryRequirements);
+}
+VKAPI_ATTR void VKAPI_CALL vkGetBufferMemoryRequirements2KHR(VkDevice h,const VkBufferMemoryRequirementsInfo2* info,VkMemoryRequirements2* out){
+    vkGetBufferMemoryRequirements2(h,info,out);
+}
 VKAPI_ATTR void VKAPI_CALL vkDestroyDevice(VkDevice h,const VkAllocationCallbacks* alloc){
-    auto s=device(h);{std::lock_guard lock(mutex);devices.erase(key(h));for(auto it=templates.begin();it!=templates.end();)if(it->first.first==h)it=templates.erase(it);else ++it;}
+    auto s=device(h);if(s.astc)axrb::texture::AstcSubstitution::instance().remove_device(h);{std::lock_guard lock(mutex);devices.erase(key(h));for(auto it=templates.begin();it!=templates.end();)if(it->first.first==h)it=templates.erase(it);else ++it;}
     function<PFN_vkDestroyDevice>(s,"vkDestroyDevice")(h,alloc);
 }
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateDescriptorUpdateTemplate(VkDevice h,const VkDescriptorUpdateTemplateCreateInfo* info,const VkAllocationCallbacks* alloc,VkDescriptorUpdateTemplate* out){
@@ -292,6 +378,118 @@ VKAPI_ATTR void VKAPI_CALL vkUpdateDescriptorSetWithTemplate(VkDevice h,VkDescri
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateDescriptorUpdateTemplateKHR(VkDevice h,const VkDescriptorUpdateTemplateCreateInfo* i,const VkAllocationCallbacks* a,VkDescriptorUpdateTemplate* o){return vkCreateDescriptorUpdateTemplate(h,i,a,o);}
 VKAPI_ATTR void VKAPI_CALL vkDestroyDescriptorUpdateTemplateKHR(VkDevice h,VkDescriptorUpdateTemplate t,const VkAllocationCallbacks* a){vkDestroyDescriptorUpdateTemplate(h,t,a);}
 VKAPI_ATTR void VKAPI_CALL vkUpdateDescriptorSetWithTemplateKHR(VkDevice h,VkDescriptorSet s,VkDescriptorUpdateTemplate t,const void* d){vkUpdateDescriptorSetWithTemplate(h,s,t,d);}
+// ASTC images stored as BC7 (texture/astc_substitution.h). Entry points
+// pass straight through on devices without the substitution.
+VKAPI_ATTR VkResult VKAPI_CALL vkCreateImage(VkDevice h,const VkImageCreateInfo* info,const VkAllocationCallbacks* alloc,VkImage* out){
+    auto s=device(h);if(!s.astc)return function<PFN_vkCreateImage>(s,"vkCreateImage")(h,info,alloc,out);
+    return axrb::texture::astc_images().create_image(h,info,alloc,out);
+}
+VKAPI_ATTR void VKAPI_CALL vkDestroyImage(VkDevice h,VkImage image,const VkAllocationCallbacks* alloc){
+    auto s=device(h);if(!s.astc)return function<PFN_vkDestroyImage>(s,"vkDestroyImage")(h,image,alloc);
+    axrb::texture::astc_images().destroy_image(h,image,alloc);
+}
+VKAPI_ATTR VkResult VKAPI_CALL vkCreateImageView(VkDevice h,const VkImageViewCreateInfo* info,const VkAllocationCallbacks* alloc,VkImageView* out){
+    auto s=device(h);if(!s.astc)return function<PFN_vkCreateImageView>(s,"vkCreateImageView")(h,info,alloc,out);
+    return axrb::texture::astc_images().create_image_view(h,info,alloc,out);
+}
+VKAPI_ATTR VkResult VKAPI_CALL vkCreateBuffer(VkDevice h,const VkBufferCreateInfo* info,const VkAllocationCallbacks* alloc,VkBuffer* out){
+    auto s=device(h);auto result=(s.astc?s.astc->createBuffer:function<PFN_vkCreateBuffer>(s,"vkCreateBuffer"))(h,info,alloc,out);
+    if(result==VK_SUCCESS&&s.astc)axrb::texture::astc_images().created_buffer(*out,info->size);
+    return result;
+}
+VKAPI_ATTR void VKAPI_CALL vkDestroyBuffer(VkDevice h,VkBuffer buffer,const VkAllocationCallbacks* alloc){
+    auto s=device(h);if(s.astc)axrb::texture::astc_images().destroyed_buffer(buffer);
+    (s.astc?s.astc->destroyBuffer:function<PFN_vkDestroyBuffer>(s,"vkDestroyBuffer"))(h,buffer,alloc);
+}
+VKAPI_ATTR VkResult VKAPI_CALL vkBindBufferMemory(VkDevice h,VkBuffer buffer,VkDeviceMemory memory,VkDeviceSize offset){
+    auto s=device(h);auto result=(s.astc?s.astc->bindBufferMemory:function<PFN_vkBindBufferMemory>(s,"vkBindBufferMemory"))(h,buffer,memory,offset);
+    if(result==VK_SUCCESS&&s.astc)axrb::texture::astc_images().bound_buffer(buffer,memory,offset);
+    return result;
+}
+VKAPI_ATTR VkResult VKAPI_CALL vkBindBufferMemory2(VkDevice h,uint32_t count,const VkBindBufferMemoryInfo* infos){
+    auto s=device(h);auto next=s.astc?s.astc->bindBufferMemory2:function<PFN_vkBindBufferMemory2>(s,"vkBindBufferMemory2");
+    if(!next)next=function<PFN_vkBindBufferMemory2>(s,"vkBindBufferMemory2KHR");
+    auto result=next(h,count,infos);
+    if(result==VK_SUCCESS&&s.astc)for(uint32_t i=0;i<count;++i)axrb::texture::astc_images().bound_buffer(infos[i].buffer,infos[i].memory,infos[i].memoryOffset);
+    return result;
+}
+VKAPI_ATTR VkResult VKAPI_CALL vkBindBufferMemory2KHR(VkDevice h,uint32_t count,const VkBindBufferMemoryInfo* infos){return vkBindBufferMemory2(h,count,infos);}
+VKAPI_ATTR void VKAPI_CALL vkFreeMemory(VkDevice h,VkDeviceMemory memory,const VkAllocationCallbacks* alloc){
+    auto s=device(h);if(s.astc)axrb::texture::astc_images().free_memory(memory);
+    (s.astc?s.astc->freeMemory:function<PFN_vkFreeMemory>(s,"vkFreeMemory"))(h,memory,alloc);
+}
+VKAPI_ATTR VkResult VKAPI_CALL vkMapMemory(VkDevice h,VkDeviceMemory memory,VkDeviceSize offset,VkDeviceSize size,VkMemoryMapFlags flags,void** out){
+    auto s=device(h);auto result=(s.astc?s.astc->mapMemory:function<PFN_vkMapMemory>(s,"vkMapMemory"))(h,memory,offset,size,flags,out);
+    if(result==VK_SUCCESS&&s.astc)axrb::texture::astc_images().mapped(memory,offset,*out);
+    return result;
+}
+VKAPI_ATTR void VKAPI_CALL vkUnmapMemory(VkDevice h,VkDeviceMemory memory){
+    auto s=device(h);if(s.astc)axrb::texture::astc_images().unmapped(memory);
+    (s.astc?s.astc->unmapMemory:function<PFN_vkUnmapMemory>(s,"vkUnmapMemory"))(h,memory);
+}
+VKAPI_ATTR VkResult VKAPI_CALL vkAllocateCommandBuffers(VkDevice h,const VkCommandBufferAllocateInfo* info,VkCommandBuffer* out){
+    auto s=device(h);auto result=(s.astc?s.astc->allocateCommandBuffers:function<PFN_vkAllocateCommandBuffers>(s,"vkAllocateCommandBuffers"))(h,info,out);
+    if(result==VK_SUCCESS&&s.astc)axrb::texture::astc_images().allocated_command_buffers(h,info->commandPool,info->commandBufferCount,out);
+    return result;
+}
+VKAPI_ATTR void VKAPI_CALL vkFreeCommandBuffers(VkDevice h,VkCommandPool pool,uint32_t count,const VkCommandBuffer* buffers){
+    auto s=device(h);if(s.astc)axrb::texture::astc_images().freed_command_buffers(count,buffers);
+    (s.astc?s.astc->freeCommandBuffers:function<PFN_vkFreeCommandBuffers>(s,"vkFreeCommandBuffers"))(h,pool,count,buffers);
+}
+VKAPI_ATTR VkResult VKAPI_CALL vkResetCommandPool(VkDevice h,VkCommandPool pool,VkCommandPoolResetFlags flags){
+    auto s=device(h);if(s.astc)axrb::texture::astc_images().reset_pool(pool,false);
+    return (s.astc?s.astc->resetCommandPool:function<PFN_vkResetCommandPool>(s,"vkResetCommandPool"))(h,pool,flags);
+}
+VKAPI_ATTR void VKAPI_CALL vkDestroyCommandPool(VkDevice h,VkCommandPool pool,const VkAllocationCallbacks* alloc){
+    auto s=device(h);if(s.astc)axrb::texture::astc_images().reset_pool(pool,true);
+    (s.astc?s.astc->destroyCommandPool:function<PFN_vkDestroyCommandPool>(s,"vkDestroyCommandPool"))(h,pool,alloc);
+}
+VKAPI_ATTR VkResult VKAPI_CALL vkBeginCommandBuffer(VkCommandBuffer h,const VkCommandBufferBeginInfo* info){
+    auto s=device(h);if(s.astc)axrb::texture::astc_images().reset_command_buffer(h);
+    return (s.astc?s.astc->beginCommandBuffer:function<PFN_vkBeginCommandBuffer>(s,"vkBeginCommandBuffer"))(h,info);
+}
+VKAPI_ATTR VkResult VKAPI_CALL vkResetCommandBuffer(VkCommandBuffer h,VkCommandBufferResetFlags flags){
+    auto s=device(h);if(s.astc)axrb::texture::astc_images().reset_command_buffer(h);
+    return (s.astc?s.astc->resetCommandBuffer:function<PFN_vkResetCommandBuffer>(s,"vkResetCommandBuffer"))(h,flags);
+}
+VKAPI_ATTR void VKAPI_CALL vkCmdCopyBufferToImage(VkCommandBuffer h,VkBuffer source,VkImage target,VkImageLayout layout,uint32_t count,const VkBufferImageCopy* regions){
+    auto s=device(h);
+    if(s.astc&&axrb::texture::astc_images().copy_buffer_to_image(h,s.handle,source,target,layout,count,regions))return;
+    (s.astc?s.astc->copyBufferToImage:function<PFN_vkCmdCopyBufferToImage>(s,"vkCmdCopyBufferToImage"))(h,source,target,layout,count,regions);
+}
+VKAPI_ATTR void VKAPI_CALL vkCmdCopyBufferToImage2(VkCommandBuffer h,const VkCopyBufferToImageInfo2* info){
+    auto s=device(h);
+    if(s.astc){
+        std::vector<VkBufferImageCopy> regions(info->regionCount);
+        for(uint32_t i=0;i<info->regionCount;++i){auto& r=info->pRegions[i];regions[i]={r.bufferOffset,r.bufferRowLength,r.bufferImageHeight,r.imageSubresource,r.imageOffset,r.imageExtent};}
+        if(axrb::texture::astc_images().copy_buffer_to_image(h,s.handle,info->srcBuffer,info->dstImage,info->dstImageLayout,info->regionCount,regions.data()))return;
+    }
+    auto next=s.astc?s.astc->copyBufferToImage2:function<PFN_vkCmdCopyBufferToImage2>(s,"vkCmdCopyBufferToImage2");
+    if(!next)next=function<PFN_vkCmdCopyBufferToImage2>(s,"vkCmdCopyBufferToImage2KHR");
+    next(h,info);
+}
+VKAPI_ATTR void VKAPI_CALL vkCmdCopyBufferToImage2KHR(VkCommandBuffer h,const VkCopyBufferToImageInfo2* info){vkCmdCopyBufferToImage2(h,info);}
+VKAPI_ATTR void VKAPI_CALL vkCmdExecuteCommands(VkCommandBuffer h,uint32_t count,const VkCommandBuffer* secondaries){
+    auto s=device(h);if(s.astc)axrb::texture::astc_images().executed(h,count,secondaries);
+    (s.astc?s.astc->executeCommands:function<PFN_vkCmdExecuteCommands>(s,"vkCmdExecuteCommands"))(h,count,secondaries);
+}
+VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit(VkQueue h,uint32_t count,const VkSubmitInfo* submits,VkFence fence){
+    auto s=device(h);
+    if(s.astc)for(uint32_t i=0;i<count;++i)axrb::texture::astc_images().before_submit(submits[i].commandBufferCount,submits[i].pCommandBuffers);
+    return (s.astc?s.astc->queueSubmit:function<PFN_vkQueueSubmit>(s,"vkQueueSubmit"))(h,count,submits,fence);
+}
+VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit2(VkQueue h,uint32_t count,const VkSubmitInfo2* submits,VkFence fence){
+    auto s=device(h);
+    if(s.astc)for(uint32_t i=0;i<count;++i){
+        std::vector<VkCommandBuffer> buffers;
+        for(uint32_t j=0;j<submits[i].commandBufferInfoCount;++j)buffers.push_back(submits[i].pCommandBufferInfos[j].commandBuffer);
+        axrb::texture::astc_images().before_submit(uint32_t(buffers.size()),buffers.data());
+    }
+    auto next=s.astc?s.astc->queueSubmit2:function<PFN_vkQueueSubmit2>(s,"vkQueueSubmit2");
+    if(!next)next=function<PFN_vkQueueSubmit2>(s,"vkQueueSubmit2KHR");
+    return next(h,count,submits,fence);
+}
+VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit2KHR(VkQueue h,uint32_t count,const VkSubmitInfo2* submits,VkFence fence){return vkQueueSubmit2(h,count,submits,fence);}
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance h,const char* name){
     if(auto f=intercept(name))return f;
     // Extension entry points can be available when the corresponding core
@@ -316,8 +514,18 @@ PFN_vkVoidFunction intercept(const char* name){
     ENTRY(vkEnumerateDeviceExtensionProperties);
     ENTRY(vkSetDebugUtilsObjectNameEXT);
     ENTRY(vkGetMemoryFdKHR);ENTRY(vkGetMemoryFdPropertiesKHR);ENTRY(vkAllocateMemory);
+    if(cachedBufferMemory()){
+        ENTRY(vkGetBufferMemoryRequirements);ENTRY(vkGetBufferMemoryRequirements2);ENTRY(vkGetBufferMemoryRequirements2KHR);
+    }
     ENTRY(vkCreateDescriptorUpdateTemplate);ENTRY(vkDestroyDescriptorUpdateTemplate);ENTRY(vkUpdateDescriptorSetWithTemplate);
     ENTRY(vkCreateDescriptorUpdateTemplateKHR);ENTRY(vkDestroyDescriptorUpdateTemplateKHR);ENTRY(vkUpdateDescriptorSetWithTemplateKHR);
+    if(axrb::texture::astc_to_bc7_enabled()){
+        ENTRY(vkCreateImage);ENTRY(vkDestroyImage);ENTRY(vkCreateImageView);ENTRY(vkCreateBuffer);ENTRY(vkDestroyBuffer);
+        ENTRY(vkBindBufferMemory);ENTRY(vkBindBufferMemory2);ENTRY(vkBindBufferMemory2KHR);ENTRY(vkFreeMemory);ENTRY(vkMapMemory);ENTRY(vkUnmapMemory);
+        ENTRY(vkAllocateCommandBuffers);ENTRY(vkFreeCommandBuffers);ENTRY(vkResetCommandPool);ENTRY(vkDestroyCommandPool);
+        ENTRY(vkBeginCommandBuffer);ENTRY(vkResetCommandBuffer);ENTRY(vkCmdCopyBufferToImage);ENTRY(vkCmdCopyBufferToImage2);
+        ENTRY(vkCmdCopyBufferToImage2KHR);ENTRY(vkCmdExecuteCommands);ENTRY(vkQueueSubmit);ENTRY(vkQueueSubmit2);ENTRY(vkQueueSubmit2KHR);
+    }
 #undef ENTRY
     return nullptr;
 }

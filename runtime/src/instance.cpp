@@ -118,6 +118,8 @@ XrResult XRAPI_CALL xrEnumerateInstanceExtensionProperties_impl(
         "XR_KHR_android_surface_swapchain",
         "XR_KHR_composition_layer_equirect2",
         "XR_FB_composition_layer_image_layout",
+        "XR_FB_composition_layer_color_scale_bias",
+        "XR_KHR_composition_layer_color_scale_bias",
 #endif
     };
 

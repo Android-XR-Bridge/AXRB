@@ -6,6 +6,7 @@
 #include <wrl/client.h>
 #include <string>
 #include <cstdint>
+#include <vector>
 
 namespace axrb::host {
 // The child surface preserves aspect ratio while DXGI scales the GPU image.
@@ -14,12 +15,24 @@ public:
     ~MirrorWindow();
     bool open(ID3D11Device* device, const std::string& gameName);
     bool pump();
+#if defined(AXRB_ENABLE_PERFORMANCE_OVERLAY)
+    void performance_hud(const std::vector<uint8_t>& bgra, bool visible);
+    bool consume_hud_toggle() { const bool toggle=hudToggle_; hudToggle_=false; return toggle; }
+#endif
     void present(ID3D11DeviceContext* context, ID3D11Texture2D* source,
                  UINT width, UINT height, DXGI_FORMAT format, uint64_t sequence);
 private:
     static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM w, LPARAM l);
+#if defined(AXRB_ENABLE_PERFORMANCE_OVERLAY)
+    static LRESULT CALLBACK hud_proc(HWND window, UINT message, WPARAM w, LPARAM l);
+#endif
     void layout();
     HWND window_ = nullptr, surface_ = nullptr;
+#if defined(AXRB_ENABLE_PERFORMANCE_OVERLAY)
+    HWND hud_ = nullptr;
+    bool hudToggle_ = false;
+    std::vector<uint8_t> hudPixels_;
+#endif
     uint64_t sequence_ = UINT64_MAX;
     bool dirty_ = true;
     bool closed_ = false, failed_ = false;

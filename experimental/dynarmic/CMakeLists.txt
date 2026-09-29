@@ -1,0 +1,48 @@
+cmake_minimum_required(VERSION 3.24)
+project(axrb_dynarmic_probe LANGUAGES C CXX)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+include(CTest)
+get_filename_component(AXRB_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+set(DYNARMIC_SOURCE "${AXRB_ROOT}/third_party/dynarmic" CACHE PATH "Pinned Dynarmic checkout")
+set(AXRB_NDK "$ENV{ANDROID_NDK_HOME}" CACHE PATH "NDK with ARM64 assembler")
+set(DYNARMIC_FRONTENDS A64 CACHE STRING "" FORCE)
+if(ANDROID)
+    set(DYNARMIC_TESTS OFF CACHE BOOL "" FORCE)
+else()
+    set(DYNARMIC_TESTS ON CACHE BOOL "" FORCE)
+endif()
+set(DYNARMIC_USE_BUNDLED_EXTERNALS ON CACHE BOOL "" FORCE)
+set(DYNARMIC_WARNINGS_AS_ERRORS OFF CACHE BOOL "" FORCE)
+# The pinned dependencies predate CMake 4's removal of older policy versions.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+set(CMAKE_POLICY_DEFAULT_CMP0167 OLD)
+add_subdirectory("${DYNARMIC_SOURCE}" dynarmic)
+set(NDK_BIN "${AXRB_NDK}/toolchains/llvm/prebuilt/windows-x86_64/bin")
+if(NOT EXISTS "${NDK_BIN}/clang.exe")
+    message(FATAL_ERROR "Set AXRB_NDK to an installed Android NDK")
+endif()
+add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/guest.bin"
+    COMMAND "${NDK_BIN}/clang.exe" --target=aarch64-none-elf -march=armv8.1-a
+        -c "${CMAKE_CURRENT_SOURCE_DIR}/guest.S" -o "${CMAKE_CURRENT_BINARY_DIR}/guest.o"
+    COMMAND "${NDK_BIN}/llvm-objcopy.exe" -O binary --only-section=.text
+        "${CMAKE_CURRENT_BINARY_DIR}/guest.o" "${CMAKE_CURRENT_BINARY_DIR}/guest.bin"
+    DEPENDS guest.S VERBATIM)
+add_custom_target(dynarmic_guest DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/guest.bin")
+add_executable(axrb-dynarmic-probe probe.cpp)
+target_link_libraries(axrb-dynarmic-probe PRIVATE dynarmic)
+target_compile_definitions(axrb-dynarmic-probe PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+add_dependencies(axrb-dynarmic-probe dynarmic_guest)
+if(ANDROID)
+    set_property(TARGET dynarmic PROPERTY POSITION_INDEPENDENT_CODE ON)
+    add_library(axrb_dynarmic_bridge SHARED bridge_adapter.cpp)
+    target_link_libraries(axrb_dynarmic_bridge PRIVATE dynarmic dl log)
+    add_executable(axrb-bridge-probe bridge_probe.cpp)
+    target_link_libraries(axrb-bridge-probe PRIVATE dl)
+endif()
+add_custom_command(TARGET axrb-dynarmic-probe POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_BINARY_DIR}/guest.bin"
+        "$<TARGET_FILE_DIR:axrb-dynarmic-probe>/guest.bin")
+add_test(NAME axrb-dynarmic-callbacks COMMAND axrb-dynarmic-probe --iterations 10000)
+add_test(NAME axrb-dynarmic-page-table COMMAND axrb-dynarmic-probe --iterations 10000 --page-table)
+set_tests_properties(axrb-dynarmic-callbacks axrb-dynarmic-page-table PROPERTIES TIMEOUT 30)

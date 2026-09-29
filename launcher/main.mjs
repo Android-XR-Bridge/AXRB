@@ -16,6 +16,8 @@ import { findOriginalApk, importGameZip } from './core/game-files.mjs';
 import { collectDiagnostics, describeSessionEnd, parseSessionRecord, redact, uploadDiagnostics } from './core/diagnostics.mjs';
 import { LiveDiagnostics } from './core/live-diagnostics.mjs';
 import { EmulatorWatchdog } from './core/watchdog.mjs';
+import { createCloseRequest } from './core/close-request.mjs';
+import { migrateClockPolicy } from './core/clock-policy.mjs';
 import { loadCompatibilityProfiles, resolveCompatibility, compatibilityPatchArgs, compatibilityRuntimeOptions } from './core/compatibility.mjs';
 import { Ovrport, selectedPatchArgs } from './core/ovrport.mjs';
 import { MetaSession } from './core/session.mjs';
@@ -57,22 +59,49 @@ const ovrport = new Ovrport();
 // carryPortableFiles remove its partial directory before the process goes away.
 const shutdown = new AbortController();
 app.on('before-quit', event => {
-  shutdown.abort();
-  if (!liveDiagnostics || quitting) return;
-  event.preventDefault(); quitting = true;
-  (async () => {
-    // Waiting for the watchdog's poll in flight, then running another, could
-    // hold quit for 20 seconds. Its last reading is at most a poll old, and
-    // anything AXRB itself is still starting keeps the server.
-    const watched = emulatorWatchdog?.snapshot().phase;
-    emulatorWatchdog?.stop();
-    if (runtime.bridgeStopEvent) await runtime.stop().catch(error => liveDiagnostics.append('launcher', `Quest Bridge shutdown failed: ${message(error)}`, { tag: 'runtime', level: 'E' }));
-    const idle = !busy && !setup?.status?.active && await runtime.adbServerIdle(watched).catch(() => false);
-    liveDiagnostics.append('launcher', idle ? 'Stopping the ADB server; Android is not running.' : 'Leaving the ADB server running for Android or a game session.', { tag: 'runtime' });
-    // Capture stops first so its logcat children end quietly with the launcher.
-    await liveDiagnostics.stop();
-    if (idle) await runtime.stopAdbServer();
-  })().finally(() => app.quit());
+  if (quitting) return;
+  event.preventDefault();
+  void requestClose();
+});
+const requestClose = createCloseRequest({
+  getStatus: () => runtime ? runtime.status() : Promise.resolve({ running: false }),
+  prompt: async () => {
+    const { response } = await dialog.showMessageBox(window, {
+      type: 'question', title: 'Close AXRB?',
+      message: 'The Android emulator is still running.',
+      detail: 'Stop the emulator before closing? Any running game will also be stopped.',
+      buttons: ['Stop emulator and close', 'Leave running and close', 'Cancel'],
+      defaultId: 0, cancelId: 2, noLink: true,
+    });
+    return ['stop', 'leave', 'cancel'][response];
+  },
+  stop: () => exclusive(async () => {
+    if (setup?.status?.active) throw new Error('Wait for runtime setup to finish before stopping the emulator.');
+    await runtime.stopEmulator();
+  }),
+  onError: async error => {
+    liveDiagnostics?.append('launcher', `Close cancelled: ${message(error)}`, { tag: 'runtime', level: 'E' });
+    await dialog.showMessageBox(window, { type: 'error', title: 'AXRB is still open',
+      message: 'Could not finish closing the launcher.', detail: message(error) });
+  },
+  quit: async () => {
+    quitting = true;
+    shutdown.abort();
+    try {
+      if (!liveDiagnostics) return;
+      // Waiting for the watchdog's poll in flight, then running another, could
+      // hold quit for 20 seconds. Its last reading is at most a poll old, and
+      // anything AXRB itself is still starting keeps the server.
+      const watched = emulatorWatchdog?.snapshot().phase;
+      emulatorWatchdog?.stop();
+      if (runtime.bridgeStopEvent) await runtime.stop().catch(error => liveDiagnostics.append('launcher', `Quest Bridge shutdown failed: ${message(error)}`, { tag: 'runtime', level: 'E' }));
+      const idle = !busy && !setup?.status?.active && await runtime.adbServerIdle(watched).catch(() => false);
+      liveDiagnostics.append('launcher', idle ? 'Stopping the ADB server; Android is not running.' : 'Leaving the ADB server running for Android or a game session.', { tag: 'runtime' });
+      // Capture stops first so its logcat children end quietly with the launcher.
+      await liveDiagnostics.stop();
+      if (idle) await runtime.stopAdbServer();
+    } finally { app.quit(); }
+  },
 });
 const controllers = new Map();
 const searchResults = new Map();
@@ -293,7 +322,9 @@ const components = JSON.parse(await fs.readFile(path.join(directory, 'core/compo
 state.data.settings = { sdk: path.join(process.env.LOCALAPPDATA || '', 'Android/Sdk'), avd: 'axrb-games-api34', port: 5580,
   memoryMB: 8192, cpuCores: 4, downloadDir: path.join(portable || app.getPath('downloads'), portable ? 'downloads' : 'AXRB'), ovrportCli: '',
   precomposeProjectionLayers: false,
-  guestClock: await exists(path.join(root, 'out/clock/Release/axrb_clock_launcher.exe')) ? 'TscCorrected' : 'Default', ...state.data.settings };
+  guestClock: 'Auto', ...state.data.settings };
+migrateClockPolicy(state.data.settings);
+await state.save();
 portableOutput(portable, state.data.settings.downloadDir);
 runtime = new Runtime(root, state.data.settings, (text, metadata) => liveDiagnostics?.write('launcher', text, { tag: 'runtime', ...metadata }));
 if (!smoke && (app.isPackaged || pendingRuntime || state.data.settings.managedDirectory || !await exists(path.join(state.data.settings.sdk, 'emulator/emulator.exe')))) {
@@ -342,6 +373,11 @@ if (portable) void sweepPortableTemp(portable)
 token = await metaSession.load();
 window = new BrowserWindow({ width: 1320, height: 880, minWidth: 920, minHeight: 640, title: 'AXRB', icon: path.join(directory, 'assets/axrb.ico'), backgroundColor: '#141414',
   autoHideMenuBar: true, webPreferences: { preload: path.join(directory, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false } });
+window.on('close', event => {
+  if (quitting) return;
+  event.preventDefault();
+  void requestClose();
+});
 window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 window.webContents.on('will-navigate', event => event.preventDefault());
 window.webContents.session.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));

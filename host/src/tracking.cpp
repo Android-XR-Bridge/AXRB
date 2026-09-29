@@ -1,4 +1,5 @@
 #include "openxr_session.h"
+#include <cstdlib>
 
 // Pose and controller heartbeats: every 900 samples (10 s at 90 Hz) proves
 // tracking is live without drowning the log; once a second was 7 lines/s.
@@ -13,6 +14,20 @@ axrb::protocol::ViewFov to_protocol_fov(const XrFovf& fov)
     return {fov.angleLeft, fov.angleRight, fov.angleUp, fov.angleDown};
 }
 
+axrb::protocol::SpaceVelocity to_protocol_velocity(const XrSpaceVelocity& v, XrSpaceLocationFlags poseFlags)
+{
+    axrb::protocol::SpaceVelocity out{};
+    if ((poseFlags & 3) != 3) return out;
+    auto finite = [](const XrVector3f& p) { return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z); };
+    if ((v.velocityFlags & XR_SPACE_VELOCITY_LINEAR_VALID_BIT) && finite(v.linearVelocity)) {
+        out.flags |= 1; out.linear = {v.linearVelocity.x, v.linearVelocity.y, v.linearVelocity.z};
+    }
+    if ((v.velocityFlags & XR_SPACE_VELOCITY_ANGULAR_VALID_BIT) && finite(v.angularVelocity)) {
+        out.flags |= 2; out.angular = {v.angularVelocity.x, v.angularVelocity.y, v.angularVelocity.z};
+    }
+    return out;
+}
+
 } // namespace
 
 axrb::protocol::PoseFrame OpenXrSession::make_frame(uint64_t sequence)
@@ -21,11 +36,13 @@ axrb::protocol::PoseFrame OpenXrSession::make_frame(uint64_t sequence)
 
     axrb::protocol::PoseFrame frame = latest_frame(sequence);
     frame.hmd_flags = frame.local_origin_flags = 0;
+    frame.hmd_velocity = frame.local_origin_velocity = {};
     frame.controllers[0] = {};
     frame.controllers[1] = {};
     for (size_t hand = 0; hand < 2; ++hand) {
         frame.grip_flags[hand] = frame.aim_flags[hand] = 0;
         frame.aim_active[hand] = 0;
+        frame.grip_velocity[hand] = frame.aim_velocity[hand] = {};
     }
     frame.sequence = sequence;
     frame.monotonic_time_ns = monotonic_time_ns();
@@ -41,6 +58,7 @@ axrb::protocol::PoseFrame OpenXrSession::make_frame(uint64_t sequence)
 
     XrTime locateTime = current_xr_time();
     XrTime frameDisplayTime = locateTime;
+    [[maybe_unused]] XrDuration frameDisplayPeriod = 0;
     bool beganFrame = false, shouldRender = false;
 
     if (useFrameLoop_) {
@@ -58,6 +76,7 @@ axrb::protocol::PoseFrame OpenXrSession::make_frame(uint64_t sequence)
             locateTime = frameState.predictedDisplayTime;
             if (frameState.shouldRender && axrb::protocol::valid_display_period(frameState.predictedDisplayPeriod)) {
                 frame.display_period_ns = static_cast<uint32_t>(frameState.predictedDisplayPeriod);
+                frameDisplayPeriod = frameState.predictedDisplayPeriod;
             }
 
             XrFrameBeginInfo beginInfo{XR_TYPE_FRAME_BEGIN_INFO};
@@ -128,6 +147,10 @@ axrb::protocol::PoseFrame OpenXrSession::make_frame(uint64_t sequence)
 
     XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};
     XrSpaceLocation origin{XR_TYPE_SPACE_LOCATION};
+    XrSpaceVelocity headVelocity{XR_TYPE_SPACE_VELOCITY};
+    XrSpaceVelocity originVelocity{XR_TYPE_SPACE_VELOCITY};
+    location.next = &headVelocity;
+    origin.next = &originVelocity;
     // Some runtimes report a tracked identity pose while still entering READY.
     // Do not turn that provisional sample into a permanent eye-level origin.
     if (!localOriginInitialized_ && (sessionVisible_ || !useFrameLoop_)) {
@@ -159,6 +182,7 @@ axrb::protocol::PoseFrame OpenXrSession::make_frame(uint64_t sequence)
         (origin.locationFlags & 3) == 3) {
         frame.local_origin = to_protocol_pose(origin.pose);
         frame.local_origin_flags = static_cast<uint32_t>(origin.locationFlags);
+        frame.local_origin_velocity = to_protocol_velocity(originVelocity, origin.locationFlags);
         if (!reportedLocalOrigin_) {
             std::fprintf(stderr, "AXRB OpenXR: LOCAL origin in tracking world=(%.3f %.3f %.3f) "
                 "q=(%.4f %.4f %.4f %.4f) flags=0x%llx\n",
@@ -174,6 +198,7 @@ axrb::protocol::PoseFrame OpenXrSession::make_frame(uint64_t sequence)
         (location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0) {
         frame.hmd = to_protocol_pose(location.pose);
         frame.hmd_flags = static_cast<uint32_t>(location.locationFlags);
+        frame.hmd_velocity = to_protocol_velocity(headVelocity, location.locationFlags);
         if (sequence % kPoseLogInterval == 0) {
             std::fprintf(
                 stderr,
@@ -182,6 +207,26 @@ axrb::protocol::PoseFrame OpenXrSession::make_frame(uint64_t sequence)
                 frame.hmd.x,
                 frame.hmd.y,
                 frame.hmd.z);
+        }
+    }
+
+    // Test-only: benchmarks without a worn headset otherwise see invalid head
+    // tracking, and many titles then stop drawing their scene. A fixed standing
+    // pose keeps the normal rendering workload. Never used unless requested.
+    static const bool syntheticHmd = [] {
+        const char* value = std::getenv("AXRB_TEST_SYNTHETIC_HMD");
+        return value && value[0] == '1';
+    }();
+    if (syntheticHmd && (frame.hmd_flags & 3) != 3) {
+        frame.hmd = {};
+        frame.hmd.y = 1.6f;
+        frame.hmd.qw = 1.0f;
+        frame.hmd_flags = 0xF;
+        frame.hmd_velocity = {3, {}, {}};
+        if ((frame.local_origin_flags & 3) != 3) {
+            frame.local_origin = {};
+            frame.local_origin.qw = 1.0f;
+            frame.local_origin_flags = 0xF;
         }
     }
 
@@ -194,8 +239,9 @@ axrb::protocol::PoseFrame OpenXrSession::make_frame(uint64_t sequence)
 #if defined(_WIN32)
         auto& layers = nativeSubmission_.layers;
         layers.clear();
+        nativeSubmission_.hasGameProjection = false;
         if (projectionSwapchain_ != XR_NULL_HANDLE &&
-            !update_projection_layers(locateTime, nativeSubmission_))
+            !update_projection_layers(locateTime, frameDisplayPeriod, nativeSubmission_))
             layers.clear();
         if (shouldRender && update_fps_hud(fpsHud, static_cast<uint32_t>(layers.size())))
             layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&fpsHud));
@@ -218,6 +264,33 @@ axrb::protocol::PoseFrame OpenXrSession::make_frame(uint64_t sequence)
             std::fprintf(stderr, "AXRB OpenXR: xrEndFrame failed: %s (%d)\n", xr_result_name(result), result);
             useFrameLoop_ = false;
         }
+#if defined(_WIN32)
+#if defined(AXRB_ENABLE_PERFORMANCE_OVERLAY)
+        if (imageFrame_) imageFrame_->performance.submitted(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(),
+            result == XR_SUCCESS, layerCount && nativeSubmission_.hasGameProjection,
+            nativeSubmission_.gameSequence, nativeSubmission_.gameWidth, nativeSubmission_.gameHeight, frameDisplayPeriod);
+#endif
+        if (result == XR_SUCCESS && layerCount && nativeSubmission_.hasGameProjection) {
+            if (imageFrame_) imageFrame_->submitted(nativeSubmission_.gameSequence);
+            if (submittedGameFrames_.record(nativeSubmission_.gameSequence)) {
+                static axrb::protocol::FrameIntervals freshStats("host-fresh-submit");
+                freshStats.record();
+            }
+            if (submittedGameFrames_.total % 300 == 0) {
+                const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count();
+                std::fprintf(stderr, "AXRB Submitted: unique=%llu repeats=%llu total=%llu regressed=%llu steady_ns=%lld sequence=%llu width=%u height=%u\n",
+                    static_cast<unsigned long long>(submittedGameFrames_.unique),
+                    static_cast<unsigned long long>(submittedGameFrames_.repeated),
+                    static_cast<unsigned long long>(submittedGameFrames_.total),
+                    static_cast<unsigned long long>(submittedGameFrames_.regressed),
+                    static_cast<long long>(ns),
+                    static_cast<unsigned long long>(nativeSubmission_.gameSequence),
+                    nativeSubmission_.gameWidth, nativeSubmission_.gameHeight);
+            }
+        }
+#endif
     }
 
     return frame;
@@ -503,9 +576,12 @@ void OpenXrSession::locate_controller_spaces(axrb::protocol::PoseFrame& frame, X
         if (getActionStatePose_(session_, &stateInfo, &aimState) == XR_SUCCESS && aimState.isActive) {
             frame.aim_active[i] = 1;
             XrSpaceLocation aimLocation{XR_TYPE_SPACE_LOCATION};
+            XrSpaceVelocity aimVelocity{XR_TYPE_SPACE_VELOCITY};
+            aimLocation.next = &aimVelocity;
             if (locateSpace_(aimSpaces_[i], localSpace_, locateTime, &aimLocation) == XR_SUCCESS) {
                 frame.aim_flags[i] = aimLocation.locationFlags;
                 frame.aim[i] = to_protocol_pose(aimLocation.pose);
+                frame.aim_velocity[i] = to_protocol_velocity(aimVelocity, aimLocation.locationFlags);
             }
         }
         stateInfo.action = handPoseAction_;
@@ -541,6 +617,8 @@ void OpenXrSession::locate_controller_spaces(axrb::protocol::PoseFrame& frame, X
         }
 
         XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};
+        XrSpaceVelocity gripVelocity{XR_TYPE_SPACE_VELOCITY};
+        location.next = &gripVelocity;
         result = locateSpace_(handSpaces_[i], localSpace_, locateTime, &location);
         if (result == XR_SUCCESS) frame.grip_flags[i] = location.locationFlags;
         if (result != XR_SUCCESS ||
@@ -551,6 +629,7 @@ void OpenXrSession::locate_controller_spaces(axrb::protocol::PoseFrame& frame, X
 
         axrb::protocol::Pose& target = (i == 0) ? frame.left_controller : frame.right_controller;
         target = to_protocol_pose(location.pose);
+        frame.grip_velocity[i] = to_protocol_velocity(gripVelocity, location.locationFlags);
         locatedAny = true;
     }
 

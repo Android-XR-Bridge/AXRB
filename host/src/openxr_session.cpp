@@ -131,6 +131,9 @@ bool OpenXrSession::initialize(const std::string& gameName)
         std::vector<XrExtensionProperties> available(count, {XR_TYPE_EXTENSION_PROPERTIES});
         if (enumerate(nullptr, count, &count, available.data()) == XR_SUCCESS) {
             for (const auto& ext : available) {
+#if defined(_WIN32)
+                if (std::strcmp(ext.extensionName, XR_KHR_WIN32_CONVERT_PERFORMANCE_COUNTER_TIME_EXTENSION_NAME) == 0) performanceCounterTimeEnabled_ = true;
+#endif
                 if (std::strcmp(ext.extensionName, XR_KHR_COMPOSITION_LAYER_EQUIRECT2_EXTENSION_NAME) == 0) equirectEnabled_ = true;
                 if (std::strcmp(ext.extensionName, XR_EXT_HAND_TRACKING_EXTENSION_NAME) == 0) handTrackingEnabled_ = true;
                 if (std::strcmp(ext.extensionName, XR_EXT_HAND_TRACKING_DATA_SOURCE_EXTENSION_NAME) == 0) handDataSourceEnabled_ = true;
@@ -138,6 +141,16 @@ bool OpenXrSession::initialize(const std::string& gameName)
         }
     }
     if (equirectEnabled_) extensions.push_back(XR_KHR_COMPOSITION_LAYER_EQUIRECT2_EXTENSION_NAME);
+#if defined(_WIN32)
+    if (performanceCounterTimeEnabled_) extensions.push_back(XR_KHR_WIN32_CONVERT_PERFORMANCE_COUNTER_TIME_EXTENSION_NAME);
+    if (const char* value = std::getenv("AXRB_FRESH_FRAME_WAIT_US")) {
+        uint32_t parsed = 0;
+        const auto end = value + std::strlen(value);
+        const auto result = std::from_chars(value, end, parsed);
+        if (result.ec == std::errc{} && result.ptr == end && parsed <= 8000) freshFrameWaitUs_ = parsed;
+    }
+    std::fprintf(stderr, "AXRB timing experiment: max_fresh_wait_us=%u clock_extension=%s\n", freshFrameWaitUs_, performanceCounterTimeEnabled_ ? "available" : "unavailable");
+#endif
     std::fprintf(stderr, "AXRB compositor: equirect2=%s\n", equirectEnabled_ ? "enabled" : "unavailable");
     if (handTrackingEnabled_) {
         extensions.push_back(XR_EXT_HAND_TRACKING_EXTENSION_NAME);
@@ -283,6 +296,10 @@ bool OpenXrSession::drives_frame_loop() const
 
 bool OpenXrSession::load_instance_functions()
 {
+#if defined(_WIN32)
+    if (performanceCounterTimeEnabled_ && !load_func("xrConvertWin32PerformanceCounterToTimeKHR", &convertPerformanceCounterTime_))
+        convertPerformanceCounterTime_ = nullptr;
+#endif
     return load_func("xrDestroyInstance", &destroyInstance_) &&
         load_func("xrGetSystem", &getSystem_) &&
         load_func("xrEnumerateViewConfigurationViews", &enumerateViewConfigurationViews_) &&
@@ -326,6 +343,17 @@ bool OpenXrSession::load_instance_functions()
 #endif
         ;
 }
+
+#if defined(_WIN32)
+XrTime OpenXrSession::windows_xr_time()
+{
+    LARGE_INTEGER counter{};
+    XrTime time = 0;
+    if (convertPerformanceCounterTime_ && QueryPerformanceCounter(&counter) &&
+        convertPerformanceCounterTime_(instance_, &counter, &time) == XR_SUCCESS) return time;
+    return 0;
+}
+#endif
 
 XrTime OpenXrSession::current_xr_time()
 {

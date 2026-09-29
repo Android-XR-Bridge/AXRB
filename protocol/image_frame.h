@@ -4,6 +4,7 @@
 #include <cmath>
 #include <initializer_list>
 #include "pose_frame.h"
+#include "layer_color.h"
 
 namespace axrb::protocol {
 
@@ -81,6 +82,9 @@ struct ImageProjection {
         ImageQuad quads[2];
         ImageEquirect equirect;
     };
+    // Optional trailing metadata. A 96-byte legacy envelope has identity color.
+    // Two records also cover the legacy packet that packs two independent quads.
+    LayerColor colors[2]{};
     bool is_equirect() const { return view_count == kEquirectComposition; }
     uint32_t quad_count() const { return (view_count & kQuadCompositionBit) ? (view_count & ~kQuadCompositionBit) : 0; }
     bool is_view_space() const {
@@ -89,9 +93,18 @@ struct ImageProjection {
 };
 static_assert(sizeof(ImageQuad) == 44);
 static_assert(sizeof(ImageProjectionView) == 44);
-static_assert(sizeof(ImageProjection) == 96);
+constexpr uint32_t kLegacyProjectionBytes = 96;
+static_assert(sizeof(ImageProjection) == 160);
+inline bool valid_layer_colors(const ImageProjection& p) {
+    return p.colors[0].valid() && p.colors[1].valid();
+}
+inline uint32_t image_layer_flags(const ImageProjection& p, uint32_t eye) {
+    return p.is_equirect() ? p.equirect.layer_flags : p.quad_count() ?
+        p.quads[p.quad_count()==2 ? eye : 0].layer_flags : p.layer_flags & kCompositionLayerFlagsMask;
+}
 
 inline bool valid_projection(const ImageProjection& projection) {
+    if (!valid_layer_colors(projection)) return false;
     if (projection.view_count != 2 ||
         (projection.layer_flags & ~(kCompositionLayerFlagsMask | kProjectionViewSpaceBit)) != 0) { return false; }
     for (const auto& view : projection.views) {
@@ -110,6 +123,7 @@ inline bool valid_projection(const ImageProjection& projection) {
 }
 
 inline bool valid_equirect(const ImageProjection& c) {
+    if (!valid_layer_colors(c)) return false;
     if (!c.is_equirect() || c.layer_flags) return false;
     const auto& e = c.equirect;
     const auto& p = e.pose;
@@ -123,6 +137,7 @@ inline bool valid_equirect(const ImageProjection& c) {
 }
 
 inline bool valid_quads(const ImageProjection& composition) {
+    if (!valid_layer_colors(composition)) return false;
     const auto count = composition.quad_count();
     if (count < 1 || count > 2 || composition.layer_flags) return false;
     for (uint32_t i = 0; i < count; ++i) {

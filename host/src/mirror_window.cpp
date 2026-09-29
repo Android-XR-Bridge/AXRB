@@ -2,6 +2,9 @@
 #if defined(_WIN32)
 #include <algorithm>
 #include <cstdio>
+#if defined(AXRB_ENABLE_PERFORMANCE_OVERLAY)
+#include "performance_hud_bitmap.h"
+#endif
 
 namespace axrb::host {
 MirrorWindow::~MirrorWindow() {
@@ -40,7 +43,7 @@ bool MirrorWindow::open(ID3D11Device* device, const std::string& gameName) {
     window_ = CreateWindowExW(0, wc.lpszClassName, wide.c_str(), WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
         CW_USEDEFAULT, CW_USEDEFAULT, 680, 720, nullptr, nullptr, wc.hInstance, this);
     if (!window_) return false;
-    surface_ = CreateWindowExW(0, L"STATIC", nullptr, WS_CHILD | WS_VISIBLE,
+    surface_ = CreateWindowExW(0, L"STATIC", nullptr, WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
         0, 0, 1, 1, window_, nullptr, wc.hInstance, nullptr);
     if (!surface_) return false;
     factory_->MakeWindowAssociation(window_, DXGI_MWA_NO_ALT_ENTER);
@@ -61,6 +64,9 @@ LRESULT CALLBACK MirrorWindow::window_proc(HWND window, UINT message, WPARAM w, 
         SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
     }
     if (self) {
+#if defined(AXRB_ENABLE_PERFORMANCE_OVERLAY)
+        if (message == WM_KEYDOWN && w == VK_F1 && !(l & (1LL << 30))) { self->hudToggle_=true; return 0; }
+#endif
         if (message == WM_CLOSE) {
             if (self->closeRequest_ && self->closeReady_) {
                 if (!self->closeDeadline_) {
@@ -88,6 +94,9 @@ void MirrorWindow::layout() {
     int imageW = (std::max)(1, int(width_ * scale));
     int imageH = (std::max)(1, int(height_ * scale));
     MoveWindow(surface_, (w-imageW)/2, (h-imageH)/2, imageW, imageH, TRUE);
+#if defined(AXRB_ENABLE_PERFORMANCE_OVERLAY)
+    if(hud_) { const int hw=(std::max)(1,(std::min)(performanceHudWidth,w-16)); SetWindowPos(hud_,HWND_TOP,(w-hw)/2,8,hw,hw*performanceHudHeight/performanceHudWidth,SWP_NOACTIVATE); }
+#endif
     InvalidateRect(window_, nullptr, TRUE);
 }
 

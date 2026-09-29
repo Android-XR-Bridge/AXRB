@@ -6,9 +6,16 @@
 #include "gpu_frame_batch.h"
 #include "frame_pool.h"
 #include "fps_counter.h"
+#if defined(AXRB_ENABLE_PERFORMANCE_OVERLAY)
+#include "fresh_frame_stats.h"
+#include "guest_performance_reader.h"
+#endif
 #include <atomic>
 #include "debug_frame_capture.h"
 #include "windows_gpu_frame.h"
+#include "frame_delivery_counter.h"
+#include "precise_frame_wait.h"
+#include "frame_history.h"
 
 #include "gpu_transport.h"
 #include "image_transport.h"
@@ -17,6 +24,7 @@
 
 #include <charconv>
 #include <chrono>
+#include <condition_variable>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -35,6 +43,9 @@
 #define XR_USE_TIMESPEC
 #else
 #define XR_USE_GRAPHICS_API_D3D11
+#ifndef XR_USE_PLATFORM_WIN32
+#define XR_USE_PLATFORM_WIN32
+#endif
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -227,7 +238,14 @@ struct HostImageSnapshot {
 };
 
 struct HostImageFrame {
+    HostImageFrame() {
+        if (buffered_) std::fprintf(stderr, "AXRB timing experiment: two-image history enabled, stale limit=33ms\n");
+    }
+    bool buffered() const { return buffered_; }
     std::atomic<uint64_t> deliveredFrames{0};
+#if defined(AXRB_ENABLE_PERFORMANCE_OVERLAY)
+    axrb::host::PerformanceTelemetry performance;
+#endif
     void store(const axrb::protocol::ImageFrameHeader& header, std::vector<uint8_t>&& pixels,
                const axrb::protocol::ImageProjection& projection = {}, std::shared_ptr<GpuFrameBatch> gpu = {})
     {
@@ -235,18 +253,94 @@ struct HostImageFrame {
         stats.record();
         HostImageSnapshot next{header, projection,
             std::make_shared<const std::vector<uint8_t>>(std::move(pixels)), std::move(gpu), std::chrono::steady_clock::now()};
-        { std::lock_guard lock(mutex); std::swap(latest, next); }
-        deliveredFrames.fetch_add(1, std::memory_order_relaxed);
+#if defined(AXRB_ENABLE_PERFORMANCE_OVERLAY)
+        performance.received(header.sequence, std::chrono::duration_cast<std::chrono::nanoseconds>(
+            next.receivedAt.time_since_epoch()).count(),
+            header.version != axrb::protocol::kEmptyImageFrameVersion && header.width && header.height,
+            static_cast<bool>(next.gpu));
+#endif
+        std::vector<HostImageSnapshot> retired;
+        if (buffered_) retired.reserve(2);
+        { std::lock_guard lock(mutex);
+            std::swap(latest, next);
+            if (buffered_) {
+                if (header.version == axrb::protocol::kEmptyImageFrameVersion) history_.clear(retired);
+                else history_.push(latest, retired);
+            }
+        }
+        updated.notify_one();
+#if defined(_WIN32)
+        preciseWait_.notify();
+#endif
+        const auto delivered = deliveredFrames.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (delivered % 300 == 0) {
+            const auto nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+            std::fprintf(stderr, "AXRB Delivered: total=%llu steady_ns=%lld sequence=%llu width=%u height=%u layers=%u\n",
+                static_cast<unsigned long long>(delivered), static_cast<long long>(nowNs),
+                static_cast<unsigned long long>(header.sequence), header.width, header.height, header.layers);
+            if (buffered_) {
+                size_t pending; uint64_t overflow, expired;
+                { std::lock_guard lock(mutex);
+                    pending=history_.size(); overflow=history_.overflowDrops; expired=history_.expiredDrops;
+                }
+                std::fprintf(stderr, "AXRB FrameHistory: pending=%zu overflow_drops=%llu expired_drops=%llu\n",
+                    pending, static_cast<unsigned long long>(overflow), static_cast<unsigned long long>(expired));
+            }
+        }
         // Release the previous slot outside the publication lock.
     }
 
     HostImageSnapshot snapshot() {
+        std::vector<HostImageSnapshot> retired;
+        if (buffered_) retired.reserve(2);
         std::lock_guard lock(mutex);
+        if (buffered_) {
+            history_.expire(std::chrono::steady_clock::now(), retired);
+            if (const auto* pending = history_.front()) return *pending;
+        }
         return latest;
     }
+    void submitted(uint64_t sequence) {
+        if (!buffered_) return;
+        std::vector<HostImageSnapshot> retired;
+        retired.reserve(2);
+        std::lock_guard lock(mutex);
+        history_.submitted(sequence, retired);
+    }
+    bool needs_newer(uint64_t sequence) {
+        std::lock_guard lock(mutex);
+        return latest.pixels && latest.header.sequence <= sequence;
+    }
+    void wait_for_newer(uint64_t sequence, std::chrono::nanoseconds timeout) {
+#if defined(_WIN32)
+        if (preciseWait_.enabled()) {
+            preciseWait_.wait_for(timeout, [&] {
+                std::lock_guard lock(mutex);
+                return latest.header.sequence > sequence ||
+                    latest.header.version == axrb::protocol::kEmptyImageFrameVersion;
+            });
+            return;
+        }
+#endif
+        std::unique_lock lock(mutex);
+        updated.wait_for(lock, timeout, [&] {
+            return latest.header.sequence > sequence ||
+                latest.header.version == axrb::protocol::kEmptyImageFrameVersion;
+        });
+    }
 private:
+    const bool buffered_ = [] {
+        const char* value = std::getenv("AXRB_FRAME_HISTORY");
+        return value && std::strcmp(value, "2") == 0;
+    }();
     std::mutex mutex;
+    std::condition_variable updated;
     HostImageSnapshot latest;
+    FrameHistory<HostImageSnapshot> history_;
+#if defined(_WIN32)
+    PreciseFrameWait preciseWait_;
+#endif
 };
 
 class OpenXrSession {
@@ -302,6 +396,9 @@ private:
     bool acquire_panel_swapchain(const HostImageSnapshot& frame);
 
     struct NativeLayerSubmission {
+        bool hasGameProjection = false;
+        uint64_t gameSequence = 0;
+        uint32_t gameWidth = 0, gameHeight = 0;
         std::vector<std::array<XrCompositionLayerProjectionView, 2>> projectionViews;
         std::vector<XrCompositionLayerProjection> projections;
         std::vector<XrCompositionLayerQuad> quads;
@@ -309,7 +406,8 @@ private:
         std::vector<const XrCompositionLayerBaseHeader*> layers;
     };
 
-    bool update_projection_layers(XrTime displayTime, NativeLayerSubmission& submission);
+    bool update_projection_layers(XrTime displayTime, XrDuration displayPeriod,
+                                  NativeLayerSubmission& submission);
 
     bool render_equirect(uint32_t slot, XrTime time, ID3D11Texture2D* source,
         const XrCompositionLayerEquirect2KHR& layer, const axrb::protocol::ImageEquirect& metadata);
@@ -425,7 +523,7 @@ private:
         return value && std::strcmp(value, "1") == 0;
     }();
     std::mutex frameHandoffMutex_;
-    FramePool<GpuFrameBatch> gpuFrames_;
+    FramePool<GpuFrameBatch,4> gpuFrames_{imageFrame_ && imageFrame_->buffered() ? 4u : 3u};
     // Only the receiving thread assembles pending batches. Publication pins
     // the entire batch so its textures and projection metadata stay together.
     std::shared_ptr<GpuFrameBatch> pendingGpuFrame_;
@@ -447,6 +545,7 @@ private:
     ComPtr<ID3D11DeviceContext> d3dContext_;
     GpuCompletion frameCopyCompletion_;
     GpuCompletion batchReceiveCompletion_;
+    axrb::host::LayerColorRenderer receiveColorRenderer_;
     XrSwapchain projectionSwapchain_ = XR_NULL_HANDLE;
     std::vector<XrSwapchainImageD3D11KHR> projectionImages_;
     std::vector<uint64_t> uploadedAndroidSequenceByImage_;
@@ -474,6 +573,11 @@ private:
     axrb::host::QuadRenderer quadRenderer_;
     uint32_t nativeLayerLimit_ = 1;
     NativeLayerSubmission nativeSubmission_;
+    FrameDeliveryCounter submittedGameFrames_;
+    bool performanceCounterTimeEnabled_ = false;
+    PFN_xrConvertWin32PerformanceCounterToTimeKHR convertPerformanceCounterTime_ = nullptr;
+    XrTime windows_xr_time();
+    uint32_t freshFrameWaitUs_ = 0;
     std::array<XrView, 2> overflowViews_{};
     bool should_precompose(const GpuFrameBatch& frame) const;
     bool compose_overflow(ID3D11Texture2D*, const HostImageSnapshot&, const XrPosef* worldFromView);
@@ -493,6 +597,10 @@ private:
     std::vector<uint64_t> fpsHudUploaded_;
     std::vector<uint8_t> fpsHudPixels_;
     uint64_t fpsHudGeneration_ = 1;
+#if defined(AXRB_ENABLE_PERFORMANCE_OVERLAY)
+    std::chrono::steady_clock::time_point fpsHudUpdated_{}, fpsHudLogged_{};
+    axrb::host::GuestPerformanceReader guestPerformance_;
+#endif
     axrb::host::FpsCounter fpsCounter_;
 
     bool reportedProjectionSubmit_ = false;

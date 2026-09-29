@@ -147,6 +147,19 @@ bool OpenXrSession::create_projection_swapchain()
             projectionWidth_ = (std::max)(projectionWidth_, view.recommendedImageRectWidth);
             projectionHeight_ = (std::max)(projectionHeight_, view.recommendedImageRectHeight);
         }
+        // Local benchmark override: retain the requested physical-eye minimum
+        // without changing AXRB's default for ordinary launches.
+        if (const char* extent = std::getenv("AXRB_MIN_EYE_EXTENT")) {
+            unsigned width = 0, height = 0;
+            char trailing = 0;
+            if (std::sscanf(extent, "%ux%u%c", &width, &height, &trailing) != 2 ||
+                !axrb::protocol::valid_render_extent(width, height)) return false;
+            for (const auto& view : configViews) {
+                if (width > view.maxImageRectWidth || height > view.maxImageRectHeight) return false;
+            }
+            projectionWidth_ = (std::max)(projectionWidth_, width);
+            projectionHeight_ = (std::max)(projectionHeight_, height);
+        }
         if (!axrb::protocol::valid_render_extent(projectionWidth_, projectionHeight_)) {
             std::fprintf(stderr, "AXRB OpenXR: unsupported recommended eye extent %ux%u\n", projectionWidth_, projectionHeight_);
             return false;
@@ -248,8 +261,10 @@ bool OpenXrSession::create_projection_swapchain()
 #endif
 
 #if defined(_WIN32)
-bool OpenXrSession::update_projection_layers(XrTime displayTime, NativeLayerSubmission& submission)
+bool OpenXrSession::update_projection_layers(XrTime displayTime, XrDuration displayPeriod,
+                                           NativeLayerSubmission& submission)
 {
+    submission.hasGameProjection = false;
     static axrb::protocol::PerfStats stats("host-projection");
     axrb::protocol::PerfScope scope(stats);
     submission.layers.clear();
@@ -290,6 +305,25 @@ bool OpenXrSession::update_projection_layers(XrTime displayTime, NativeLayerSubm
     }
     if (result != XR_SUCCESS) return false;
 
+    // Never hold the receive/publication lock while waiting for the receiver.
+    // This opt-in experiment budgets against both predicted display lead and
+    // the current frame period, reserving time for upload/submission. These
+    // are best-effort waits, not a hard deadline guarantee on Windows.
+    // Missing time conversion, invalid prediction or late frames skip the wait.
+    const XrTime hostNow = windows_xr_time();
+    if (hostNow) {
+        const int64_t lead = displayTime - hostNow;
+        static axrb::protocol::PerfStats leadStats("host-display-lead");
+        leadStats.record(static_cast<double>(lead) / 1000000.0);
+        const auto budget = fresh_wait_budget_ns(freshFrameWaitUs_, lead, displayPeriod);
+        if (budget > 0 && imageFrame_ && submittedGameFrames_.initialized) {
+            if (imageFrame_->needs_newer(submittedGameFrames_.lastSequence)) {
+                static axrb::protocol::PerfStats freshWaitStats("host-fresh-image-wait");
+                axrb::protocol::PerfScope waitScope(freshWaitStats);
+                imageFrame_->wait_for_newer(submittedGameFrames_.lastSequence, std::chrono::nanoseconds(budget));
+            }
+        }
+    }
     if (!concurrentGpuFrames_) handoffLock.lock();
     // A newer complete frame may have arrived while SteamVR held the swapchain.
     // Replace texture and pose metadata together.
@@ -529,6 +563,13 @@ bool OpenXrSession::update_projection_layers(XrTime displayTime, NativeLayerSubm
     if (projectionCount && !reportedProjectionSubmit_) {
         std::fprintf(stderr, "AXRB OpenXR: submitting projection layer to runtime\n");
         reportedProjectionSubmit_ = true;
+    }
+    if (projectionCount) {
+        submission.hasGameProjection = true;
+        submission.gameSequence = uploadedAndroidSequenceByImage_[imageIndex];
+        const auto extent = uploadedExtentByImage_[imageIndex];
+        submission.gameWidth = extent.width;
+        submission.gameHeight = extent.height;
     }
     return !submission.layers.empty();
 }

@@ -3,7 +3,8 @@ param(
     [switch]$SkipTests,
     [switch]$KeepUnpacked,
     [switch]$Portable,
-    [switch]$Setup
+    [switch]$Setup,
+    [switch]$PerformanceOverlay
 )
 
 $ErrorActionPreference = 'Stop'
@@ -15,7 +16,7 @@ if ([string]::IsNullOrWhiteSpace($version)) { throw 'launcher/package.json has n
 Push-Location $AxrbRoot
 try {
     if ($SkipTests) { $env:AXRB_SKIP_LAUNCHER_TESTS = '1' }
-    & "$PSScriptRoot/installer.ps1" -SkipBuild:$SkipNative -Portable:$Portable -Setup:$Setup
+    & "$PSScriptRoot/installer.ps1" -SkipBuild:$SkipNative -Portable:$Portable -Setup:$Setup -PerformanceOverlay:$PerformanceOverlay
     if ($LASTEXITCODE -ne 0) { throw "Installer build failed ($LASTEXITCODE)." }
 
     $release = Join-Path $AxrbRoot 'out/releases'

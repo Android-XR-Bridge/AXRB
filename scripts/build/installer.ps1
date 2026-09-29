@@ -1,4 +1,4 @@
-param([switch]$SkipBuild, [switch]$Portable, [switch]$Setup)
+param([switch]$SkipBuild, [switch]$Portable, [switch]$Setup, [switch]$PerformanceOverlay)
 $ErrorActionPreference = 'Stop'
 if ($Portable -and $Setup) { throw 'Choose either -Portable or -Setup, not both.' }
 . "$PSScriptRoot/../paths.ps1"
@@ -11,7 +11,7 @@ try {
     & "$PSScriptRoot/branding.ps1"
     if (!$?) { throw 'Branding build failed' }
     if (!$SkipBuild) {
-        Run cmake @('-S', '.', '-B', 'out/distribution/build-host', '-G', 'Visual Studio 17 2022', '-A', 'x64', '-DAXRB_BUILD_ANDROID_RUNTIME=OFF', '-DAXRB_BUILD_TESTS=OFF', '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded')
+        Run cmake @('-S', '.', '-B', 'out/distribution/build-host', '-G', 'Visual Studio 17 2022', '-A', 'x64', '-DAXRB_BUILD_ANDROID_RUNTIME=OFF', '-DAXRB_BUILD_TESTS=OFF', '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded', "-DAXRB_ENABLE_PERFORMANCE_OVERLAY=$(if ($PerformanceOverlay) { 'ON' } else { 'OFF' })")
         Run cmake @('--build', 'out/distribution/build-host', '--config', 'Release', '--parallel', '2')
         foreach ($component in @('gpu', 'clock')) {
             Run cmake @('-S', "host/$component", '-B', "out/distribution/build-$component", '-G', 'Visual Studio 17 2022', '-A', 'x64')

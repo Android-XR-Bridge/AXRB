@@ -8,7 +8,7 @@
 #include <cstring>
 #include <thread>
 
-int run_case(unsigned short port, bool consumed, bool quads = false, uint32_t mixedPart = 0, bool sphere = false, bool viewSpace = false) {
+int run_case(unsigned short port, bool consumed, bool quads = false, uint32_t mixedPart = 0, bool sphere = false, bool viewSpace = false, bool legacy = false, bool colored = false) {
     using namespace axrb::protocol;
     bool checked = false;
     std::thread server([&] {
@@ -21,7 +21,9 @@ int run_case(unsigned short port, bool consumed, bool quads = false, uint32_t mi
                 (sphere ? valid_equirect(projection) : quads ? (projection.quad_count() == (mixedPart ? 1u : 2u) && projection.quads[0].width == 2.5f && projection.quads[0].eye_visibility == 1)
                        : valid_projection(projection) && projection.is_view_space() == viewSpace) &&
                 (!viewSpace || projection.layer_flags == (kProjectionViewSpaceBit | 5u)) &&
-                frame.session == 12345 && frame.formats[1] == 43;
+                frame.session == 12345 && frame.formats[1] == 43 &&
+                (colored ? projection.colors[0].scale[0]==0.25f && projection.colors[1].bias[1]==0.1f :
+                    projection.colors[0].identity() && projection.colors[1].identity());
             return consumed;
         });
     });
@@ -55,6 +57,9 @@ int run_case(unsigned short port, bool consumed, bool quads = false, uint32_t mi
         projection.equirect = {{0,0,0,0,0,0,1},0,6.2831853f,1.5707963f,-1.5707963f,0,7};
     }
     WindowsGpuFrame frame{12345, {43, 43}};
+    const size_t projectionBytes=legacy?kLegacyProjectionBytes:sizeof(projection);
+    header.header_size=sizeof(header)+static_cast<uint32_t>(projectionBytes);
+    if(colored) {projection.colors[0].scale[0]=.25f;projection.colors[1].bias[1]=.1f;}
     auto fragmented = [&](const void* pointer, size_t count) {
         auto* bytes = static_cast<const char*>(pointer);
         while (count) {
@@ -64,7 +69,7 @@ int run_case(unsigned short port, bool consumed, bool quads = false, uint32_t mi
         }
         return true;
     };
-    bool sent = fragmented(&header, sizeof(header)) && fragmented(&projection, sizeof(projection)) && fragmented(&frame, sizeof(frame));
+    bool sent = fragmented(&header, sizeof(header)) && fragmented(&projection, projectionBytes) && fragmented(&frame, sizeof(frame));
     uint64_t acknowledgment = 0; size_t received = 0;
     while (received < sizeof(acknowledgment)) {
         int n = recv(client, reinterpret_cast<char*>(&acknowledgment) + received, static_cast<int>(sizeof(acknowledgment) - received), 0);
@@ -155,6 +160,8 @@ int main() {
     result |= run_case(38500, true, false, 0, true) | run_case(38501, true, false, (5u << 16) | 2, true) |
               run_case(38507, true, false, 0, false, true) |
               run_case(38509, true, false, (3u << 16) | 2, false, true);
+    result |= run_case(38510,true,false,0,false,false,true,false) |
+              run_case(38511,true,false,0,false,false,false,true);
     using namespace axrb::protocol;
     if (valid_mixed_part(6, (3u << 16) | 3) || valid_mixed_part(7, (3u << 16) | 3) || !valid_mixed_part(6, 17u << 16)) result = 1;
     axrb::protocol::ImageProjection invalid{};

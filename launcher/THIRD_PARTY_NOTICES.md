@@ -6,12 +6,29 @@ The Meta native-SSO protocol in `core/meta.mjs` is adapted from
 [RiftLift's meta_auth.py](https://github.com/Villagers654/RiftLift/blob/8eddda67d18eace7935d5d385656ed897e4e6c50/src/riftlift/meta_auth.py),
 revision `8eddda67d18eace7935d5d385656ed897e4e6c50`, by RiftLift contributors.
 RiftLift is licensed under GPL-3.0-or-later. The RiftLift-derived code remains
-under that license. AXRB's original code is MIT-licensed; see the repository
-LICENSE. Changes include a JavaScript implementation,
+under that license. The launcher is distributed under GPL-3.0-or-later;
+previously MIT-licensed portions retain their separate grant. Separately
+distributed native AXRB components have the mixed terms described by the
+repository LICENSE; its source-available restrictions do not apply to this
+launcher or other GPL-covered material. Changes include a JavaScript implementation,
 Electron-hosted Meta login, Windows credential encryption, and callback handling
 without replacing the user's system-wide Oculus protocol association.
 
 RiftLift's Linux UI, compatibility runtime, and PC game downloader are not bundled.
+
+## Texture conversion dependencies
+
+The native Vulkan layer includes the ASTC decoder adapted from CUE4Parse,
+via the imported Quest Bridge decoder, with Ryujinx/FasTC provenance recorded
+in `runtime/vulkan/texture/astc_decoder.h`. The decoder retains its upstream
+Apache-2.0 terms; see `licenses/Apache-2.0.txt`.
+
+The BC7 encoder `bc7e.ispc` is Copyright (C) 2018-2020 Binomial LLC,
+Apache-2.0. Its accompanying notice is in `licenses/bc7e.txt`; the prebuilt
+objects are generated from that source with `scripts/build/build_bc7e.py`.
+The test-side bc7decomp sources retain Richard Geldreich's MIT/public-domain
+choice in `runtime/vulkan/texture/bc7enc/LICENSE` (`licenses/bc7enc.txt` in
+distributions). AXRB's source-available terms do not replace these licenses.
 
 ## API research
 

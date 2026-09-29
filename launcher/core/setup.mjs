@@ -186,6 +186,9 @@ export class Setup {
     // Keep AXRB's emulator transport away from Android Studio, Quest tools,
     // and other emulators that may own the default ADB server on 5037.
     process.env.ANDROID_ADB_SERVER_PORT = '5038';
+    // Platform-Tools 37 switched Windows USB discovery backends. Keep AXRB's
+    // isolated server on the previous backend until its crash is resolved.
+    process.env.ADB_USB_LEGACY = '1';
     // Settings allow console ports up to 5682, past adb's own scan ceiling.
     // Whichever process starts the shared server must widen it, or an emulator
     // on a high port is never discovered.

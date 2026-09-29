@@ -11,21 +11,34 @@ struct GpuBatchPart {
     ImageProjection projection;
     WindowsGpuFrame gpu;
 };
-static_assert(sizeof(GpuBatchPart) == 176);
+static_assert(sizeof(GpuBatchPart) == 240);
+constexpr size_t kLegacyGpuBatchPartBytes = 176;
+inline GpuBatchPart decode_gpu_batch_part(const void* data, size_t stride, uint32_t index) {
+    GpuBatchPart part{};
+    const auto* bytes=static_cast<const uint8_t*>(data)+stride*index;
+    if (stride==sizeof(part)) std::memcpy(&part,bytes,sizeof(part));
+    else {
+        std::memcpy(&part.header,bytes,sizeof(part.header));
+        std::memcpy(&part.projection,bytes+sizeof(part.header),kLegacyProjectionBytes);
+        std::memcpy(&part.gpu,bytes+sizeof(part.header)+kLegacyProjectionBytes,sizeof(part.gpu));
+    }
+    return part;
+}
 inline bool valid_gpu_batch(const ImageFrameHeader& outer, const void* data, size_t bytes) {
     const uint32_t count = outer.reserved;
-    if (!data || count < 2 || count > kMaxWireCompositionLayers || bytes != count * sizeof(GpuBatchPart) ||
+    if (!data || count < 2 || count > kMaxWireCompositionLayers ||
+        (bytes != count * sizeof(GpuBatchPart) && bytes != count * kLegacyGpuBatchPartBytes) ||
         outer.payload_size != bytes || outer.sequence == UINT64_MAX || outer.sequence < count - 1) return false;
     std::unordered_set<uint64_t> sessions;
     sessions.reserve(count);
     for (uint32_t i = 0; i < count; ++i) {
-        GpuBatchPart part;
-        std::memcpy(&part, static_cast<const uint8_t*>(data) + i * sizeof(part), sizeof(part));
+        const size_t stride=bytes/count;
+        const auto part=decode_gpu_batch_part(data,stride,i);
         const auto& h = part.header;
         if (h.magic != kImageFrameMagic || !mixed_gpu_version(h.version) ||
             !valid_mixed_part(h.version, h.reserved) || h.reserved != ((count << 16) | i) ||
             h.sequence != outer.sequence - (count - 1) + i || h.monotonic_time_ns != outer.monotonic_time_ns ||
-            h.header_size != sizeof(ImageFrameHeader) + sizeof(ImageProjection) ||
+            h.header_size != stride-sizeof(WindowsGpuFrame) ||
             h.type != kWindowsGpuFrameType || h.layers != 2 || h.format != kImageFrameFormatRgba8 ||
             h.bytes_per_pixel != 4 || h.payload_size != sizeof(WindowsGpuFrame) ||
             !valid_render_extent(h.width, h.height) || !part.gpu.session ||

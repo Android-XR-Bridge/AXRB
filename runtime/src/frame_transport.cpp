@@ -11,6 +11,25 @@ public:
         close_socket();
     }
 
+    // In the emulator GPU-sharing path, the host copies each exported image
+    // into host-owned storage before acknowledging it. Defer that round trip
+    // until immediately before the guest could overwrite the shared image, so
+    // the game's next frame can run while the host copy is in flight.
+    bool wait_gpu_ack_before_reuse()
+    {
+        if (!pendingGpuAck_) return true;
+        static axrb::protocol::PerfStats ackStats("image-ack-reuse-wait");
+        axrb::protocol::PerfScope ackScope(ackStats);
+        const uint64_t expected = pendingGpuAckSequence_;
+        pendingGpuAck_ = false;
+        if (!receive_ack(expected)) {
+            close_socket();
+            return false;
+        }
+        note_delivered();
+        return true;
+    }
+
     bool send_frame(
         uint64_t sequence,
         uint32_t width,
@@ -71,24 +90,27 @@ public:
             return false;
         }
         if (gpu) {
-            static axrb::protocol::PerfStats ackStats("image-ack-wait");
-            axrb::protocol::PerfScope ackScope(ackStats);
-            uint64_t acknowledgment = UINT64_MAX;
-            auto* bytes = reinterpret_cast<uint8_t*>(&acknowledgment);
-            size_t done = 0;
-            while (done < sizeof(acknowledgment)) {
-                ssize_t n = ::recv(socket_, bytes + done, sizeof(acknowledgment) - done, 0);
-                if (n < 0 && errno == EINTR) continue;
-                if (n <= 0) break;
-                done += n;
+            if (directWindows_ && deferred_gpu_ack_enabled()) {
+                if (pendingGpuAck_) { close_socket(); return false; }
+                pendingGpuAck_ = true;
+                pendingGpuAckSequence_ = sequence;
+                static bool reportedDeferredAck = false;
+                if (!reportedDeferredAck) {
+                    __android_log_print(ANDROID_LOG_INFO, "AXRB.Image", "deferred GPU acknowledgment enabled; waiting before shared-image reuse");
+                    reportedDeferredAck = true;
+                }
+            } else {
+                static axrb::protocol::PerfStats ackStats("image-ack-wait");
+                axrb::protocol::PerfScope ackScope(ackStats);
+                if (!receive_ack(sequence)) { close_socket(); return false; }
             }
-            if (done != sizeof(acknowledgment) || acknowledgment != sequence) { close_socket(); return false; }
         }
         note_delivered();
         return true;
     }
 
     bool send_empty(uint64_t sequence) {
+        if (!wait_gpu_ack_before_reuse()) return false;
         if (!ensure_connected() || !directWindows_) return false;
         axrb::protocol::ImageFrameHeader header{};
         header.version = axrb::protocol::kEmptyImageFrameVersion;
@@ -108,6 +130,7 @@ public:
     bool send_batch(const std::vector<axrb::protocol::GpuBatchPart>& parts) {
         static axrb::protocol::PerfStats stats("image-batch-send");
         axrb::protocol::PerfScope scope(stats);
+        if (!wait_gpu_ack_before_reuse()) return false;
         if (parts.size() < 2 || parts.size() > axrb::protocol::kMaxWireCompositionLayers || !ensure_connected() || !directWindows_) return false;
         auto header = parts.front().header;
         header.version = axrb::protocol::kGpuBatchFrameVersion;
@@ -137,6 +160,30 @@ public:
         return true;
     }
 private:
+    static bool deferred_gpu_ack_enabled()
+    {
+        static const bool enabled = [] {
+            char value[PROP_VALUE_MAX]{};
+            __system_property_get("debug.axrb.defer_gpu_ack", value);
+            return std::strcmp(value, "1") == 0;
+        }();
+        return enabled;
+    }
+
+    bool receive_ack(uint64_t expected)
+    {
+        uint64_t acknowledgment = UINT64_MAX;
+        auto* bytes = reinterpret_cast<uint8_t*>(&acknowledgment);
+        size_t done = 0;
+        while (done < sizeof(acknowledgment)) {
+            const ssize_t n = ::recv(socket_, bytes + done, sizeof(acknowledgment) - done, 0);
+            if (n < 0 && errno == EINTR) continue;
+            if (n <= 0) break;
+            done += static_cast<size_t>(n);
+        }
+        return done == sizeof(acknowledgment) && acknowledgment == expected;
+    }
+
     bool ensure_connected()
     {
         if (socket_ >= 0) {
@@ -265,6 +312,8 @@ private:
     bool reportedConnectFailure_ = false;
     bool reportedSendSkip_ = false;
     bool reportedSendFailure_ = false;
+    bool pendingGpuAck_ = false;
+    uint64_t pendingGpuAckSequence_ = 0;
 };
 
 ImageTransportClient& image_transport_client()
@@ -581,6 +630,12 @@ XrResult submit_projection_frame(const XrFrameEndInfo& info, uint32_t batchPart,
         }
 #if defined(__ANDROID__)
         if (g_vulkan.active() && g_vulkan.gpu_export_enabled()) {
+            if (!image_transport_client().wait_gpu_ack_before_reuse()) {
+                g_vulkan.disable_gpu_export();
+                __android_log_print(ANDROID_LOG_WARN, "AXRB.GPU", "deferred acknowledgment failed before batch export; switching to pixel transfer");
+            }
+        }
+        if (g_vulkan.active() && g_vulkan.gpu_export_enabled()) {
             std::vector<VulkanExportRequest> requests(info.layerCount);
             std::vector<SwapchainRecord*> updatedSurfaces;
             for (uint32_t i = 0; i < info.layerCount; ++i) {
@@ -690,6 +745,20 @@ XrResult submit_projection_frame(const XrFrameEndInfo& info, uint32_t batchPart,
         struct ChainHeader { XrStructureType type; const void* next; };
         for (auto* chain = static_cast<const ChainHeader*>(header->next); chain;
              chain = static_cast<const ChainHeader*>(chain->next)) {
+            if (chain->type == XR_TYPE_COMPOSITION_LAYER_COLOR_SCALE_BIAS_KHR) {
+                const auto* color=reinterpret_cast<const XrCompositionLayerColorScaleBiasKHR*>(chain);
+                std::memcpy(projection.colors[eye].scale,color->colorScale,sizeof(color->colorScale));
+                std::memcpy(projection.colors[eye].bias,color->colorBias,sizeof(color->colorBias));
+                if (!projection.colors[eye].valid()) return invalid("nonfinite layer color");
+#if defined(__ANDROID__)
+                static unsigned reportedColors=0;
+                if (eye==0 && !projection.colors[eye].identity() && reportedColors++<12)
+                    __android_log_print(ANDROID_LOG_INFO,"AXRB.Layer","color scale=(%.3f %.3f %.3f %.3f) bias=(%.3f %.3f %.3f %.3f) type=%d",
+                        color->colorScale[0],color->colorScale[1],color->colorScale[2],color->colorScale[3],
+                        color->colorBias[0],color->colorBias[1],color->colorBias[2],color->colorBias[3],int(header->type));
+#endif
+                continue;
+            }
             if (chain->type != XR_TYPE_COMPOSITION_LAYER_IMAGE_LAYOUT_FB) continue;
             const auto* layout = reinterpret_cast<const XrCompositionLayerImageLayoutFB*>(chain);
             if (layout->flags & ~XR_COMPOSITION_LAYER_IMAGE_LAYOUT_VERTICAL_FLIP_BIT_FB) return invalid("image layout flags");
@@ -775,6 +844,10 @@ XrResult submit_projection_frame(const XrFrameEndInfo& info, uint32_t batchPart,
     static std::vector<uint8_t> stereo;
     const size_t eyeBytes = static_cast<size_t>(width) * height * 4;
     if (g_vulkan.active()) {
+        if (g_vulkan.gpu_export_enabled() && !image_transport_client().wait_gpu_ack_before_reuse()) {
+            g_vulkan.disable_gpu_export();
+            __android_log_print(ANDROID_LOG_WARN, "AXRB.GPU", "deferred acknowledgment failed before shared-image reuse; switching to pixel transfer");
+        }
         const VulkanSwapchain* vkSwapchains[] = {&swapchains[0]->vulkan, &swapchains[1]->vulkan};
         const uint32_t indices[] = {swapchains[0]->releasedImage, swapchains[1]->releasedImage};
         if (!g_vulkan.readback(vkSwapchains, indices, subimages, width, height, eyes, verticalFlip)) return XR_ERROR_RUNTIME_FAILURE;

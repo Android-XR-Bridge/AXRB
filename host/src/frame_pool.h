@@ -5,17 +5,21 @@
 #include <functional>
 
 namespace axrb::host {
-// Bounded storage, not a FIFO. The caller publishes only its newest completed
-// lease. A lease pins its slot until all readers (including GPU reads) finish.
+// Bounded storage, not a FIFO. Publication policy belongs to the caller.
+// A lease pins its slot until all readers (including GPU reads) finish.
 template<class T, size_t Count = 3>
 class FramePool {
     struct Slot { std::unique_ptr<T> value; bool busy = false, retired = false; };
-    struct State { std::mutex mutex; std::array<Slot, Count> slots; std::function<void(T&)> trim; };
+    struct State { std::mutex mutex; std::array<Slot, Count> slots; std::function<void(T&)> trim; size_t activeSlots = Count; };
     std::shared_ptr<State> state_ = std::make_shared<State>();
 public:
+    explicit FramePool(size_t activeSlots = Count) {
+        static_assert(Count > 0);
+        state_->activeSlots = activeSlots == 0 ? 1 : (activeSlots > Count ? Count : activeSlots);
+    }
     std::shared_ptr<T> acquire() {
         std::lock_guard lock(state_->mutex);
-        for (size_t i = 0; i < Count; ++i) {
+        for (size_t i = 0; i < state_->activeSlots; ++i) {
             auto& slot = state_->slots[i];
             if (slot.busy) continue;
             if (!slot.value) slot.value = std::make_unique<T>();

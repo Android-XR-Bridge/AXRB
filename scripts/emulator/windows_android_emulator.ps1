@@ -8,6 +8,16 @@ param(
     [ValidateRange(2048, 16384)][int]$MemoryMB = 4096,
     [ValidateRange(2, 6)][int]$CpuCores = 4,
     [ValidateSet('Default', 'Tsc', 'TscCorrected')][string]$GuestClock = 'Default',
+    # Who emulates the local APIC. The hypervisor avoids an exit to QEMU for
+    # every APIC access, timer and IPI (docs/cpu_pressure.md, Finding 5); it
+    # needs the clock helper, so Auto selects it with TscCorrected. The helper
+    # keeps QEMU's APIC where the host's WHPX cannot emulate it.
+    [ValidateSet('Auto', 'Qemu', 'Hypervisor', 'HypervisorX2Apic')][string]$LocalApic = 'Auto',
+    # Graphics command transport. Address-space graphics passes the guest's
+    # command stream through shared memory instead of one pipe exit per write
+    # (docs/cpu_pressure.md, Finding 7). Written to the AVD configuration.
+    [ValidateSet('Asg', 'Pipe')][string]$GraphicsTransport = 'Asg',
+    [switch]$PollIdle,
     [string]$RuntimeApk,
     [string]$AppApk,
     [switch]$GpuSharing,
@@ -21,6 +31,13 @@ param(
 # trapping here would turn a failed emulator start into a message and let the
 # caller continue as though Android had come up.
 $ErrorActionPreference = 'Stop'
+if ($PollIdle -and ($Avd -ne 'axrb-digitalis-test' -or $GuestClock -ne 'TscCorrected')) {
+    throw 'PollIdle is restricted to the isolated Digitalis test AVD with corrected TSC.'
+}
+if ($LocalApic -eq 'Auto') { $LocalApic = $(if ($GuestClock -eq 'TscCorrected') { 'Hypervisor' } else { 'Qemu' }) }
+if ($LocalApic -ne 'Qemu' -and $GuestClock -ne 'TscCorrected') {
+    throw 'The hypervisor local APIC needs -GuestClock TscCorrected.'
+}
 $ProgressPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
 . "$PSScriptRoot/../paths.ps1"
@@ -37,6 +54,7 @@ if ($AxrbPortableRoot) {
 . "$PSScriptRoot/gpu_validation.ps1"
 $env:ANDROID_ADB_SERVER_PORT = '5038'
 $env:ADB_SERVER_SOCKET = $null
+$env:ADB_USB_LEGACY = '1'
 # This script accepts console ports up to 5682, but adb only scans for emulator
 # transports up to its own lower default. An emulator above that ceiling boots
 # normally and is never discovered: the process stays alive while adb reports it
@@ -446,6 +464,16 @@ switch ($Action) {
                 Set-Content -LiteralPath $managedConfig -Value $configText -Encoding ascii
             }
         }
+        $transportConfig = Join-Path $(if ($env:ANDROID_AVD_HOME) { $env:ANDROID_AVD_HOME } else { Join-Path $HOME '.android\avd' }) "$Avd.avd\config.ini"
+        if (Test-Path -LiteralPath $transportConfig) {
+            [string]$configText = Get-Content -LiteralPath $transportConfig -Raw
+            $transport = $GraphicsTransport.ToLowerInvariant()
+            if ($configText -notmatch "(?m)^hw\.gltransport=$transport\s*$") {
+                $configText = [regex]::Replace($configText, '(?m)^hw\.gltransport=.*\r?\n?', '')
+                $configText = $configText.TrimEnd() + "`nhw.gltransport=$transport`n"
+                Set-Content -LiteralPath $transportConfig -Value $configText -Encoding ascii
+            }
+        }
         New-Item -ItemType Directory -Force $logs | Out-Null
         # Declare both ports explicitly. This avoids the emulator frontend and
         # raw QEMU clock launcher disagreeing about the ADB port.
@@ -476,6 +504,7 @@ switch ($Action) {
             # QEMU's extra kernel options are appended to the Android defaults.
             # Keep this last; everything after -qemu goes to QEMU, not the emulator.
             $tscOptions = 'clocksource=tsc'
+            if ($PollIdle) { $tscOptions += ' idle=poll' }
             # Start-Process -ArgumentList joins the array with spaces and does
             # not quote the elements, so a multi-word value has to carry its own
             # quotes. Without them the kernel options after the first arrive as
@@ -487,6 +516,8 @@ switch ($Action) {
         $oldLayers = $env:VK_INSTANCE_LAYERS
         $oldPath = $env:PATH
         $oldLauncherDir = $env:ANDROID_EMULATOR_LAUNCHER_DIR
+        $oldHvApic = $env:AXRB_WHPX_HV_APIC
+        $oldHvX2Apic = $env:AXRB_WHPX_HV_X2APIC
         $launchExe = $emulator
         # Started without the emulator.exe front end, which would otherwise
         # put the SDK on PATH and tell QEMU where it was launched from.
@@ -516,6 +547,10 @@ switch ($Action) {
                 $env:ANDROID_EMULATOR_LAUNCHER_DIR = Join-Path $Sdk 'emulator'
                 $env:PATH = "$Sdk\emulator;$Sdk\emulator\lib64;$oldPath"
             }
+            # Qemu leaves the clock helper's own settings alone, so a caller's
+            # AXRB_WHPX_HV_APIC still applies.
+            if ($LocalApic -ne 'Qemu') { $env:AXRB_WHPX_HV_APIC = '1' }
+            if ($LocalApic -eq 'HypervisorX2Apic') { $env:AXRB_WHPX_HV_X2APIC = '1' }
             if ($GpuSharing) {
                 $layerPath = (Resolve-Path $AxrbGpuDirectory).Path
                 if (!(Test-Path "$layerPath\axrb_gpu_layer.json")) { throw 'Build host/gpu first.' }
@@ -532,6 +567,8 @@ switch ($Action) {
             $env:VK_INSTANCE_LAYERS = $oldLayers
             $env:PATH = $oldPath
             $env:ANDROID_EMULATOR_LAUNCHER_DIR = $oldLauncherDir
+            $env:AXRB_WHPX_HV_APIC = $oldHvApic
+            $env:AXRB_WHPX_HV_X2APIC = $oldHvX2Apic
         }
         # First boot after installing an image can take several minutes while
         # Android creates userdata and compiles system services.

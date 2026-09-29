@@ -1,6 +1,7 @@
 #include <array>
 #include "openxr_dispatch/openxr_minimal.h"
 #include "openxr_dispatch/hand_tracking_types.h"
+#include "openxr_dispatch/space_velocity_types.h"
 
 #include <cstdlib>
 #include <cmath>
@@ -553,10 +554,21 @@ int main()
         XrSpace actionSpace{};
         if (suggest(instance, &suggestion) != XR_SUCCESS || createActionSpace(session, &actionSpaceInfo, &actionSpace) != XR_SUCCESS) return EXIT_FAILURE;
         XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};
+        XrSpaceVelocity velocity{XR_TYPE_SPACE_VELOCITY};
+        struct UnknownOutput { XrStructureType type; void* next; uint64_t sentinel; } unknown{static_cast<XrStructureType>(1999999999),&velocity,123};
+        location.next=&unknown;
+        inputFrame.local_origin_velocity={3,{},{}};
+        (aim ? inputFrame.aim_velocity[0] : inputFrame.grip_velocity[0])={3,{2,0,-3},{0,0,2}};
         if (locateSpace(actionSpace, space, 1, &location) != XR_SUCCESS ||
             location.pose.position.x != (aim ? 4.25f : 1.25f) || location.locationFlags != (aim ? 3 : 15)) return EXIT_FAILURE;
+        if (velocity.velocityFlags!=3 || velocity.linearVelocity.x!=2 || velocity.linearVelocity.y!=0.5f ||
+            velocity.linearVelocity.z!=-3 || velocity.angularVelocity.z!=2 || unknown.sentinel!=123 ||
+            velocity.type!=XR_TYPE_SPACE_VELOCITY || velocity.next!=nullptr) return EXIT_FAILURE;
+        inputFrame.version=6;
+        if (locateSpace(actionSpace,space,1,&location)!=XR_SUCCESS || velocity.velocityFlags!=0 || velocity.linearVelocity.x!=0) return EXIT_FAILURE;
+        inputFrame.version=axrb::protocol::kPoseFrameVersion;
         (aim ? inputFrame.aim_active[0] : inputFrame.controllers[0].active) = 0;
-        if (locateSpace(actionSpace, space, 1, &location) != XR_SUCCESS || location.locationFlags) return EXIT_FAILURE;
+        if (locateSpace(actionSpace, space, 1, &location) != XR_SUCCESS || location.locationFlags || velocity.velocityFlags) return EXIT_FAILURE;
     }
 #endif
     std::vector<XrAction> actions;

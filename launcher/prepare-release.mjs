@@ -42,6 +42,7 @@ const files = [
     'scripts/emulator/storage_policy.py', 'scripts/emulator/unreal_memory_policy.py', 'scripts/emulator/qemu_multicore.py',
     'scripts/run/run_windows_game.ps1', 'scripts/run/fps_hud.ps1', 'scripts/run/stop_game.ps1',
     'scripts/run/performance_scan.ps1',
+    'modules/performance_overlay/collect_guest_cpu.py', 'modules/performance_overlay/resource_history.py',
     'scripts/run/open_windows_features.ps1', 'scripts/run/android_app_label.py', 'scripts/run/steamvr_app_identity.py'].map(p => [p, p]),
 ];
 const sha256 = {};
@@ -61,6 +62,12 @@ if (!await verify(archive, python)) throw new Error('Python checksum mismatch');
 await extractZip(archive, path.join(runtime, 'tools/python'));
 await fs.appendFile(path.join(runtime, 'tools/python/python314._pth'), '\n../../scripts/emulator\n../../scripts/run\n../../launcher\n');
 await fs.cp(path.join(launcher, 'licenses'), path.join(staging, 'licenses'), { recursive: true });
+await fs.cp(path.join(root, 'licenses'), path.join(staging, 'licenses'), { recursive: true });
+await fs.copyFile(path.join(root, 'LICENSE'), path.join(staging, 'licenses/AXRB-LICENSE.txt'));
+await fs.copyFile(path.join(root, 'CONTRIBUTING.md'), path.join(staging, 'licenses/CONTRIBUTING.md'));
+for (const name of ['bc7e', 'bc7enc']) {
+  await fs.copyFile(path.join(root, `runtime/vulkan/texture/${name}/LICENSE`), path.join(staging, `licenses/${name}.txt`));
+}
 await fs.copyFile(path.join(launcher, 'LICENSE'), path.join(staging, 'licenses/AXRB-launcher-GPL-3.0.txt'));
 await fs.copyFile(path.join(launcher, 'THIRD_PARTY_NOTICES.md'), path.join(staging, 'licenses/THIRD_PARTY_NOTICES.md'));
 // Preserve the license texts for renderer dependencies, which Vite embeds in JS.

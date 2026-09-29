@@ -27,10 +27,15 @@ add_executable(axrb-host-bridge
   equirect_renderer.cpp
   equirect_compositor.cpp
   panel_swapchain.cpp
-  fps_hud.cpp
   splash.cpp
   mirror_window.cpp
 )
+
+if(AXRB_ENABLE_PERFORMANCE_OVERLAY)
+  add_subdirectory("${PROJECT_SOURCE_DIR}/modules/performance_overlay" "${CMAKE_CURRENT_BINARY_DIR}/performance_overlay")
+else()
+  target_sources(axrb-host-bridge PRIVATE fps_hud.cpp)
+endif()
 
 target_include_directories(axrb-host-bridge
   PRIVATE

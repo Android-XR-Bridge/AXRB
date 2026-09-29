@@ -1,5 +1,12 @@
 param(
     [string]$GameName,
+    [ValidateRange(0,6)][int]$UnityJobWorkers = 0,
+    [ValidatePattern('^[-a-zA-Z0-9_. ]*$')][string]$UnityArguments = '',
+    [switch]$CaptureGuestLog,
+    [switch]$CollectGuestCpu,
+    [ValidatePattern('^[a-zA-Z0-9_.]+:[VDIWEF]$')][string[]]$GuestLogTags = @('AXRB.Perf:I', 'AXRB.Pacing:I', 'AXRB.GPU:I', 'AXRB.Accel:I'),
+    [uint64]$HostAffinityMask = 0,
+    [switch]$RequireTrackingOrigin,
     [string]$AppApk,
     [string]$RuntimeApk,
     [ValidatePattern('^[a-zA-Z0-9_-]+$')][string]$Avd = 'axrb-nvidia-api34',
@@ -10,6 +17,7 @@ param(
     [ValidateRange(2048, 16384)][int]$MemoryMB = 8192,
     [ValidateRange(2, 6)][int]$CpuCores = 4,
     [ValidateSet('Auto', 'Default', 'Tsc', 'TscCorrected')][string]$GuestClock = 'Auto',
+    [ValidateSet('Auto', 'Qemu', 'Hypervisor', 'HypervisorX2Apic')][string]$LocalApic = 'Auto',
     [ValidateSet('Auto', 'Off')][string]$UnrealMemoryPolicy = 'Auto',
     [ValidateSet(128, 1024)][int]$StorageReadAheadKB = 1024,
     [switch]$GpuSharing,
@@ -39,6 +47,8 @@ if ($AxrbPortableRoot) {
 }
 $env:ANDROID_ADB_SERVER_PORT = '5038'
 $env:ADB_SERVER_SOCKET = $null
+$env:ADB_LOCAL_TRANSPORT_MAX_PORT = '5683'
+$env:ADB_USB_LEGACY = '1'
 if (!$HostExe) { $HostExe = $AxrbHostExe }
 if (!$PSBoundParameters.ContainsKey('GpuSharing')) {
     $GpuSharing = Test-Path "$AxrbGpuDirectory/axrb_gpu_layer.json"
@@ -62,7 +72,7 @@ New-Item -ItemType Directory -Force -Path $logs | Out-Null
 function Invoke-Adb([string[]]$Arguments, [int]$TimeoutMs = 10000) {
     $info = New-Object System.Diagnostics.ProcessStartInfo
     $info.FileName = $adb
-    $info.Arguments = $(if ($Arguments[0] -eq 'devices') { $Arguments -join ' ' } else { (@('-s', $serial) + $Arguments) -join ' ' })
+    $info.Arguments = $(if ($Arguments[0] -in 'devices', 'start-server', 'reconnect') { $Arguments -join ' ' } else { (@('-s', $serial) + $Arguments) -join ' ' })
     $info.UseShellExecute = $false
     $info.CreateNoWindow = $true
     $info.RedirectStandardOutput = $true
@@ -128,6 +138,8 @@ function Get-GameExit([string]$ProcessId, [string[]]$Known = @()) {
 # explicitly and only this session's emulator is ever shut down below.
 $ownsEmulator = [bool]$OwnsEmulator
 $bridgeProcess = $null
+$guestLogProcess = $null
+$guestCpuProcess = $null
 $gameStarted = $false
 $closeRequested = $false
 $gameLost = $false
@@ -149,7 +161,7 @@ try {
     if ($device.Code -ne 0 -or $device.Text -notmatch ('(?m)^' + [regex]::Escape($serial) + '\s+device\s*$')) {
         $cpuArgs = @{}
         if ($PSBoundParameters.ContainsKey('CpuCores')) { $cpuArgs.CpuCores = $CpuCores }
-        & "$PSScriptRoot\..\emulator\windows_android_emulator.ps1" @cpuArgs -Action Start -Sdk $Sdk -Avd $Avd -Port $Port -Abi arm64-v8a -GpuSharing:$GpuSharing -MemoryMB $MemoryMB -GuestClock $GuestClock
+        & "$PSScriptRoot\..\emulator\windows_android_emulator.ps1" @cpuArgs -Action Start -Sdk $Sdk -Avd $Avd -Port $Port -Abi arm64-v8a -GpuSharing:$GpuSharing -MemoryMB $MemoryMB -GuestClock $GuestClock -LocalApic $LocalApic
         $ownsEmulator = $true
     } elseif ($PSBoundParameters.ContainsKey('Avd')) {
         $runningAvd = Invoke-Adb @('emu', 'avd', 'name')
@@ -219,16 +231,21 @@ try {
     $closeEventName = 'Local\AXRB.Close.' + [guid]::NewGuid().ToString('N')
     $closeRequest = [System.Threading.EventWaitHandle]::new($false, [System.Threading.EventResetMode]::ManualReset, $closeEventName)
     $closeReady = [System.Threading.EventWaitHandle]::new($false, [System.Threading.EventResetMode]::ManualReset, "$closeEventName.ready")
+    $previousCpuFile = $env:AXRB_PERFORMANCE_CPU_FILE
+    $guestCpuFile = Join-Path $logs ("guest-cpu-" + [guid]::NewGuid().ToString("N") + ".txt")
     $previousCloseEvent = $env:AXRB_CLOSE_EVENT
     $previousFpsHudEvent = $env:AXRB_FPS_HUD_EVENT
     $previousPrecomposeProjectionLayers = $env:AXRB_PRECOMPOSE_PROJECTION_LAYERS
     try {
+        if ($CollectGuestCpu) { $env:AXRB_PERFORMANCE_CPU_FILE = $guestCpuFile }
         $env:AXRB_CLOSE_EVENT = $closeEventName
         $env:AXRB_FPS_HUD_EVENT = $FpsHudEventName
         $env:AXRB_PRECOMPOSE_PROJECTION_LAYERS = $(if ($PrecomposeProjectionLayers) { '1' } else { '0' })
         $sessionStartedAt = Get-Date
         $bridgeProcess = Start-Process -FilePath $HostExe -ArgumentList @('--serve-openxr', '38490', '0', $titleArgument) -WindowStyle Hidden -PassThru -RedirectStandardOutput "$logs\host.log" -RedirectStandardError "$logs\host.err"
+        if ($HostAffinityMask) { $bridgeProcess.ProcessorAffinity = [intptr]$HostAffinityMask }
     } finally {
+        $env:AXRB_PERFORMANCE_CPU_FILE = $previousCpuFile
         $env:AXRB_CLOSE_EVENT = $previousCloseEvent
         $env:AXRB_FPS_HUD_EVENT = $previousFpsHudEvent
         $env:AXRB_PRECOMPOSE_PROJECTION_LAYERS = $previousPrecomposeProjectionLayers
@@ -244,35 +261,130 @@ try {
         if (!$reason) { $reason = 'The host wrote no diagnostics; SteamVR or another OpenXR runtime with a connected headset is required.' }
         throw "Host failed to start: $reason Full log: $logs\host.err"
     }
+    # View enumeration happens very early in Android app startup and its
+    # selected eye extent is immutable for the session. Do not launch the app
+    # until the OpenXR host has completed initialization and its pose stream
+    # is listening; otherwise the runtime's bounded extent query can time out
+    # on the default 1024x1024 extent before the host publishes its pose frame.
+    $poseServerReady = $false
+    $poseReadyDeadline = [DateTime]::UtcNow.AddSeconds(45)
+    $poseReadyLog = Join-Path $logs 'host.err'
+    $poseReadyLine = 'AXRB TCP: listening on 0.0.0.0:38490'
+    while ([DateTime]::UtcNow -lt $poseReadyDeadline) {
+        if ($bridgeProcess.HasExited) { break }
+        if (Test-Path -LiteralPath $poseReadyLog) {
+            $poseServerReady = [bool](Select-String -LiteralPath $poseReadyLog -SimpleMatch $poseReadyLine -Quiet -ErrorAction SilentlyContinue)
+            if ($poseServerReady) { break }
+            $poseServerFailed = [bool](Select-String -LiteralPath $poseReadyLog -Pattern 'AXRB TCP: (socket creation failed|bind failed on port 38490|listen failed)' -Quiet -ErrorAction SilentlyContinue)
+            if ($poseServerFailed) { throw "Host pose server failed to listen. Full log: $poseReadyLog" }
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    if (!$poseServerReady) {
+        throw "Host pose server did not become ready within 45 seconds. Full log: $poseReadyLog"
+    }
     if ($steamIdentity) {
         $identityResult = & python "$PSScriptRoot\steamvr_app_identity.py" --manifest $steamManifest --package $Package --pid $bridgeProcess.Id
         if ($LASTEXITCODE -eq 0) { Write-Output "SteamVR identity: $identityResult" }
         else { Write-Output 'Warning: SteamVR process identification failed; using the OpenXR application name.' }
     }
     $knownExits = @(Get-ExitRecords | ForEach-Object { $_.Groups[1].Value })
-    $launch = Invoke-Adb @('shell', 'am', 'start', '-W', '-n', $Activity) 60000
+    if ($RequireTrackingOrigin) {
+        # Some games cache their initial floor conversion. Starting before
+        # the host establishes LOCAL captures a resting-head origin instead.
+        Write-Output 'Put on the headset in your playing posture. Waiting for stable tracking before starting the game.'
+        $trackingDeadline = [DateTime]::UtcNow.AddMinutes(3)
+        $trackingReadySince = $null
+        while ($true) {
+            $bridgeProcess.Refresh()
+            if ($bridgeProcess.HasExited) { throw 'Host exited while waiting for headset tracking.' }
+            if ($closeRequest.WaitOne(0)) { throw 'Closed while waiting for headset tracking.' }
+            $trackingLines = @(Get-Content -LiteralPath "$logs\host.err" -ErrorAction SilentlyContinue)
+            $originReady = [bool]($trackingLines | Select-String 'LOCAL origin in tracking world=.*flags=0xf')
+            $lastState = $trackingLines | Select-String 'session state=(\d+)' | Select-Object -Last 1
+            $visible = $lastState -and ([int]$lastState.Matches[0].Groups[1].Value -in 4,5)
+            if ($originReady -and $visible) {
+                if ($null -eq $trackingReadySince) { $trackingReadySince = [DateTime]::UtcNow }
+                if (([DateTime]::UtcNow - $trackingReadySince).TotalSeconds -ge 2) { break }
+            } else { $trackingReadySince = $null }
+            if ([DateTime]::UtcNow -ge $trackingDeadline) { throw 'The game was not started: wear the headset and retry for a valid tracking origin.' }
+            Start-Sleep -Milliseconds 200
+        }
+        Write-Output 'Headset origin is ready; starting the game with unchanged physical tracking scale.'
+    }
+    # Start capture after runtime preparation, which may restart adbd.
+    if ($CaptureGuestLog) {
+        $guestLogProcess = Start-Process -FilePath $adb -ArgumentList (@('-s', $serial, 'logcat', '-v', 'threadtime', '-T', '1', '*:W') + $GuestLogTags) -WindowStyle Hidden -PassThru -RedirectStandardOutput "$logs/guest.log" -RedirectStandardError "$logs/guest.err"
+    }
+    $launchArgs = @('shell', 'am', 'start', '-W')
+    $launchArgs += @('-n', $Activity)
+    $unityCommandLine = @()
+    if ($UnityJobWorkers -gt 0) { $unityCommandLine += "-job-worker-count $UnityJobWorkers" }
+    if ($UnityArguments.Trim()) { $unityCommandLine += $UnityArguments.Trim() }
+    if ($unityCommandLine) {
+        # Escape spaces for Android's shell; the characters are pattern-validated.
+        $launchArgs += @('--es', 'unity', (($unityCommandLine -join ' ') -replace ' ', '\ '))
+        Write-Output "Unity command line: $($unityCommandLine -join ' ') (verify active threads)."
+    }
+    $launch = Invoke-Adb $launchArgs 60000
     if ($launch.Code -ne 0 -or $launch.Text -match 'Error:') { throw "Game launch failed: $($launch.Text) $($launch.Error)" }
     $gameStarted = $true
+    if ($CollectGuestCpu) {
+        # Optional diagnostics must not fail the game launch. Bind the sampler
+        # to the host so it also exits if the PowerShell launcher disappears.
+        try {
+            $collector = Join-Path $AxrbRoot 'modules/performance_overlay/collect_guest_cpu.py'
+            if (!(Test-Path -LiteralPath $collector)) { throw 'Performance collector is not included in this build.' }
+            $python = (Get-Command python -ErrorAction Stop).Source
+            $collectorArgs = @($collector, '--adb', $adb, '--adb-port', '5038', '--serial', $serial,
+                '--package', $Package, '--parent', [string]$bridgeProcess.Id, '--output', $guestCpuFile)
+            $quotedArgs = @($collectorArgs | ForEach-Object {
+                '"' + [regex]::Replace([regex]::Replace($_, '(\\*)"', '$1$1\"'), '(\\+)$', '$1$1') + '"'
+            })
+            $guestCpuProcess = Start-Process -FilePath $python -ArgumentList $quotedArgs -WindowStyle Hidden -PassThru -RedirectStandardOutput "$logs/guest-cpu.log" -RedirectStandardError "$logs/guest-cpu.err"
+        } catch { Write-Output "Warning: performance CPU collector unavailable: $_" }
+    }
     Write-Output "$GameName | AXRB is running. Closing its window stops this game session."
     $missing = 0
     $gamePid = $null
     $adbFailingSince = $null
+    $lastAdbRecovery = $null
+    $logBudgetNextCheck=[DateTime]::MinValue
+    $logBudgetStopped=$false
     while (!$bridgeProcess.HasExited) {
+        if($env:AXRB_SESSION_LOG_LIMIT_MB -and [DateTime]::UtcNow -ge $logBudgetNextCheck){
+            $logBudgetNextCheck=[DateTime]::UtcNow.AddSeconds(10)
+            $limit=[long]$env:AXRB_SESSION_LOG_LIMIT_MB*1MB
+            $bytes=(Get-ChildItem -LiteralPath $AxrbOut -File -Recurse -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
+            $drive=[IO.DriveInfo]::new([IO.Path]::GetPathRoot($AxrbOut))
+            if(($limit -gt 0 -and $bytes -ge $limit) -or $drive.AvailableFreeSpace -lt 60GB){
+                Write-Output 'Diagnostic disk guard: saving and ending this session at its log budget or 60GiB free-space reserve. Existing evidence is retained.'
+                $logBudgetStopped=$true;$closeRequested=$true;break
+            }
+        }
         if ($closeRequest.WaitOne(0)) { $closeRequested = $true; break }
         $game = $null
         try { $game = Invoke-Adb @('shell', 'pidof', $Package) } catch { $adbError = $_.Exception.Message }
         if ($game -and $game.Code -eq 0 -and $game.Text) {
             $missing = 0; $adbFailingSince = $null
             $gamePid = ($game.Text -split '\s+')[0]
-        } elseif ($game -and !$game.Error) {
-            # pidof ran and found nothing.
+        } elseif ($game -and $game.Code -eq 1 -and !$game.Text -and !$game.Error) {
+            # pidof ran and found nothing. Other exit codes, including an ADB
+            # client crash with empty stderr, are transport failures.
             $missing++; $adbFailingSince = $null
         } else {
-            # adb itself failed (offline, timed out), which says nothing about
-            # the game. Only a sustained outage ends the session.
+            # ADB is monitoring the game, not carrying its image stream. A
+            # server crash must not immediately close a game still rendering.
             if ($game) { $adbError = $game.Error }
             if (!$adbFailingSince) { $adbFailingSince = Get-Date }
-            if (((Get-Date) - $adbFailingSince).TotalSeconds -ge 30) { $androidLost = $true; $gameLost = $true; break }
+            $outage = ((Get-Date) - $adbFailingSince).TotalSeconds
+            if ($outage -ge 5 -and (!$lastAdbRecovery -or ((Get-Date) - $lastAdbRecovery).TotalSeconds -ge 15)) {
+                $lastAdbRecovery = Get-Date
+                Write-Output 'Android connection interrupted; restarting ADB and reconnecting offline devices.'
+                try { $null = Invoke-Adb @('start-server') 15000 } catch { }
+                try { $null = Invoke-Adb @('reconnect', 'offline') 10000 } catch { }
+            }
+            if ($outage -ge 90) { $androidLost = $true; $gameLost = $true; break }
         }
         if ($missing -ge 2) { $gameLost = $true; break }
         Start-Sleep -Milliseconds 500
@@ -283,7 +395,7 @@ try {
         if ($gameExit.kind -eq 'exited') { $gameLost = $false }
     } elseif ($androidLost) {
         $gameExit = [ordered]@{ kind = 'unreachable'; reason = "adb: $adbError"; status = $null }
-        Write-Output "Warning: lost contact with Android for 30 seconds ($adbError)."
+        Write-Output "Warning: lost contact with Android for 90 seconds ($adbError)."
     }
     # Closing the host window sets the close event first, so a host that exits
     # without one ended on its own. Checked here, before cleanup closes it.
@@ -318,6 +430,14 @@ try {
     } elseif ($gameStarted) {
         try { $null = Invoke-Adb @('shell', 'am', 'force-stop', $Package) } catch { Write-Output "Warning: $_" }
     }
+    if ($guestCpuProcess) {
+        if (!$guestCpuProcess.HasExited) { $guestCpuProcess.Kill(); $guestCpuProcess.WaitForExit(3000) | Out-Null }
+        $guestCpuProcess.Dispose()
+    }
+    if ($guestLogProcess) {
+        if (!$guestLogProcess.HasExited) { $guestLogProcess.Kill(); $guestLogProcess.WaitForExit(3000) | Out-Null }
+        $guestLogProcess.Dispose()
+    }
     if ($bridgeProcess) { $bridgeProcess.Dispose() }
     if ($closeRequest) { $closeRequest.Dispose() }
     if ($closeReady) { $closeReady.Dispose() }
@@ -330,6 +450,7 @@ try {
         startedAt = if ($sessionStartedAt) { $sessionStartedAt.ToString('o') } else { $null }
         endedAt = (Get-Date).ToString('o')
         closeRequested = [bool]$closeRequested
+        diagnosticDiskGuard = [bool]$logBudgetStopped
         gameProcessLost = [bool]($gameLost -and !$closeRequested)
         gameExit = $gameExit
         hostProcessLost = [bool]$hostLost
