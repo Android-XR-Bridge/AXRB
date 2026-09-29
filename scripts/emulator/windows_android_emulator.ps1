@@ -253,12 +253,12 @@ function Verify-Gpu {
     $raw = Invoke-Adb @('-s', $serial, 'shell', 'cmd', 'gpu', 'vkjson') 90
     $vk = ($raw -join "`n") | ConvertFrom-Json
     $devices = @($vk.devices)
-    Assert-AxrbGuestGpu -Gles $gles -Devices $devices
     New-Item -ItemType Directory -Force $logs | Out-Null
     $gles | Set-Content "$logs\guest-gles.txt"
     $raw | Set-Content "$logs\guest-vulkan.json"
     Write-Output $gles
     $devices | ForEach-Object { Write-Output "Vulkan: $($_.properties.deviceName) (vendor $($_.properties.vendorID), type $($_.properties.deviceType))" }
+    Assert-AxrbGuestGpu -Gles $gles -Devices $devices
 }
 function Verify-Abi {
     Write-Output 'Android startup diagnostic: checking guest ABI.'
@@ -534,6 +534,7 @@ switch ($Action) {
         $oldLauncherDir = $env:ANDROID_EMULATOR_LAUNCHER_DIR
         $oldHvApic = $env:AXRB_WHPX_HV_APIC
         $oldHvX2Apic = $env:AXRB_WHPX_HV_X2APIC
+        $oldGpuSelection = $env:ANDROID_EMU_VK_SELECT_GPU
         $launchExe = $emulator
         # Started without the emulator.exe front end, which would otherwise
         # put the SDK on PATH and tell QEMU where it was launched from.
@@ -559,6 +560,18 @@ switch ($Action) {
             $arguments = @(('"' + $qemu + '"'), ('"' + $clockDll + '"')) + $arguments
         }
         try {
+            # The emulator supports case-insensitive Vulkan device-name matching.
+            # Pin the sole supported adapter on mixed Intel/discrete systems;
+            # its automatic Vulkan score can otherwise favor the Intel driver.
+            try {
+                $gpuSelection = Get-AxrbEmulatorGpuSelection @(Get-CimInstance Win32_VideoController) $oldGpuSelection
+                if ($gpuSelection) {
+                    $env:ANDROID_EMU_VK_SELECT_GPU = $gpuSelection
+                    Write-Output "Android startup diagnostic: Vulkan GPU selection=$gpuSelection"
+                }
+            } catch {
+                Write-Output "Android startup diagnostic: could not query host GPU selection; using emulator defaults ($($_.Exception.Message))."
+            }
             if ($directBackend) {
                 $env:ANDROID_EMULATOR_LAUNCHER_DIR = Join-Path $Sdk 'emulator'
                 $env:PATH = "$Sdk\emulator;$Sdk\emulator\lib64;$oldPath"
@@ -583,6 +596,7 @@ switch ($Action) {
             $env:VK_INSTANCE_LAYERS = $oldLayers
             $env:PATH = $oldPath
             $env:ANDROID_EMULATOR_LAUNCHER_DIR = $oldLauncherDir
+            $env:ANDROID_EMU_VK_SELECT_GPU = $oldGpuSelection
             $env:AXRB_WHPX_HV_APIC = $oldHvApic
             $env:AXRB_WHPX_HV_X2APIC = $oldHvX2Apic
         }

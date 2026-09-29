@@ -22,4 +22,17 @@ foreach ($case in @(
     try { Assert-AxrbGuestGpu $case.gles @(@{properties=@{vendorID=$case.vendor;deviceType=$case.type;deviceName=$case.name}}) } catch { $rejected=$true }
     if (!$rejected) { throw 'Invalid guest accepted' }
 }
+$intel = [pscustomobject]@{ConfigManagerErrorCode=0; PNPDeviceID='PCI\VEN_8086&DEV_1234'; Name='Intel(R) UHD Graphics 770'}
+$nvidia = [pscustomobject]@{ConfigManagerErrorCode=0; PNPDeviceID='PCI\VEN_10DE&DEV_1234'; Name='NVIDIA GeForce RTX 3070 Ti'}
+$amd = [pscustomobject]@{ConfigManagerErrorCode=0; PNPDeviceID='PCI\VEN_1002&DEV_1234'; Name='AMD Radeon RX 6800'}
+foreach ($gpu in @($nvidia, $amd)) {
+    foreach ($adapters in @(@($intel, $gpu), @($gpu, $intel))) {
+        if ((Get-AxrbEmulatorGpuSelection $adapters '') -ne $gpu.Name) { throw 'Mixed-GPU selection failed' }
+    }
+}
+if ((Get-AxrbEmulatorGpuSelection @($intel, $nvidia) 'custom GPU') -ne 'custom GPU') { throw 'Explicit GPU override lost' }
+if ($null -ne (Get-AxrbEmulatorGpuSelection @($intel) '')) { throw 'Intel-only system selected' }
+if ($null -ne (Get-AxrbEmulatorGpuSelection @($nvidia, $amd) '')) { throw 'Ambiguous supported GPUs selected' }
+$disabled = [pscustomobject]@{ConfigManagerErrorCode=22; PNPDeviceID=$nvidia.PNPDeviceID; Name=$nvidia.Name}
+if ($null -ne (Get-AxrbEmulatorGpuSelection @($intel, $disabled) '')) { throw 'Disabled GPU selected' }
 Write-Output 'GPU validation tests passed'
