@@ -462,7 +462,8 @@ void OpenXrSession::initialize_controller_actions()
         if (createActionSpace_(session_, &info, &aimSpaces_[i]) != XR_SUCCESS) return;
     }
 
-    controllerActionsReady_ = handSpaces_[0] != XR_NULL_HANDLE || handSpaces_[1] != XR_NULL_HANDLE;
+    controllerActionsReady_ = handSpaces_[0] != XR_NULL_HANDLE || handSpaces_[1] != XR_NULL_HANDLE ||
+        aimSpaces_[0] != XR_NULL_HANDLE || aimSpaces_[1] != XR_NULL_HANDLE;
     if (controllerActionsReady_) {
         std::fprintf(stderr, "AXRB OpenXR: controller pose actions ready\n");
     }
@@ -550,6 +551,14 @@ void OpenXrSession::locate_controller_spaces(axrb::protocol::PoseFrame& frame, X
     syncInfo.countActiveActionSets = 1;
     syncInfo.activeActionSets = &activeActionSet;
     XrResult result = syncActions_(session_, &syncInfo);
+    ++controllerSyncSamples_;
+    controllerUnfocusedSamples_ += result == XR_SESSION_NOT_FOCUSED;
+    controllerSyncFailures_ += result != XR_SUCCESS && result != XR_SESSION_NOT_FOCUSED;
+    if (controllerSyncSamples_ == 1 || controllerSyncSamples_ % kPoseLogInterval == 0) {
+        std::fprintf(stderr, "AXRB Input: sync samples=%llu unfocused=%llu failures=%llu result=%d\n",
+            (unsigned long long)controllerSyncSamples_, (unsigned long long)controllerUnfocusedSamples_,
+            (unsigned long long)controllerSyncFailures_, result);
+    }
     if (result == XR_SESSION_NOT_FOCUSED) {
         menuShortcut_.reset();
         return;
@@ -565,20 +574,19 @@ void OpenXrSession::locate_controller_spaces(axrb::protocol::PoseFrame& frame, X
 
     bool locatedAny = false;
     for (size_t i = 0; i < handSpaces_.size(); ++i) {
-        if (handSpaces_[i] == XR_NULL_HANDLE) {
-            continue;
-        }
-
         XrActionStateGetInfo stateInfo{XR_TYPE_ACTION_STATE_GET_INFO};
         stateInfo.action = aimPoseAction_;
         stateInfo.subactionPath = handSubactionPaths_[i];
         XrActionStatePose aimState{XR_TYPE_ACTION_STATE_POSE};
-        if (getActionStatePose_(session_, &stateInfo, &aimState) == XR_SUCCESS && aimState.isActive) {
+        const XrResult aimResult = getActionStatePose_(session_, &stateInfo, &aimState);
+        XrResult aimLocateResult = XR_ERROR_HANDLE_INVALID;
+        if (aimResult == XR_SUCCESS && aimState.isActive && aimSpaces_[i] != XR_NULL_HANDLE) {
             frame.aim_active[i] = 1;
             XrSpaceLocation aimLocation{XR_TYPE_SPACE_LOCATION};
             XrSpaceVelocity aimVelocity{XR_TYPE_SPACE_VELOCITY};
             aimLocation.next = &aimVelocity;
-            if (locateSpace_(aimSpaces_[i], localSpace_, locateTime, &aimLocation) == XR_SUCCESS) {
+            aimLocateResult = locateSpace_(aimSpaces_[i], localSpace_, locateTime, &aimLocation);
+            if (aimLocateResult == XR_SUCCESS) {
                 frame.aim_flags[i] = aimLocation.locationFlags;
                 frame.aim[i] = to_protocol_pose(aimLocation.pose);
                 frame.aim_velocity[i] = to_protocol_velocity(aimVelocity, aimLocation.locationFlags);
@@ -588,12 +596,13 @@ void OpenXrSession::locate_controller_spaces(axrb::protocol::PoseFrame& frame, X
         stateInfo.subactionPath = handSubactionPaths_[i];
         XrActionStatePose state{XR_TYPE_ACTION_STATE_POSE};
         result = getActionStatePose_(session_, &stateInfo, &state);
-        if (result != XR_SUCCESS || state.isActive == XR_FALSE) {
-            continue;
-        }
+        const XrResult gripResult = result;
+        const bool gripActive = result == XR_SUCCESS && state.isActive;
 
         auto& input = frame.controllers[i];
-        input.active = 1;
+        // Pose actions and scalar actions have independent activity. An
+        // unbound/inactive grip must not discard a live aim or button action.
+        input.active = gripActive || frame.aim_active[i];
         constexpr uint32_t buttonBits[] = {axrb::protocol::PrimaryClick, axrb::protocol::SecondaryClick,
             axrb::protocol::MenuClick, axrb::protocol::StickClick, axrb::protocol::PrimaryTouch,
             axrb::protocol::SecondaryTouch, axrb::protocol::TriggerTouch, axrb::protocol::StickTouch,
@@ -602,25 +611,48 @@ void OpenXrSession::locate_controller_spaces(axrb::protocol::PoseFrame& frame, X
             stateInfo.action = inputActions_[action];
             if (action <= Squeeze) {
                 XrActionStateFloat value{XR_TYPE_ACTION_STATE_FLOAT};
-                if (getActionStateFloat_(session_, &stateInfo, &value) == XR_SUCCESS && value.isActive)
+                if (getActionStateFloat_(session_, &stateInfo, &value) == XR_SUCCESS && value.isActive) {
+                    input.active = 1;
                     (action == Trigger ? input.trigger : input.squeeze) = value.currentState;
+                }
             } else if (action == Stick) {
                 XrActionStateVector2f value{XR_TYPE_ACTION_STATE_VECTOR2F};
                 if (getActionStateVector2f_(session_, &stateInfo, &value) == XR_SUCCESS && value.isActive) {
+                    input.active = 1;
                     input.stick_x = value.currentState.x; input.stick_y = value.currentState.y;
                 }
             } else {
                 XrActionStateBoolean value{XR_TYPE_ACTION_STATE_BOOLEAN};
-                if (getActionStateBoolean_(session_, &stateInfo, &value) == XR_SUCCESS && value.isActive && value.currentState)
-                    input.buttons |= buttonBits[action - Primary];
+                if (getActionStateBoolean_(session_, &stateInfo, &value) == XR_SUCCESS && value.isActive) {
+                    input.active = 1;
+                    if (value.currentState) input.buttons |= buttonBits[action - Primary];
+                }
             }
         }
 
         XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};
         XrSpaceVelocity gripVelocity{XR_TYPE_SPACE_VELOCITY};
         location.next = &gripVelocity;
-        result = locateSpace_(handSpaces_[i], localSpace_, locateTime, &location);
+        result = gripActive && handSpaces_[i] != XR_NULL_HANDLE
+            ? locateSpace_(handSpaces_[i], localSpace_, locateTime, &location) : XR_ERROR_HANDLE_INVALID;
         if (result == XR_SUCCESS) frame.grip_flags[i] = location.locationFlags;
+        auto& diagnostic = controllerDiagnostics_[i];
+        ++diagnostic.samples;
+        diagnostic.aimInactive += aimResult != XR_SUCCESS || !aimState.isActive;
+        diagnostic.gripInactive += !gripActive;
+        diagnostic.aimInvalid += (frame.aim_flags[i] & 3) != 3;
+        diagnostic.gripInvalid += (frame.grip_flags[i] & 3) != 3;
+        if (diagnostic.samples == 1 || diagnostic.samples % kPoseLogInterval == 0) {
+            std::fprintf(stderr,
+                "AXRB Input: hand=%zu samples=%llu inactive(aim/grip)=%llu/%llu invalidPose(aim/grip)=%llu/%llu "
+                "stateResult=%d/%d locateResult=%d/%d active=%u/%u poseFlags=%llx/%llx velocityFlags=%u/%u\n",
+                i, (unsigned long long)diagnostic.samples,
+                (unsigned long long)diagnostic.aimInactive, (unsigned long long)diagnostic.gripInactive,
+                (unsigned long long)diagnostic.aimInvalid, (unsigned long long)diagnostic.gripInvalid,
+                aimResult, gripResult, aimLocateResult, result, frame.aim_active[i], unsigned(gripActive),
+                (unsigned long long)frame.aim_flags[i], (unsigned long long)frame.grip_flags[i],
+                unsigned(frame.aim_velocity[i].flags), unsigned(gripVelocity.velocityFlags));
+        }
         if (result != XR_SUCCESS ||
             (location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) == 0 ||
             (location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) == 0) {
