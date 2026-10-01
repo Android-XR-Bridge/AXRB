@@ -59,7 +59,9 @@ public:
         rtv.Texture2DArray.FirstArraySlice=slice;rtv.Texture2DArray.ArraySize=1;
         Ptr<ID3D11ShaderResourceView> input;Ptr<ID3D11RenderTargetView> output;
         if(FAILED(device->CreateShaderResourceView(source,&srv,&input)) || FAILED(device->CreateRenderTargetView(target,&rtv,&output))) return false;
-        const uint32_t conversion=(srgb && !isSrgb(src.Format) ? 1u:0u)|(srgb && !isSrgb(dst.Format) ? 2u:0u);
+        // Shader output is linear. An sRGB RTV encodes it automatically;
+        // a UNORM RTV must retain linear values, regardless of source encoding.
+        const uint32_t conversion=srgb && !isSrgb(src.Format) ? 1u:0u;
         struct Constants { protocol::LayerColor color; uint32_t flags,srgb,padding[2]; } values{color,flags,conversion,{}};
         context->UpdateSubresource(constants_.Get(),0,nullptr,&values,0,0);
         D3D11_VIEWPORT viewport{0,0,float(src.Width),float(src.Height),0,1};

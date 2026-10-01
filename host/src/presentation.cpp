@@ -187,10 +187,10 @@ bool OpenXrSession::create_projection_swapchain()
 
         int64_t selectedFormat = formats[0];
         constexpr int64_t preferredFormats[] = {
-            DXGI_FORMAT_R8G8B8A8_UNORM,
-            DXGI_FORMAT_B8G8R8A8_UNORM,
             DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
             DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
+            DXGI_FORMAT_R8G8B8A8_UNORM,
+            DXGI_FORMAT_B8G8R8A8_UNORM,
         };
         for (int64_t preferred : preferredFormats) {
             for (int64_t format : formats) {
