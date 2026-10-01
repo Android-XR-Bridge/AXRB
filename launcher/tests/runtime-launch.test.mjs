@@ -134,7 +134,7 @@ Write-Output "PRECOMPOSE:$PrecomposeProjectionLayers"
   assert.match(await launch(unrelated), /PRECOMPOSE:True/);
 });
 
-test('FPS HUD can be switched live through the session event', { skip: process.platform !== 'win32', timeout: 15000 }, async t => {
+test('FPS HUD can be switched live through the session event', { skip: process.platform !== 'win32', timeout: 30000 }, async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'axrb-hud-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await fs.mkdir(path.join(root, 'scripts/run'), { recursive: true });
@@ -144,22 +144,39 @@ param($Avd, $Port, $Sdk, $MemoryMB, $CpuCores, $Package, $Activity, $GameName, [
 $eventHandle = [System.Threading.EventWaitHandle]::new([bool]$FpsHud, [System.Threading.EventResetMode]::ManualReset, $FpsHudEventName)
 try {
   if ($eventHandle.WaitOne(0)) { throw 'Expected HUD off initially' }
-  if (!$eventHandle.WaitOne(5000)) { throw 'HUD never enabled' }
+  Write-Output 'HUD_READY'
+  if (!$eventHandle.WaitOne(10000)) { throw 'HUD never enabled' }
   Write-Output 'HUD_ON'
-  $deadline = [DateTime]::UtcNow.AddSeconds(5)
+  $deadline = [DateTime]::UtcNow.AddSeconds(10)
   while ($eventHandle.WaitOne(0)) { if ([DateTime]::UtcNow -gt $deadline) { throw 'HUD never disabled' }; Start-Sleep -Milliseconds 10 }
   Write-Output 'HUD_OFF'
 } finally { $eventHandle.Dispose() }
 `);
   const runtime = new Runtime(root, { avd: 'test', port: 5580, sdk: root, memoryMB: 8192, fpsHud: false });
-  let enabled;
-  const on = new Promise(resolve => { enabled = resolve; });
+  let transcript = '';
   const ended = new Promise(resolve => {
     runtime.launch({ id: 'test', package: 'com.example.game', activity: 'com.example.game/.Main', name: 'Test' }, (code, output) => resolve({ code, output }));
-    runtime.child.stdout.on('data', data => { if (data.toString().includes('HUD_ON')) enabled(); });
-    t.after(() => runtime.child?.kill());
   });
-  await runtime.setFpsHud(true); await on;
+  const child = runtime.child;
+  child.stdout.on('data', data => { transcript += data; });
+  t.after(async () => { child.kill(); await ended; });
+  async function waitForMarker(marker) {
+    const seen = () => transcript.split(/\r?\n/).includes(marker);
+    if (seen()) return;
+    let listener;
+    const observed = new Promise(resolve => {
+      listener = () => { if (seen()) resolve(); };
+      child.stdout.on('data', listener);
+    });
+    try {
+      await Promise.race([observed, ended.then(result => {
+        throw new Error(`HUD fixture exited before ${marker} (code ${result.code}): ${result.output}`);
+      })]);
+    } finally { child.stdout.off('data', listener); }
+  }
+  await waitForMarker('HUD_READY');
+  await runtime.setFpsHud(true);
+  await waitForMarker('HUD_ON');
   await runtime.setFpsHud(false);
   const result = await ended;
   assert.equal(result.code, 0, result.output);
