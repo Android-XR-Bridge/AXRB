@@ -28,6 +28,7 @@ import { AiDiagnostics, cleanEvidence, checkedText, MAX_EVIDENCE } from './core/
 import { DiagnosticHarness } from './core/ai-tools.mjs';
 import electronUpdater from 'electron-updater';
 import { LauncherUpdates } from './core/updates.mjs';
+import { measureDirectoryBytes, parseAndroidDataUsage } from './core/storage-info.mjs';
 
 // Keep the packaged app in Electron GUI mode even when launched from a shell
 // that uses ELECTRON_RUN_AS_NODE for other tooling.
@@ -699,6 +700,32 @@ handler('storage', async storageGB => {
   if (setup) setup.status.storageGB = storageGB;
   await persist();
   return { storageGB, previousGB: currentGB, changed: true };
+});
+handler('storageInfo', async () => {
+  const hostDirectory = runtime.settings.managedDirectory || avdDirectory(runtime.settings);
+  let hostPath = hostDirectory;
+  while (true) {
+    try { await fs.stat(hostPath); break; }
+    catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      const parent = path.dirname(hostPath);
+      if (parent === hostPath) throw error;
+      hostPath = parent;
+    }
+  }
+  const disk = await fs.statfs(hostPath);
+  const totalBytes = Number(disk.blocks) * Number(disk.bsize);
+  const freeBytes = Number(disk.bavail) * Number(disk.bsize);
+  const host = {
+    drive: path.parse(hostDirectory).root || 'Host drive',
+    usedBytes: await measureDirectoryBytes(hostDirectory),
+    totalBytes,
+    freeBytes,
+  };
+  const android = await runtime.online()
+    ? parseAndroidDataUsage(await runtime.adb(['shell', 'df', '-k', '/data'], { timeout: 10000 }))
+    : null;
+  return { host, android };
 });
 handler('chooseFolder', async () => {
   const choice = await dialog.showOpenDialog(window, { defaultPath: portable || undefined, properties: ['openDirectory', 'createDirectory'] });
