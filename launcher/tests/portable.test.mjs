@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { carryPortableFiles, portableOutput, sweepPortableTemp } from '../core/portable.mjs';
+import { carryPortableFiles, portableOutput, removeManagedImportFiles, sweepPortableTemp } from '../core/portable.mjs';
 import { State } from '../core/state.mjs';
 
 async function fixture(t) {
@@ -62,6 +62,55 @@ test('cancelled portable imports remove their partial copy and keep the source',
   assert.deepEqual(await fs.readdir(downloads), []);
   assert.equal(await fs.readFile(source, 'utf8'), 'source APK');
   assert.deepEqual(await carryPortableFiles('', downloads, [source]), [source], 'nonportable imports remain user-managed');
+});
+
+test('removing imports deletes only recognized AXRB-managed folders', async t => {
+  const { external, downloads } = await fixture(t);
+  const apkDirectory = path.join(downloads, 'import-abc123', '0');
+  await fs.mkdir(apkDirectory, { recursive: true });
+  const apk = path.join(apkDirectory, 'base.apk');
+  await fs.writeFile(apk, 'copied APK');
+  const assetDirectory = path.join(downloads, 'import-def456', '0');
+  await fs.mkdir(assetDirectory, { recursive: true });
+  const asset = path.join(assetDirectory, 'main.obb');
+  await fs.writeFile(asset, 'copied asset');
+  assert.equal(await removeManagedImportFiles({ apk, files: [{ path: asset }] }, downloads), true, 'legacy imports without provenance are cleaned up too');
+  assert.equal(await fs.stat(path.join(downloads, 'import-abc123')).then(() => true, () => false), false);
+  assert.equal(await fs.stat(path.join(downloads, 'import-def456')).then(() => true, () => false), false);
+
+  const zipDirectory = path.join(downloads, 'imports', '12345678-1234-1234-1234-123456789abc');
+  await fs.mkdir(zipDirectory, { recursive: true });
+  const zipApk = path.join(zipDirectory, 'base.apk');
+  await fs.writeFile(zipApk, 'ZIP APK');
+  assert.equal(await removeManagedImportFiles({ importedFrom: 'zip', apk: zipApk }, downloads), true);
+  assert.equal(await fs.stat(zipDirectory).then(() => true, () => false), false);
+
+  const questDirectory = path.join(downloads, 'quest', 'com.example.game', '12345678-1234-1234-1234-123456789abc');
+  await fs.mkdir(questDirectory, { recursive: true });
+  const questApk = path.join(questDirectory, 'base.apk');
+  await fs.writeFile(questApk, 'Quest APK');
+  assert.equal(await removeManagedImportFiles({ importedFrom: 'quest', package: 'com.example.game', apk: questApk }, downloads), true);
+  assert.equal(await fs.stat(questDirectory).then(() => true, () => false), false);
+
+  const original = path.join(external, 'user.apk');
+  await fs.writeFile(original, 'user-owned APK');
+  assert.equal(await removeManagedImportFiles({ importedFrom: 'apk', apk: original }, downloads), false);
+  assert.equal(await fs.readFile(original, 'utf8'), 'user-owned APK');
+  assert.equal(await removeManagedImportFiles({ importedFrom: 'zip', apk: path.join(external, 'imports', '12345678-1234-1234-1234-123456789abc', 'base.apk') }, downloads), false);
+});
+
+test('removing imports refuses managed-looking paths redirected outside downloads', async t => {
+  const { external, downloads } = await fixture(t);
+  const importRoot = path.join(external, '12345678-1234-1234-1234-123456789abc');
+  await fs.mkdir(importRoot, { recursive: true });
+  const apk = path.join(importRoot, 'base.apk');
+  await fs.writeFile(apk, 'do not remove');
+  await fs.mkdir(downloads, { recursive: true });
+  await fs.symlink(external, path.join(downloads, 'imports'), 'junction');
+  await assert.rejects(removeManagedImportFiles({
+    importedFrom: 'zip', apk: path.join(downloads, 'imports', '12345678-1234-1234-1234-123456789abc', 'base.apk')
+  }, downloads), /Refusing to delete/);
+  assert.equal(await fs.readFile(apk, 'utf8'), 'do not remove');
 });
 
 test('the portable temp sweep reclaims stale scratch and leaves a live run alone', async t => {
