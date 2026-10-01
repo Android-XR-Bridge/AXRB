@@ -470,6 +470,11 @@ private:
     bool sessionVisible_ = false;
     bool useFrameLoop_ = true;
     bool controllerActionsReady_ = false;
+    struct ControllerDiagnostics {
+        uint64_t samples = 0, aimInactive = 0, gripInactive = 0, aimInvalid = 0, gripInvalid = 0;
+    };
+    std::array<ControllerDiagnostics, 2> controllerDiagnostics_{};
+    uint64_t controllerSyncSamples_ = 0, controllerUnfocusedSamples_ = 0, controllerSyncFailures_ = 0;
     MenuShortcut menuShortcut_;
     bool reportedSyncFailure_ = false;
     axrb::protocol::PoseFrame latest_{};

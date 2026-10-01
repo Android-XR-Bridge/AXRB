@@ -203,9 +203,12 @@ XrResult XRAPI_CALL xrLocateSpace_impl(
         static std::atomic<uint64_t> calls{0};
         const auto sample=calls.fetch_add(1,std::memory_order_relaxed);
         if (sample<12 || sample%900==0) __android_log_print(ANDROID_LOG_INFO,"AXRB.Velocity",
-            "request=%llu kind=%d base=%d protocol=%u flags=%llu linear=(%.3f %.3f %.3f)",
+            "request=%llu kind=%d base=%d protocol=%u velocityFlags=%llu poseFlags=%llu seq=%llu aimActive=%u/%u controllerActive=%u/%u linear=(%.3f %.3f %.3f)",
             static_cast<unsigned long long>(sample),static_cast<int>(spaceRecord->kind),static_cast<int>(baseRecord->kind),
-            poseFrame.version,static_cast<unsigned long long>(v.flags),v.linear.x,v.linear.y,v.linear.z);
+            poseFrame.version,static_cast<unsigned long long>(v.flags),
+            static_cast<unsigned long long>(location->locationFlags),static_cast<unsigned long long>(poseFrame.sequence),
+            poseFrame.aim_active[0],poseFrame.aim_active[1],poseFrame.controllers[0].active,poseFrame.controllers[1].active,
+            v.linear.x,v.linear.y,v.linear.z);
 #endif
     }
     return XR_SUCCESS;

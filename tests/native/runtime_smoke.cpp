@@ -567,6 +567,12 @@ int main()
         inputFrame.version=6;
         if (locateSpace(actionSpace,space,1,&location)!=XR_SUCCESS || velocity.velocityFlags!=0 || velocity.linearVelocity.x!=0) return EXIT_FAILURE;
         inputFrame.version=axrb::protocol::kPoseFrameVersion;
+        // Missing velocity is not missing tracking, including an active aim
+        // while the independent grip/controller action is inactive.
+        (aim ? inputFrame.aim_velocity[0] : inputFrame.grip_velocity[0]) = {};
+        if (locateSpace(actionSpace, space, 1, &location) != XR_SUCCESS ||
+            location.locationFlags != (aim ? 3 : 15) || velocity.velocityFlags != 0 ||
+            location.pose.position.x != (aim ? 4.25f : 1.25f)) return EXIT_FAILURE;
         (aim ? inputFrame.aim_active[0] : inputFrame.controllers[0].active) = 0;
         if (locateSpace(actionSpace, space, 1, &location) != XR_SUCCESS || location.locationFlags || velocity.velocityFlags) return EXIT_FAILURE;
     }
