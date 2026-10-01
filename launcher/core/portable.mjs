@@ -98,3 +98,41 @@ export async function carryPortableFiles(root, downloadDir, files, signal) {
     return files.map(file => copied.get(file) || file);
   } catch (error) { await fs.rm(directory, { recursive: true, force: true }); throw error; }
 }
+
+export async function removeManagedImportFiles(game, downloadDir) {
+  if (!path.isAbsolute(downloadDir)) return false;
+  const base = path.resolve(downloadDir);
+  const candidates = [game.sourceApk, game.apk, ...(game.files || []).map(file => file.path)];
+  const roots = new Set();
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string' || !path.isAbsolute(candidate)) continue;
+    const relative = path.relative(base, path.resolve(candidate));
+    if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) continue;
+    const parts = relative.split(path.sep);
+    let rootParts;
+    if (/^import-.+/.test(parts[0]) && /^\d+$/.test(parts[1] || '') && parts.length >= 3) {
+      rootParts = parts.slice(0, 1);
+    } else if (parts[0] === 'imports' && /^[0-9a-f-]{36}$/i.test(parts[1] || '') && parts.length >= 3) {
+      rootParts = parts.slice(0, 2);
+    } else if (parts[0] === 'quest' && parts[1] === game.package &&
+      /^[0-9a-f-]{36}$/i.test(parts[2] || '') && parts.length >= 4) {
+      rootParts = parts.slice(0, 3);
+    } else continue;
+    roots.add(path.join(base, ...rootParts));
+  }
+  const safeRoots = [];
+  for (const root of roots) {
+    let current = base;
+    let directory = true;
+    for (const part of path.relative(base, root).split(path.sep)) {
+      current = path.join(current, part);
+      let info;
+      try { info = await fs.lstat(current); }
+      catch (error) { if (error.code === 'ENOENT') { directory = false; break; } throw error; }
+      if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('Refusing to delete an imported folder outside AXRB-managed storage.');
+    }
+    if (directory) safeRoots.push(root);
+  }
+  for (const root of safeRoots) await fs.rm(root, { recursive: true, force: true });
+  return safeRoots.length > 0;
+}
