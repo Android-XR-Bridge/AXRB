@@ -93,6 +93,9 @@ export function GameDetails({ game, state, local, onClose, run, pending, setPage
               {!game.apk && game.source !== 'meta' && <DropdownMenuItem disabled={busy} onSelect={() => run('import', () => call('import'))}>Import APK</DropdownMenuItem>}
               {game.installed && <DropdownMenuItem disabled={busy} onSelect={() => loadExtra('permissions')}>Android permissions</DropdownMenuItem>}
               {game.installed && <><DropdownMenuSeparator /><DropdownMenuItem className="text-destructive" disabled={busy || Boolean(state.running) || Boolean(activeJob)} onSelect={() => operate(() => call('uninstall', game.id))}>Uninstall</DropdownMenuItem></>}
+              {game.apk && game.source !== 'meta' && <><DropdownMenuSeparator /><DropdownMenuItem className="text-destructive" disabled={busy || Boolean(state.running) || Boolean(activeJob)} onSelect={() => operate(async () => {
+                if (await call('removeImported', game.id)) { notify('Imported app deleted'); onClose(); }
+              })}>Delete imported app</DropdownMenuItem></>}
             </DropdownMenuContent>
           </DropdownMenu>}
           </>}
