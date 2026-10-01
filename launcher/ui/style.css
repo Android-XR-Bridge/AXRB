@@ -41,6 +41,20 @@
   ::-webkit-scrollbar-thumb { background: #3b3b3b; border-radius: 4px; }
 }
 body { padding-bottom: var(--diagnostics-height, 0px); }
+.ai-markdown { overflow-wrap: anywhere; line-height: 1.65; font-size: 14px; }
+.ai-markdown > :first-child { margin-top: 0; }
+.ai-markdown p, .ai-markdown ul, .ai-markdown ol, .ai-markdown blockquote { margin: .7em 0; }
+.ai-markdown h1, .ai-markdown h2, .ai-markdown h3, .ai-markdown h4 { font-size: 1em; font-weight: 600; margin: 1em 0 .5em; }
+.ai-markdown ul { list-style: disc; padding-left: 1.5em; }
+.ai-markdown ol { list-style: decimal; padding-left: 1.5em; }
+.ai-markdown li > p { margin: .2em 0; }
+.ai-markdown blockquote { border-left: 2px solid var(--border); padding-left: 1em; color: var(--muted-foreground); }
+.ai-markdown pre { overflow: auto; padding: 12px; background: var(--secondary); font-size: 12px; }
+.ai-markdown code { font-family: Consolas, monospace; }
+.ai-markdown :not(pre) > code { background: var(--secondary); padding: 2px 4px; border-radius: 3px; }
+.ai-markdown table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 12px 0; }
+.ai-markdown td, .ai-markdown th { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+.ai-markdown hr { margin: 12px 0; }
 progress { appearance: none; height: 3px; width: 100%; overflow: hidden; border-radius: 2px; }
 progress::-webkit-progress-bar { background: #333; }
 progress::-webkit-progress-value { background: #ddd; }

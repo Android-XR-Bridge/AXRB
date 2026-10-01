@@ -54,11 +54,16 @@ try {
     Copy-Item "$build\dex\classes.dex" "$build\package" -Force
     Run "$Jdk\bin\jar.exe" @('uf', "$build\unsigned.apk", '-C', "$build\package", 'classes.dex', '-C', "$build\package", 'lib')
     Run "$bt\zipalign.exe" @('-f', '-p', '4', "$build\unsigned.apk", "$build\aligned.apk")
+    if ($env:AXRB_REQUIRE_SIGNING -eq '1' -and !(Test-Path -LiteralPath $keystore)) { throw 'Release runtime signing key is missing.' }
     if (!(Test-Path $keystore)) {
         New-Item -ItemType Directory -Force (Split-Path $keystore -Parent) | Out-Null
         Run "$Jdk\bin\keytool.exe" @('-genkeypair', '-keystore', $keystore, '-storepass', 'android', '-keypass', 'android', '-alias', 'androiddebugkey', '-keyalg', 'RSA', '-keysize', '2048', '-validity', '10000', '-dname', 'CN=Android Debug,O=Android,C=US')
     }
-    Run "$bt\apksigner.bat" @('sign', '--ks', $keystore, '--ks-pass', 'pass:android', '--key-pass', 'pass:android', '--out', "$build\axrb-openxr-runtime-debug.apk", "$build\aligned.apk")
+    if (!$env:AXRB_KEYSTORE_PASSWORD) { $env:AXRB_KEYSTORE_PASSWORD = 'android' }
+    if (!$env:AXRB_KEY_PASSWORD) { $env:AXRB_KEY_PASSWORD = $env:AXRB_KEYSTORE_PASSWORD }
+    $signArgs = @('sign', '--ks', $keystore, '--ks-pass', 'env:AXRB_KEYSTORE_PASSWORD', '--key-pass', 'env:AXRB_KEY_PASSWORD')
+    if ($env:AXRB_KEY_ALIAS) { $signArgs += @('--ks-key-alias', $env:AXRB_KEY_ALIAS) }
+    Run "$bt\apksigner.bat" ($signArgs + @('--out', "$build\axrb-openxr-runtime-debug.apk", "$build\aligned.apk"))
     Run "$bt\apksigner.bat" @('verify', "$build\axrb-openxr-runtime-debug.apk")
     Write-Host "Built $build\axrb-openxr-runtime-debug.apk"
 } finally { $env:JAVA_HOME = $oldJavaHome }

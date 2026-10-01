@@ -119,3 +119,12 @@ Copyright (C) 2016 InfoTeCS JSC. All rights reserved.
 Google's Android emulator, platform tools, build tools and Google APIs system image
 are downloaded directly from Google after acceptance of the Android SDK license;
 they are not embedded in the installer. Their archives retain their notices.
+
+The launcher uses jose 6.2.12 (MIT, copyright 2018 Filip Skokan) for OpenID Connect token validation. Its license is included in licenses/jose.txt. https://github.com/panva/jose
+
+The AI chat interface uses @assistant-ui/react 0.15.22 and
+@assistant-ui/react-markdown 0.14.17 (MIT, copyright 2025 AgentbaseAI Inc.),
+with remark-gfm for GitHub-flavored Markdown. Upstream:
+https://github.com/assistant-ui/assistant-ui and https://github.com/remarkjs/remark-gfm.
+Their license texts and the licenses of transitive dependencies are included
+in the installer under licenses/npm. No assistant-cloud service is configured.

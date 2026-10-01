@@ -7,6 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { cn } from '@/lib/utils';
 import { activeStatuses, call, Empty, EmulatorStatus, GameGrid, IconButton } from './common';
 import { SetupScreen } from './setup';
+import { AiHelp } from './ai-help';
 import { Settings } from './settings';
 import { Downloads } from './downloads';
 import { GameDetails } from './game-details';
@@ -56,11 +57,11 @@ function App() {
   const game = state?.games.find(g => g.id === selected) || results.find(g => g.id === selected);
   const games = state?.games.filter(g => (filter === 'all' || Boolean(g[filter])) && g.name.toLowerCase().includes(libraryQuery.toLowerCase())) || [];
   const activeDownloads = state?.jobs.filter(j => activeStatuses.includes(j.status)).length || 0;
-  if (state?.setup && state.setup.phase !== 'ready') return <SetupScreen setup={state.setup} />;
+  if (state?.setup && state.setup.phase !== 'ready') return <><div className="flex justify-end gap-2 p-4"><Button variant="outline" onClick={() => setPage(page === 'ai' ? 'library' : 'ai')}>{page === 'ai' ? 'Back to setup' : 'AI help'}</Button></div>{page === 'ai' ? <div className="px-8 pb-8"><AiHelp /></div> : <SetupScreen setup={state.setup} />}</>;
   return <>
     <header className="flex h-16 items-center gap-8 border-b px-8">
       <button onClick={() => setPage('library')} aria-label="AXRB library" className="text-base font-semibold tracking-wide">AXRB</button>
-      <nav aria-label="Main navigation" className="flex h-full items-center gap-6">{[['library', 'Library'], ['store', 'Store'], ['quest', 'Quest'], ['downloads', 'Downloads']].map(([id, label]) => <button key={id} data-nav={id} aria-current={page === id ? 'page' : undefined} onClick={() => setPage(id)} className={cn('relative flex h-full items-center gap-2 text-sm text-muted-foreground hover:text-foreground', page === id && 'text-foreground after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-foreground')}>{label}{id === 'downloads' && activeDownloads > 0 && <span className="rounded bg-secondary px-1.5 text-xs">{activeDownloads}</span>}</button>)}</nav>
+      <nav aria-label="Main navigation" className="flex h-full items-center gap-6">{[['library', 'Library'], ['store', 'Store'], ['quest', 'Quest'], ['downloads', 'Downloads'], ['ai', 'AI help']].map(([id, label]) => <button key={id} data-nav={id} aria-current={page === id ? 'page' : undefined} onClick={() => setPage(id)} className={cn('relative flex h-full items-center gap-2 text-sm text-muted-foreground hover:text-foreground', page === id && 'text-foreground after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-foreground')}>{label}{id === 'downloads' && activeDownloads > 0 && <span className="rounded bg-secondary px-1.5 text-xs">{activeDownloads}</span>}</button>)}</nav>
       <div className="ml-auto flex items-center gap-4">{state && <EmulatorStatus emulator={state.emulator} />}{state && !state.signedIn && <Button variant="ghost" disabled={pending.has('account')} onClick={() => run('account', () => call('login'))}>{pending.has('account') ? 'Connecting…' : 'Connect Meta'}</Button>}<IconButton label="Settings" data-nav="settings" aria-pressed={page === 'settings'} onClick={() => setPage('settings')}><SettingsIcon /></IconButton></div>
     </header>
     <main id="content" className="mx-auto max-w-[1600px] p-8" aria-label={page}>
@@ -72,6 +73,7 @@ function App() {
         {page === 'store' && <><form id="store-search" onSubmit={search} className="mb-7 flex items-center gap-3"><div className="relative w-full max-w-md"><Search className="pointer-events-none absolute top-2.5 left-3 size-4 text-muted-foreground" /><Input id="store-query" type="search" aria-label="Search Quest store" placeholder="Search Quest games" className="pl-9" value={query} onChange={e => setQuery(e.target.value)} required minLength={2} /></div><Button disabled={pending.has('search')} type="submit">{pending.has('search') ? <Loader2 className="animate-spin" aria-label="Searching" /> : 'Search'}</Button><div className="flex-1" /><IconButton label="Open Meta store" onClick={() => run('store', () => call('openStore'))}><ExternalLink /></IconButton></form>{results.length ? <GameGrid games={results} onOpen={setSelected} store /> : searched && !pending.has('search') ? <Empty>No games found</Empty> : null}</>}
         {page === 'quest' && <Quest state={state} run={run} pending={pending} setPage={setPage} />}
         {page === 'downloads' && <Downloads jobs={state.jobs} run={run} pending={pending} />}
+        <div hidden={page !== 'ai'}><AiHelp active={page === 'ai'} /></div>
         {page === 'settings' && <Settings state={state} run={run} pending={pending} notify={notify} />}
       </>}
     </main>

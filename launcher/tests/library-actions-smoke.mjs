@@ -15,9 +15,12 @@ export async function libraryActionsSmoke(window, { state, runtime, dialog, pers
   const cli = path.join(state.directory, 'smoke-ovrport.jar');
   const climb = { id: 'smoke-climb', package: 'com.crytek.climb2', name: 'The Climb 2', version: '2.2', versionCode: '22', activity: 'com.crytek.climb2/.Main', installed: true, source: 'local', apk: path.join(state.directory, 'climb-base.apk') };
   const patchCalls = [], launchCalls = [];
-  const game = { id: 'local:com.axrbtest.game', package: 'com.axrbtest.game', name: 'Uninstall test', installed: true, source: 'local', apk: 'C:/test/base.apk', files: [{ path: 'C:/test/content.obb' }] };
+  const gameApk = path.join(state.directory, 'smoke-base.apk');
+  const game = { id: 'local:com.axrbtest.game', package: 'com.axrbtest.game', name: 'Uninstall test', installed: true, source: 'local', apk: gameApk, files: [{ path: 'C:/test/content.obb' }] };
   let removed = 0, confirmation;
   try {
+    await fs.writeFile(gameApk, 'isolated APK fixture');
+    await fs.writeFile(climb.apk, 'isolated APK fixture');
     state.put(game); await persist();
     await js(`document.querySelector('[data-nav="library"]').click()`);
     // Remove the previous smoke filter by opening the dialog through a fresh state.
@@ -39,7 +42,7 @@ export async function libraryActionsSmoke(window, { state, runtime, dialog, pers
     dialog.showMessageBox = async () => ({ response: 1 });
     const result = await js(`window.axrb.uninstall('${game.id}')`);
     assert.equal(result.ok, true); assert.equal(result.value, true); assert.equal(removed, 1);
-    assert.equal(game.installed, false); assert.equal(game.apk, 'C:/test/base.apk'); assert.equal(game.files.length, 1);
+    assert.equal(game.installed, false); assert.equal(game.apk, gameApk); assert.equal(game.files.length, 1);
     await check(`Array.from(document.querySelectorAll('#details button')).some(e => e.textContent === 'Install')`, 'Uninstall did not update library');
     await check(`document.querySelector('[data-job-toast]')?.textContent.includes('uninstalled')`, 'Uninstall completion toast missing');
     game.installed = true; runtime.uninstall = async () => { throw Error('Android uninstall rejected'); }; await persist();
@@ -95,6 +98,10 @@ export async function libraryActionsSmoke(window, { state, runtime, dialog, pers
       ]);
       if (command.length === 1 && command[0] === 'patch') return '--extra-patches=<value>';
       patchCalls.push(command);
+      const output = command.find(arg => arg.startsWith('--output=')).slice('--output='.length);
+      const input = command.find(arg => arg.startsWith('--input=')).slice('--input='.length);
+      await fs.mkdir(output, { recursive: true });
+      await fs.writeFile(path.join(output, `${path.basename(input, '.apk')}-axrb.apk`), 'isolated patched APK fixture');
       return 'Patching successful.';
     };
     const actual = { package: climb.package, version: '2.2', versionCode: '22', activity: climb.activity };
@@ -278,6 +285,8 @@ export async function libraryActionsSmoke(window, { state, runtime, dialog, pers
     dialog.showOpenDialog = original.open; dialog.showMessageBox = original.confirm; runtime.inspect = original.inspect; runtime.prepareLaunch = original.prepare; runtime.uninstall = original.uninstall;
     runtime.launch = original.launch; ovrport.execute = original.execute; state.data.settings.ovrportCli = original.cli;
     ovrport.help.delete(cli); await fs.rm(cli, { force: true });
+    await fs.rm(gameApk, { force: true });
+    await fs.rm(path.join(state.directory, 'climb-base.apk'), { force: true });
     state.data.games = state.data.games.filter(g => g.id !== climb.id);
     state.data.games = state.data.games.filter(g => !g.package?.startsWith('com.axrbtest.'));
     state.data.jobs = state.data.jobs.filter(j => !['apk', 'uninstall'].includes(j.kind)); await persist();

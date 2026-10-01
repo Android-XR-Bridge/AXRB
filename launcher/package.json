@@ -20,16 +20,22 @@
     "@vitejs/plugin-react": "^6.1.1",
     "electron": "44.4.1",
     "electron-builder": "^26.15.3",
+    "semver": "7.8.5",
     "tailwindcss": "^4.3.3",
     "vite": "^8.3.0"
   },
   "dependencies": {
+    "@assistant-ui/react": "0.15.22",
+    "@assistant-ui/react-markdown": "0.14.17",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "electron-updater": "6.8.9",
+    "jose": "6.2.12",
     "lucide-react": "^1.46.0",
     "radix-ui": "^1.6.7",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
+    "remark-gfm": "4.0.1",
     "tailwind-merge": "^3.7.0",
     "yauzl": "^3.4.0"
   },
@@ -83,6 +89,14 @@
       "shortcutName": "AXRB",
       "runAfterFinish": true
     },
-    "beforePack": "./verify-release.cjs"
+    "beforePack": "./verify-release.cjs",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Android-XR-Bridge",
+        "repo": "AXRB",
+        "releaseType": "release"
+      }
+    ]
   }
 }

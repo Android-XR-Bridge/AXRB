@@ -23,6 +23,11 @@ import { Ovrport, selectedPatchArgs } from './core/ovrport.mjs';
 import { MetaSession } from './core/session.mjs';
 import { carryPortableFiles, configurePortable, portableOutput, sweepPortableTemp } from './core/portable.mjs';
 import { performanceScanArgs, performanceScanTimeout } from './core/performance.mjs';
+import { ChatGPTAuth } from './core/chatgpt-auth.mjs';
+import { AiDiagnostics, cleanEvidence, checkedText, MAX_EVIDENCE } from './core/ai-diagnostics.mjs';
+import { DiagnosticHarness } from './core/ai-tools.mjs';
+import electronUpdater from 'electron-updater';
+import { LauncherUpdates } from './core/updates.mjs';
 
 // Keep the packaged app in Electron GUI mode even when launched from a shell
 // that uses ELECTRON_RUN_AS_NODE for other tooling.
@@ -45,9 +50,11 @@ if (!app.requestSingleInstanceLock()) app.quit();
 app.on('second-instance', () => { window?.show(); window?.focus(); });
 let window, authWindow, state, runtime, token = '', account = '', busy = false;
 let setup;
+let launcherUpdates, installUpdateOnQuit = false;
 let metaSession;
 let liveDiagnostics, reviewedDiagnostics = null;
 let emulatorWatchdog;
+let chatgpt, aiDiagnostics;
 // Structured per-game-session records (newest first) shipped in every
 // diagnostics bundle; the run script also writes logs/game/session.json.
 const sessionRecords = [];
@@ -66,6 +73,10 @@ app.on('before-quit', event => {
 const requestClose = createCloseRequest({
   getStatus: () => runtime ? runtime.status() : Promise.resolve({ running: false }),
   prompt: async () => {
+    if (installUpdateOnQuit) {
+      const {response}=await dialog.showMessageBox(window,{type:'question',title:'Install AXRB update?',message:'Stop the emulator and install the update?',detail:'The running game will close. Save your progress first.',buttons:['Stop emulator and install','Later'],defaultId:1,cancelId:1,noLink:true});
+      return response===0?'stop':'cancel';
+    }
     const { response } = await dialog.showMessageBox(window, {
       type: 'question', title: 'Close AXRB?',
       message: 'The Android emulator is still running.',
@@ -85,8 +96,10 @@ const requestClose = createCloseRequest({
       message: 'Could not finish closing the launcher.', detail: message(error) });
   },
   quit: async () => {
+    if (installUpdateOnQuit && (busy || setup?.status?.active || aiDiagnostics?.controller)) throw new Error('Finish the current operation before installing the update.');
     quitting = true;
     shutdown.abort();
+    chatgpt?.cancel(); aiDiagnostics?.cancel();
     try {
       if (!liveDiagnostics) return;
       // Waiting for the watchdog's poll in flight, then running another, could
@@ -100,7 +113,10 @@ const requestClose = createCloseRequest({
       // Capture stops first so its logcat children end quietly with the launcher.
       await liveDiagnostics.stop();
       if (idle) await runtime.stopAdbServer();
-    } finally { app.quit(); }
+    } finally {
+      if (installUpdateOnQuit) launcherUpdates.finishInstall();
+      else app.quit();
+    }
   },
 });
 const controllers = new Map();
@@ -139,7 +155,7 @@ async function configuredCli() {
 function handler(name, callback) {
   ipcMain.handle(`axrb:${name}`, async (event, ...args) => {
     if (event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('Untrusted launcher request.');
-    const started = Date.now(), trace = !['state', 'diagnosticsRead', 'diagnostics', 'copyText'].includes(name);
+    const started = Date.now(), trace = !name.startsWith('ai') && !['state', 'diagnosticsRead', 'diagnostics', 'copyText'].includes(name);
     if (trace) liveDiagnostics?.append('launcher', `${name} started`, { tag: 'operation' });
     try {
       if (setup && setup.status.phase !== 'ready' && ['play', 'install', 'uninstall', 'import', 'patch', 'settings', 'questDevices', 'questGames', 'questImport', 'importZip', 'startAndroid', 'stopAndroid'].includes(name)) throw new Error('Complete runtime setup first.');
@@ -675,21 +691,24 @@ handler('openFolder', async id => { const game = getGame(id); const target = por
 handler('openStore', async id => shell.openExternal(id ? `https://www.meta.com/experiences/${appId(id)}/` : 'https://www.meta.com/experiences/'));
 // Uploading publishes the logs, so this only ever runs from an explicit click,
 // and the bundle is offered for review before it leaves the machine.
+async function diagnosticSnapshot({ compact = false } = {}) {
+  return collectDiagnostics({
+    dataHome: process.env.AXRB_DATA_HOME || path.join(root, 'out'),
+    version: app.getVersion(), settings: state.data.settings,
+    setupLogs: setup?.status.logs ?? [], hardware: setup?.status.hardware ?? null,
+    liveLogs: compact ? liveDiagnostics.text().slice(-40000) : liveDiagnostics.text(),
+    adbProcesses: await listAdbProcesses(),
+    sessions: sessionRecords,
+    perf: liveDiagnostics.perfText(),
+  });
+}
 handler('diagnostics', async ({ upload = false, save = false } = {}) => {
   if (upload) {
     if (!reviewedDiagnostics) throw new Error('Preview the diagnostics report before uploading it.');
     const bundle = reviewedDiagnostics;
     return { bundle, url: await uploadDiagnostics(bundle, { endpoint: state.data.settings.diagnosticsEndpoint || undefined }) };
   }
-  const bundle = await collectDiagnostics({
-    dataHome: process.env.AXRB_DATA_HOME || path.join(root, 'out'),
-    version: app.getVersion(), settings: state.data.settings,
-    setupLogs: setup?.status.logs ?? [], hardware: setup?.status.hardware ?? null,
-    liveLogs: liveDiagnostics.text(),
-    adbProcesses: await listAdbProcesses(),
-    sessions: sessionRecords,
-    perf: liveDiagnostics.perfText(),
-  });
+  const bundle = await diagnosticSnapshot();
   if (save) {
     const result = await dialog.showSaveDialog(window, {
       title: 'Save diagnostics report', defaultPath: path.join(portable ? path.join(portable, 'data/logs') : '.', `AXRB-diagnostics-${new Date().toISOString().replaceAll(':', '-')}.txt`),
@@ -701,6 +720,102 @@ handler('diagnostics', async ({ upload = false, save = false } = {}) => {
   }
   reviewedDiagnostics = bundle;
   return { bundle };
+});
+chatgpt = new ChatGPTAuth(state.directory, safeStorage, url => shell.openExternal(url));
+let aiUpdateTimer;
+let aiGameId = '';
+const aiHarness = new DiagnosticHarness({
+  context: () => {
+    const game = state.data.games.find(g => g.id === (aiGameId || runtime.game));
+    return { sdk: runtime.settings.sdk, port: runtime.settings.port, avd: runtime.settings.avd,
+      root, launcher:directory, downloadDir:runtime.settings.downloadDir, avdHome:process.env.ANDROID_AVD_HOME,
+      games:state.data.games.map(g=>({name:g.title || g.name || g.package,package:g.package,installed:Boolean(g.installed)})),
+      dataHome: process.env.AXRB_DATA_HOME || path.join(root, 'out'), game: game?.id || '', package: game?.package || '',
+      title: game?.name || game?.title || '', session: runtime.child?.pid || null, backend: runtime.bridgeStopEvent ? 'quest-bridge' : 'android-emulator',
+      runningGame: runtime.game || '', watchdog: emulatorWatchdog?.snapshot(),
+      memoryMB: runtime.settings.memoryMB, cpuCores: runtime.settings.cpuCores, hardware: setup?.status.hardware };
+  },
+  snapshot: () => diagnosticSnapshot({ compact: true }),
+  live: () => `${liveDiagnostics.text()}\n${liveDiagnostics.perfText()}`,
+  performance: async (seconds, signal) => {
+    if (!runtime.child) throw new Error('No running AXRB game. Start the game and keep the headset active before measuring.');
+    if (aiGameId && aiGameId !== runtime.game) throw new Error('Selected game is not the running game.');
+    const game = state.data.games.find(g => g.id === runtime.game);
+    return run('powershell.exe', performanceScanArgs(root, state.data.settings, { seconds, version: app.getVersion(), packageName: game?.package || '' }),
+      { timeout: performanceScanTimeout(seconds), signal });
+  },
+  approveStop: async (reason, signal, assertScope) => {
+    if (!runtime.child) return { stopped: false, reason: 'No running game.' };
+    if (aiGameId && aiGameId !== runtime.game) throw new Error('Selected game is not the running game.');
+    const { response } = await dialog.showMessageBox(window, { type: 'question', title: 'AXRB diagnostic action',
+      message: 'Allow the assistant to stop the running game?', detail: `${cleanEvidence(reason)}\n\nUnsaved game progress may be lost.`,
+      buttons: ['Keep running', 'Stop game'], defaultId: 0, cancelId: 0, noLink: true, signal });
+    signal.throwIfAborted(); assertScope();
+    if (response !== 1) return { stopped: false, reason: 'User declined. Do not request this again in this investigation.' };
+    await exclusive(() => runtime.stop());
+    return { stopped: true };
+  },
+  approveAdb: async (args, reason, signal, assertScope) => {
+    const { response }=await dialog.showMessageBox(window,{type:'question',title:'AXRB assistant',
+      message:'Allow this emulator command?',
+      detail:`${reason}\n\nTarget: emulator-${runtime.settings.port} (AXRB only)\nArguments: ${JSON.stringify(args)}\n\nThis may modify Android, installed games, files or runtime state.`,
+      buttons:['Cancel','Run command'],defaultId:0,cancelId:0,noLink:true,signal});
+    signal.throwIfAborted();assertScope();return response===1;
+  },
+});
+aiDiagnostics = new AiDiagnostics(chatgpt, fetch, () => {
+  if (aiUpdateTimer) return;
+  aiUpdateTimer = setTimeout(() => {
+    aiUpdateTimer = null;
+    if (window && !window.isDestroyed()) window.webContents.send('axrb:ai-update', aiDiagnostics.status());
+  }, 60);
+}, aiHarness);
+handler('aiStatus', async () => ({ auth: await chatgpt.status(), ...aiDiagnostics.status(),
+  games: state.data.games.filter(g => g.package).map(g => ({ id: g.id, name: g.title || g.name || g.package })) }));
+let aiAccountOperation = false;
+handler('aiAccount', async ({ action, id } = {}) => {
+  if (aiAccountOperation || aiDiagnostics.controller) throw new Error('Finish or stop the current AI operation first.');
+  aiAccountOperation = true;
+  try {
+    if (!['login', 'select', 'logout'].includes(action)) throw new Error('Unknown account action.');
+    aiDiagnostics.reset(); aiDiagnostics.models = []; aiDiagnostics.limits = null; aiDiagnostics.cacheKey = `axrb-${randomUUID()}`;
+    return action === 'login' ? await chatgpt.login(id) : action === 'select' ? await chatgpt.select(id) : await chatgpt.logout();
+  } finally { aiAccountOperation = false; }
+});
+handler('aiModels', async () => {
+  if (aiAccountOperation || chatgpt.pending || aiDiagnostics.controller) throw new Error('Finish the current AI operation first.');
+  aiAccountOperation = true;
+  try { return await aiDiagnostics.catalog(); } finally { aiAccountOperation = false; }
+});
+handler('aiCollect', async () => {
+  const bundle = cleanEvidence(await diagnosticSnapshot({ compact: true }));
+  return { evidence: bundle.slice(0, MAX_EVIDENCE), truncated: bundle.length > MAX_EVIDENCE, collectedAt: new Date().toISOString() };
+});
+handler('aiAnalyze', input => {
+  if (aiAccountOperation || chatgpt.pending) throw new Error('Finish ChatGPT sign-in first.');
+  if (aiDiagnostics.controller) throw new Error('An analysis is already running.');
+  const selected = input?.gameId || '';
+  if (selected && !state.data.games.some(g => g.id === selected && g.package)) throw new Error('Select a game from your library.');
+  if (aiGameId !== selected) aiDiagnostics.reset();
+  aiGameId = selected;
+  return aiDiagnostics.analyze(input);
+});
+handler('aiCancel', () => { chatgpt.cancel(); aiDiagnostics.cancel(); });
+handler('aiReset', () => aiDiagnostics.reset());
+handler('aiReport', async ({ text, action } = {}) => {
+  text = checkedText(text, 180000, 'Report');
+  if (action === 'issue') {
+    // User reviews the draft in AXRB, then pastes it into GitHub and submits it.
+    // No diagnostics are encoded in a URL or published by the launcher.
+    clipboard.writeText(text);
+    await shell.openExternal('https://github.com/TheReal-Flo/AXRB-BS/issues/new');
+    return { copied: true };
+  }
+  if (action !== 'save') throw new Error('Unknown report action.');
+  const result = await dialog.showSaveDialog(window, { title: 'Save bug report', defaultPath: 'AXRB-bug-report.md', filters: [{ name: 'Markdown', extensions: ['md'] }] });
+  if (result.canceled || !result.filePath) return { path: null };
+  await fs.writeFile(portableOutput(portable, result.filePath), text, 'utf8');
+  return { path: result.filePath };
 });
 // A scan describes a session that is happening, not one that happened: it
 // samples the guest's threads and the bridge's timers while they run. The
@@ -723,10 +838,25 @@ if (smoke) window.webContents.on('console-message', details => { if (details.lev
 await window.loadFile(uiPath);
 window.show();
 window.focus();
+if (app.isPackaged && !smoke && !portable && !process.env.PORTABLE_EXECUTABLE_FILE && existsSync(path.join(process.resourcesPath,'app-update.yml'))) {
+  launcherUpdates=new LauncherUpdates({updater:electronUpdater.autoUpdater,
+    prompt:options=>dialog.showMessageBox(window,options),
+    progress:value=>{if(!window.isDestroyed())window.setProgressBar(value);},
+    log:text=>liveDiagnostics?.append('launcher',text,{tag:'update'}),
+    canInstall:()=>!busy && !setup?.status?.active && !aiDiagnostics?.controller,
+    install:async()=>{
+      installUpdateOnQuit=true;
+      try {await requestClose();} finally {if(!quitting)installUpdateOnQuit=false;}
+    }});
+  setTimeout(()=>{if(!quitting)void launcherUpdates.check();},2000).unref();
+}
 if (setup) await setup.check();
 if (smoke) {
   const { uiSmoke } = await import('./tests/ui-smoke.mjs');
   await uiSmoke(window, path.join(root, 'out/launcher/smoke'), publicState, uiErrors);
+  const { aiChatSmoke } = await import('./tests/ai-chat-smoke.mjs');
+  window.webContents.send('axrb:changed', publicState());
+  await aiChatSmoke(window, aiDiagnostics, chatgpt, path.join(root, 'out/launcher/smoke'));
   const { libraryActionsSmoke } = await import('./tests/library-actions-smoke.mjs');
   await libraryActionsSmoke(window, { state, runtime, dialog, persist, publicState, ovrport });
   app.quit();

@@ -65,6 +65,12 @@ export async function uiSmoke(window, directory, snapshot, errors) {
   await check(`Boolean(document.querySelector('[data-quest]'))`, 'Quest view did not render');
   await check(`Boolean(document.querySelector('[aria-label="Quest device"]')) && Boolean(document.querySelector('[aria-label="Refresh Quest"]'))`, 'Quest controls missing');
   await capture('quest');
+  await click('[data-nav="ai"]');
+  await check(`Boolean(document.querySelector('[aria-label="AI diagnostics"]'))`, 'AI harness did not render');
+  await check(`Array.from(document.querySelectorAll('button')).some(b => b.textContent === 'Continue with ChatGPT')`, 'ChatGPT sign-in missing');
+  await check(`Boolean(document.querySelector('[data-ai-composer] [aria-label="AI model"]'))`, 'Model picker is not inside chat input');
+  await check(`document.querySelector('[aria-label="Send message"]')?.disabled`, 'Analysis must require sign-in, model and consent');
+  await capture('ai-help');
   await click('[data-nav="settings"]');
   await check(`Boolean(document.querySelector('#settings-form'))`, 'Settings did not render');
   await input('#downloadDir', 'C:\\AXRB UI draft');

@@ -1,0 +1,146 @@
+﻿name: Launcher release
+on:
+  push:
+    paths: ['launcher/package.json', 'launcher/package-lock.json']
+  pull_request:
+    paths: ['launcher/package.json', 'launcher/package-lock.json']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.version.outputs.changed }}
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm ci --ignore-scripts
+        working-directory: launcher
+      - id: version
+        run: node scripts/build/release-version.mjs
+  build:
+    needs: version
+    if: needs.version.outputs.changed == 'true'
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      RELEASE_BUILD: ${{ github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch && github.repository == 'Android-XR-Bridge/AXRB' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: launcher/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android build dependencies
+        shell: pwsh
+        run: |
+          sdkmanager 'platforms;android-29' 'build-tools;36.1.0' 'ndk;27.3.13750724' 'cmake;3.22.1'
+          if ($LASTEXITCODE -ne 0) { throw 'Android SDK installation failed' }
+          $target = Join-Path $env:LOCALAPPDATA 'Android/Sdk'
+          if (!(Test-Path -LiteralPath $target)) {
+            New-Item -ItemType Directory -Force (Split-Path $target) | Out-Null
+            New-Item -ItemType Junction -Path $target -Target $env:ANDROID_HOME | Out-Null
+          }
+      - name: Restore runtime signing identity
+        if: env.RELEASE_BUILD == 'true'
+        shell: pwsh
+        env:
+          KEYSTORE: ${{ secrets.AXRB_ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.AXRB_ANDROID_KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.AXRB_ANDROID_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.AXRB_ANDROID_KEY_ALIAS }}
+        run: |
+          if (!$env:KEYSTORE) { throw 'Set AXRB_ANDROID_KEYSTORE_BASE64 to the existing runtime keystore before publishing.' }
+          $file = Join-Path $env:RUNNER_TEMP 'axrb-runtime.keystore'
+          [IO.File]::WriteAllBytes($file, [Convert]::FromBase64String($env:KEYSTORE))
+          "AXRB_KEYSTORE_PATH=$file" >> $env:GITHUB_ENV
+          'AXRB_REQUIRE_SIGNING=1' >> $env:GITHUB_ENV
+          "AXRB_KEYSTORE_PASSWORD=$env:STORE_PASSWORD" >> $env:GITHUB_ENV
+          "AXRB_KEY_PASSWORD=$env:KEY_PASSWORD" >> $env:GITHUB_ENV
+          "AXRB_KEY_ALIAS=$env:KEY_ALIAS" >> $env:GITHUB_ENV
+      - name: Optional Windows signing
+        if: env.RELEASE_BUILD == 'true'
+        shell: pwsh
+        env:
+          CERT: ${{ secrets.AXRB_WINDOWS_CERT_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.AXRB_WINDOWS_CERT_PASSWORD }}
+        run: |
+          if ($env:CERT) {
+            $file = Join-Path $env:RUNNER_TEMP 'axrb-windows.pfx'
+            [IO.File]::WriteAllBytes($file, [Convert]::FromBase64String($env:CERT))
+            "CSC_LINK=$file" >> $env:GITHUB_ENV
+            "CSC_KEY_PASSWORD=$env:CERT_PASSWORD" >> $env:GITHUB_ENV
+          }
+      - name: Build complete setup
+        shell: powershell
+        run: ./scripts/build/build-launcher.ps1 -Setup -KeepUnpacked
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AXRB-${{ needs.version.outputs.version }}-${{ github.run_id }}
+          overwrite: true
+          if-no-files-found: error
+          path: |
+            out/releases/AXRB-Setup-*.exe
+            out/releases/AXRB-Setup-*.exe.blockmap
+            out/releases/*-source.zip
+            out/releases/*-setup.txt
+            out/releases/*.yml
+            !out/releases/builder-debug.yml
+      - name: Remove signing material
+        if: always()
+        shell: pwsh
+        run: |
+          foreach ($name in @('axrb-runtime.keystore','axrb-windows.pfx')) {
+            Remove-Item -LiteralPath (Join-Path $env:RUNNER_TEMP $name) -Force -ErrorAction SilentlyContinue
+          }
+  publish:
+    needs: [version, build]
+    if: github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch && github.repository == 'Android-XR-Bridge/AXRB'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: AXRB-${{ needs.version.outputs.version }}-${{ github.run_id }}
+          path: release
+      - name: Publish complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.version.outputs.version }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+          TARGET: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          flags=()
+          if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); fi
+          if gh release view "v$VERSION" --json isDraft,targetCommitish > existing.json 2>/dev/null; then
+            node -e 'const r=require("./existing.json"); if(!r.isDraft || r.targetCommitish!==process.env.TARGET) throw Error("Refusing to overwrite an existing release or another commit");'
+            gh release upload "v$VERSION" release/* --clobber
+          else
+            gh release create "v$VERSION" release/* --draft --target "$TARGET" --title "AXRB $VERSION" --generate-notes "${flags[@]}"
+          fi
+          gh release edit "v$VERSION" --draft=false "${flags[@]}"

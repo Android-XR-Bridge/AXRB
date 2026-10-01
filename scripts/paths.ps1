@@ -79,3 +79,5 @@ $AxrbKeys = Join-Path $AxrbRoot '.local/keys'
 # generated debug key under .local; both paths are gitignored.
 $AxrbKeystore = Join-Path $AxrbRoot 'runtime.keystore'
 if (!(Test-Path -LiteralPath $AxrbKeystore)) { $AxrbKeystore = Join-Path $AxrbKeys 'runtime.keystore' }
+
+if ($env:AXRB_KEYSTORE_PATH) { $AxrbKeystore = $env:AXRB_KEYSTORE_PATH }
