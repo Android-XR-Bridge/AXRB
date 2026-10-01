@@ -1,8 +1,8 @@
-import { useState } from 'react';
-import { ChevronDown } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { ChevronDown, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { activeStatuses, call, EmulatorStatus } from './common';
+import { activeStatuses, bytes, call, EmulatorStatus } from './common';
 
 export function Settings({ state, run, pending, notify }) {
   const [draft, setDraft] = useState({ ...state.settings });
@@ -10,7 +10,31 @@ export function Settings({ state, run, pending, notify }) {
   const [report, setReport] = useState(null);
   const [scan, setScan] = useState(null);
   const [storage, setStorage] = useState(state.settings.storageGB ?? 32);
+  const [storageInfo, setStorageInfo] = useState(null);
+  const [storageError, setStorageError] = useState('');
+  const [loadingStorage, setLoadingStorage] = useState(false);
+  const storageRequest = useRef(false);
+  const hostCapacity = storageInfo?.host.totalBytes || 0;
+  const hostEnvironment = Math.min(storageInfo?.host.usedBytes || 0, hostCapacity);
+  const hostUsed = Math.max(0, Math.min(hostCapacity, hostCapacity - (storageInfo?.host.freeBytes || 0)));
+  const hostOther = Math.min(Math.max(0, hostUsed - hostEnvironment), hostCapacity - hostEnvironment);
+  const hostFree = Math.max(0, hostCapacity - hostEnvironment - hostOther);
+  const hostPercent = value => hostCapacity ? `${value / hostCapacity * 100}%` : '0%';
+  const androidPercent = value => storageInfo?.android?.totalBytes
+    ? `${Math.min(100, value / storageInfo.android.totalBytes * 100)}%` : '0%';
   const edit = (key, value) => { setDraft(d => ({ ...d, [key]: value })); setDirty(true); };
+  const refreshStorageInfo = async () => {
+    if (storageRequest.current) return;
+    storageRequest.current = true; setLoadingStorage(true); setStorageError('');
+    try { setStorageInfo(await call('storageInfo')); }
+    catch (error) { setStorageError(error.message); }
+    finally { storageRequest.current = false; setLoadingStorage(false); }
+  };
+  useEffect(() => {
+    void refreshStorageInfo();
+    const timer = setInterval(() => void refreshStorageInfo(), 30000);
+    return () => clearInterval(timer);
+  }, []);
   const browse = key => run(`choose-${key}`, async () => {
     const value = await call(key === 'ovrportCli' ? 'chooseCli' : 'chooseFolder');
     if (value) edit(key, value);
@@ -40,9 +64,9 @@ export function Settings({ state, run, pending, notify }) {
           <EmulatorStatus emulator={state.emulator} />
           <div className="flex shrink-0 gap-2">
             <Button type="button" variant="outline" disabled={pending.has('start-android') || state.busy || ['online', 'starting'].includes(state.emulator?.phase)}
-              onClick={() => run('start-android', async () => { await call('startAndroid'); notify('Android started'); })}>Start</Button>
+              onClick={() => run('start-android', async () => { await call('startAndroid'); await refreshStorageInfo(); notify('Android started'); })}>Start</Button>
             <Button type="button" variant="outline" disabled={pending.has('stop-android') || state.busy || Boolean(state.running) || !['online', 'starting'].includes(state.emulator?.phase)}
-              onClick={() => run('stop-android', async () => { await call('stopAndroid'); notify('Android stopped'); })}>Stop</Button>
+              onClick={() => run('stop-android', async () => { await call('stopAndroid'); await refreshStorageInfo(); notify('Android stopped'); })}>Stop</Button>
           </div>
         </div>
         {/* Escaped so the class stays valid under the stricter v-mode regex engine some Chromium builds use for pattern validation; an unescaped trailing hyphen used to pass unnoticed. */}
@@ -56,11 +80,50 @@ export function Settings({ state, run, pending, notify }) {
             <Button type="button" variant="outline" disabled={pending.has('storage') || storage === (state.settings.storageGB ?? 32)}
               onClick={() => run('storage', async () => {
                 const result = await call('storage', Number(storage));
+                await refreshStorageInfo();
                 notify(result.changed ? `Android storage set to ${result.storageGB} GB. It grows on the next Android start.` : 'Android storage is already that size.');
               })}>Resize</Button>
           </div>
           <p className="text-xs text-muted-foreground">Storage can only grow, and only while Android is stopped. The space is claimed as Android fills it, not up front.</p>
         </div>
+        <section className="space-y-3 rounded-md border p-4" aria-label="Storage usage" aria-live="polite">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="font-medium">Storage usage</h3>
+            <Button type="button" variant="outline" size="sm" disabled={loadingStorage} onClick={() => void refreshStorageInfo()}>
+              <RefreshCw className={loadingStorage ? 'animate-spin' : ''} />Refresh
+            </Button>
+          </div>
+          {storageError && <p className="text-sm text-destructive">{storageError}</p>}
+          {storageInfo && <>
+            <div className="space-y-2">
+              <div className="flex h-4 w-full overflow-hidden rounded-sm border bg-background" role="img"
+                aria-label={`${storageInfo.host.drive} drive, ${bytes(storageInfo.host.totalBytes)} total: Android environment ${bytes(storageInfo.host.usedBytes)}, other data ${bytes(hostOther)}, free ${bytes(storageInfo.host.freeBytes)}`}>
+                <span className="h-full bg-muted-foreground/50" style={{ width: hostPercent(hostOther) }} title={`Other drive usage: ${bytes(hostOther)}`} />
+                <span className="h-full bg-primary" style={{ width: hostPercent(hostEnvironment) }} title={`Android environment: ${bytes(hostEnvironment)}`} />
+                <span className="h-full" style={{ width: hostPercent(hostFree) }} title={`Free space: ${bytes(hostFree)}`} />
+              </div>
+              <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
+                <span className="flex items-center gap-1.5"><span className="size-2.5 rounded-sm bg-muted-foreground/50" />Other drive usage · {bytes(hostOther)}</span>
+                <span className="flex items-center gap-1.5"><span className="size-2.5 rounded-sm bg-primary" />Android environment · {bytes(hostEnvironment)}</span>
+                <span className="flex items-center gap-1.5"><span className="size-2.5 rounded-sm border" />Free · {bytes(hostFree)}</span>
+                <span className="ml-auto">{storageInfo.host.drive} · {bytes(storageInfo.host.totalBytes)} total</span>
+              </div>
+            </div>
+            {storageInfo.android
+              ? <div className="space-y-2">
+                <div className="flex items-baseline justify-between gap-3 text-sm">
+                  <span>Android internal storage</span>
+                  <span className="text-right tabular-nums text-muted-foreground">{bytes(storageInfo.android.usedBytes)} used · {bytes(storageInfo.android.freeBytes)} free of {bytes(storageInfo.android.totalBytes)}</span>
+                </div>
+                <div className="h-3 w-full overflow-hidden rounded-sm border bg-background" role="img"
+                  aria-label={`Android internal storage: ${bytes(storageInfo.android.usedBytes)} used, ${bytes(storageInfo.android.freeBytes)} free, ${bytes(storageInfo.android.totalBytes)} total`}>
+                  <div className="h-full bg-primary" style={{ width: androidPercent(storageInfo.android.usedBytes) }} />
+                </div>
+              </div>
+              : <p className="text-xs text-muted-foreground">Start Android to see internal storage usage. Host usage is the allocated size of the managed runtime folder, or the AVD folder for a custom SDK setup. Values refresh every 30 seconds.</p>}
+          </>}
+          {!storageInfo && !storageError && <p className="text-sm text-muted-foreground">Loading storage usage…</p>}
+        </section>
         <div className="space-y-2">
           <div className="flex items-center justify-between"><label htmlFor="cpuCores">vCPUs</label><output htmlFor="cpuCores">{draft.cpuCores ?? 4}</output></div>
           <input id="cpuCores" name="cpuCores" type="range" min="2" max="6" step="1" value={draft.cpuCores ?? 4} onChange={e => edit('cpuCores', Number(e.target.value))} className="w-full accent-primary" aria-describedby="cpu-restart" />
