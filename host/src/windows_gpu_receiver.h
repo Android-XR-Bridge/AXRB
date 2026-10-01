@@ -65,9 +65,13 @@ public:
         }
         for (UINT eye = 0; eye < eyeCount; ++eye) {
             const UINT sourceEye = sourceEyeCount == 1 ? 0u : eye;
-            if (projection && !projection->colors[eye].identity()) {
+            const bool sourceSrgb = frame.formats[sourceEye] == 43 || frame.formats[sourceEye] == 50;
+            const bool targetSrgb = targetFormat == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB ||
+                targetFormat == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+            if (sourceSrgb != targetSrgb || (projection && !projection->colors[eye].identity())) {
                 if (!colorRenderer || !colorRenderer->render(device,context,shared_[sourceEye].Get(),cached_.Get(),eye,
-                        projection->colors[eye],protocol::image_layer_flags(*projection,eye),frame.formats[sourceEye]==43)) return false;
+                        projection ? projection->colors[eye] : protocol::LayerColor{},
+                        projection ? protocol::image_layer_flags(*projection,eye) : 6u,sourceSrgb)) return false;
             } else context->CopySubresourceRegion(cached_.Get(), eye, 0, 0, 0, shared_[sourceEye].Get(), 0, nullptr);
         }
         return true;
