@@ -21,7 +21,7 @@ import { migrateClockPolicy } from './core/clock-policy.mjs';
 import { loadCompatibilityProfiles, resolveCompatibility, compatibilityPatchArgs, compatibilityRuntimeOptions } from './core/compatibility.mjs';
 import { Ovrport, selectedPatchArgs } from './core/ovrport.mjs';
 import { MetaSession } from './core/session.mjs';
-import { carryPortableFiles, configurePortable, portableOutput, sweepPortableTemp } from './core/portable.mjs';
+import { carryPortableFiles, configurePortable, portableOutput, removeManagedImportFiles, sweepPortableTemp } from './core/portable.mjs';
 import { performanceScanArgs, performanceScanTimeout } from './core/performance.mjs';
 import { ChatGPTAuth } from './core/chatgpt-auth.mjs';
 import { AiDiagnostics, cleanEvidence, checkedText, MAX_EVIDENCE } from './core/ai-diagnostics.mjs';
@@ -158,7 +158,7 @@ function handler(name, callback) {
     const started = Date.now(), trace = !name.startsWith('ai') && !['state', 'diagnosticsRead', 'diagnostics', 'copyText'].includes(name);
     if (trace) liveDiagnostics?.append('launcher', `${name} started`, { tag: 'operation' });
     try {
-      if (setup && setup.status.phase !== 'ready' && ['play', 'install', 'uninstall', 'import', 'patch', 'settings', 'questDevices', 'questGames', 'questImport', 'importZip', 'startAndroid', 'stopAndroid'].includes(name)) throw new Error('Complete runtime setup first.');
+      if (setup && setup.status.phase !== 'ready' && ['play', 'install', 'uninstall', 'removeImported', 'import', 'patch', 'settings', 'questDevices', 'questGames', 'questImport', 'importZip', 'startAndroid', 'stopAndroid'].includes(name)) throw new Error('Complete runtime setup first.');
       const value = await callback(...args);
       if (trace) liveDiagnostics?.append('launcher', `${name} completed (${Date.now() - started} ms)`, { tag: 'operation' });
       return { ok: true, value };
@@ -502,6 +502,24 @@ handler('uninstall', id => exclusive(async () => {
   } catch (error) { job.status = 'failed'; job.error = message(error); }
   finally { await persist(); }
   return job.status === 'complete';
+}));
+handler('removeImported', id => exclusive(async () => {
+  const game = getGame(id);
+  if (game.source === 'meta' || !game.apk) throw new Error('Only locally imported apps can be deleted here.');
+  if (runtime.child) throw new Error('Close the running game before deleting it.');
+  if (state.data.jobs.some(j => j.gameId === id && ['queued', 'downloading', 'installing', 'patching', 'importing', 'uninstalling'].includes(j.status))) {
+    throw new Error('Finish this game’s transfer before deleting it.');
+  }
+  const answer = await dialog.showMessageBox(window, { type: 'warning', title: 'Delete imported app',
+    message: `Delete ${game.name}?`,
+    detail: 'This uninstalls the app from AXRB’s Android emulator and deletes imported files copied into AXRB-managed storage. Android app data and saves will be lost. An original APK selected from outside AXRB will not be deleted.',
+    buttons: ['Cancel', 'Delete app'], defaultId: 0, cancelId: 0, noLink: true });
+  if (answer.response !== 1) return false;
+  if (game.installed) await runtime.uninstall(game, () => {});
+  await removeManagedImportFiles(game, state.data.settings.downloadDir);
+  state.data.games = state.data.games.filter(item => item !== game);
+  await persist();
+  return true;
 }));
 handler('patch', (id, selected) => exclusive(async () => {
   const game = getGame(id), cli = await configuredCli();
