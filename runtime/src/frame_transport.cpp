@@ -11,6 +11,8 @@ public:
         close_socket();
     }
 
+    bool has_connected_once() const { return everConnected_; }
+
     // In the emulator GPU-sharing path, the host copies each exported image
     // into host-owned storage before acknowledging it. Defer that round trip
     // until immediately before the guest could overwrite the shared image, so
@@ -281,6 +283,7 @@ private:
 
     void note_connected(const char* route)
     {
+        everConnected_ = true;
         connectedAtNs_ = monotonic_time_ns();
         established_ = false;
         route_ = route;
@@ -304,6 +307,7 @@ private:
 
     int socket_ = -1;
     bool directWindows_ = false;
+    bool everConnected_ = false;
     int lastError_ = 0;
     XrTime lastConnectAttemptNs_ = 0;
     XrTime connectedAtNs_ = 0;
@@ -861,6 +865,9 @@ XrResult submit_projection_frame(const XrFrameEndInfo& info, uint32_t batchPart,
                 return XR_SUCCESS;
             }
             if (batchPart) return XR_ERROR_RUNTIME_FAILURE;
+            // No consumer has seen the initial image if the first connection is not ready.
+            // Retry export next frame; retain the safety fallback after any connection.
+            if (!image_transport_client().has_connected_once()) return XR_SUCCESS;
             // Never reuse shared images after an uncertain consumer completion.
             g_vulkan.disable_gpu_export();
             __android_log_print(ANDROID_LOG_WARN, "AXRB.GPU", "GPU consumer unavailable; disabling shared export for this session");
