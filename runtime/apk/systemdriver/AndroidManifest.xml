@@ -1,0 +1,4 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.oculus.systemdriver" android:versionCode="1" android:versionName="0.1-axrb-compat">
+  <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="29" />
+  <application android:allowBackup="false" android:extractNativeLibs="true" android:hasCode="true" android:label="AXRB Legacy OpenXR Adapter" />
+</manifest>

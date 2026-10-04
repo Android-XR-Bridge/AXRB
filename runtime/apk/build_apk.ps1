@@ -66,4 +66,27 @@ try {
     Run "$bt\apksigner.bat" ($signArgs + @('--out', "$build\axrb-openxr-runtime-debug.apk", "$build\aligned.apk"))
     Run "$bt\apksigner.bat" @('verify', "$build\axrb-openxr-runtime-debug.apk")
     Write-Host "Built $build\axrb-openxr-runtime-debug.apk"
+
+    # Older Oculus loaders discover this package instead of the OpenXR broker.
+    # Bundle the same ABI/runtime and signing identity, not a separately built copy.
+    $driver = Join-Path $build 'systemdriver'
+    foreach ($dir in @('classes', 'dex', "package\lib\$Abi")) {
+        New-Item -ItemType Directory -Force "$driver\$dir" | Out-Null
+    }
+    $llvm = Join-Path $Sdk "ndk\$NdkVersion\toolchains\llvm\prebuilt\windows-x86_64"
+    $target = @{ 'x86_64' = 'x86_64-linux-android29'; 'arm64-v8a' = 'aarch64-linux-android29' }[$Abi]
+    Run "$llvm\bin\clang++.exe" @("--target=$target", "--sysroot=$llvm\sysroot", '-shared', '-fPIC', '-O2', '-std=c++17', '-static-libstdc++', '-Wall', '-Wextra', '-Wl,--no-undefined', "$PSScriptRoot\systemdriver\legacy_driver.cpp", '-llog', '-ldl', '-o', "$driver\package\lib\$Abi\libaxrb_legacy_driver.so")
+    Run "$bt\aapt2.exe" @('link', '-I', $androidJar, '--manifest', "$PSScriptRoot\systemdriver\AndroidManifest.xml", '-o', "$driver\base.apk")
+    Run "$Jdk\bin\javac.exe" @('-source', '8', '-target', '8', '-Xlint:-options', '-bootclasspath', $androidJar, '-d', "$driver\classes", "$PSScriptRoot\systemdriver\DriverLoader.java")
+    $driverClasses = @(Get-ChildItem "$driver\classes" -Recurse -Filter '*.class' | ForEach-Object FullName)
+    Run "$bt\d8.bat" (@('--min-api', '29', '--output', "$driver\dex") + $driverClasses)
+    Copy-Item "$build\package\lib\$Abi\libopenxr_runtime.so" "$driver\package\lib\$Abi" -Force
+    Copy-Item "$driver\dex\classes.dex" "$driver\package" -Force
+    Copy-Item "$driver\base.apk" "$driver\unsigned.apk" -Force
+    Run "$Jdk\bin\jar.exe" @('uf', "$driver\unsigned.apk", '-C', "$driver\package", 'classes.dex', '-C', "$driver\package", 'lib')
+    Run "$bt\zipalign.exe" @('-f', '-p', '4', "$driver\unsigned.apk", "$driver\aligned.apk")
+    Run "$bt\apksigner.bat" ($signArgs + @('--out', "$build\axrb-systemdriver-debug.apk", "$driver\aligned.apk"))
+    Run "$bt\apksigner.bat" @('verify', "$build\axrb-systemdriver-debug.apk")
+    Write-Host "Built $build\axrb-systemdriver-debug.apk"
+
 } finally { $env:JAVA_HOME = $oldJavaHome }
