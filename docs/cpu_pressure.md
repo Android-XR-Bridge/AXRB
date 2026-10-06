@@ -15,10 +15,10 @@ game. Interleaved matrix, synthetic head pose, medians of six 20 s windows
 | --- | --- | --- | --- | --- |
 | Nexus | baseline | 1.84 | 21.3 | 86.7 |
 | Nexus | cached buffers + native skinning | 1.25 | 14.0 (-34%) | 89.6 |
-| Nexus | + hypervisor APIC + asg (default now) | 0.99 | 11.0 (-48%) | 89.8 |
+| Nexus | + hypervisor APIC + asg (measured configuration) | 0.99 | 11.0 (-48%) | 89.8 |
 | North Star | baseline | 2.11 | 25.3 | 83.6 |
 | North Star | cached buffers + native skinning | 1.82 | 20.5 (-19%) | 88.8 |
-| North Star | + hypervisor APIC + asg (default now) | 1.61 | 18.9 (-25%) | 85.1 |
+| North Star | + hypervisor APIC + asg (measured configuration) | 1.61 | 18.9 (-25%) | 85.1 |
 
 The baseline is the state before this work: uncached host-visible buffers,
 Unity's own skinning code, QEMU's local APIC and the pipe graphics transport.
@@ -201,7 +201,7 @@ boots, so differences below about 10% need more rounds. `session.py` refuses
 to measure when the hypervisor APIC was requested but is not active; the
 guest's reschedule-interrupt (`RES`) and `LOC` rates also tell the two apart.
 
-It is the default with the clock helper (Finding 7);
+It is opt-in after reports of boot failures on other hosts;
 `scripts/emulator/windows_android_emulator.ps1 -LocalApic` (`Qemu`,
 `Hypervisor`, `HypervisorX2Apic`), `run_windows_game.ps1 -LocalApic` and the
 launcher setting `localApic` override it. x2APIC measured the same as xAPIC
@@ -240,11 +240,14 @@ APIC in every row, medians of four 20 s windows:
 Only the transport is adopted: the translator options are within noise, and
 precise SIGSEGV reporting is what games that catch their own faults need.
 
-Both are defaults now: `windows_android_emulator.ps1 -LocalApic Auto` selects
-the hypervisor APIC whenever the clock helper runs (TscCorrected), and
+`windows_android_emulator.ps1 -LocalApic Auto` selects QEMU's APIC for boot
+compatibility, including with TscCorrected. Hypervisor APIC modes remain opt-in:
+WHPX accepting their setup does not prove that the guest will boot. Meanwhile,
 `-GraphicsTransport Asg` sets `hw.gltransport=asg` in the AVD before starting
-it. `-LocalApic Qemu` and `-GraphicsTransport Pipe` restore the previous
-behaviour; the launcher setting `localApic` passes through.
+it. `-LocalApic Hypervisor` enables the measured APIC optimization;
+`-GraphicsTransport Pipe` restores the previous transport. The launcher
+setting `localApic` passes through. Explicit modes override inherited APIC
+environment flags for the emulator child.
 
 ## Generic options that did not help
 

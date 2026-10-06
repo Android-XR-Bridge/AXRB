@@ -576,6 +576,41 @@ int main()
         (aim ? inputFrame.aim_active[0] : inputFrame.controllers[0].active) = 0;
         if (locateSpace(actionSpace, space, 1, &location) != XR_SUCCESS || location.locationFlags || velocity.velocityFlags) return EXIT_FAILURE;
     }
+    // Batman binds one pose action to both hands, then creates two spaces.
+    // Both must follow fresh transport values independently on every query.
+    XrPath rightPath{}, rightAimPath{};
+    if (stringToPath(instance, "/user/hand/right", &rightPath) != XR_SUCCESS ||
+        stringToPath(instance, "/user/hand/right/input/aim/pose", &rightAimPath) != XR_SUCCESS) return EXIT_FAILURE;
+    XrPath hands[]{leftPath, rightPath};
+    XrActionCreateInfo bilateralInfo{XR_TYPE_ACTION_CREATE_INFO};
+    bilateralInfo.actionType = XR_ACTION_TYPE_POSE_INPUT;
+    std::strcpy(bilateralInfo.actionName, "bilateral_pose");
+    std::strcpy(bilateralInfo.localizedActionName, "Bilateral pose");
+    bilateralInfo.countSubactionPaths = 2; bilateralInfo.subactionPaths = hands;
+    XrAction bilateral{};
+    if (createAction(actionSet, &bilateralInfo, &bilateral) != XR_SUCCESS) return EXIT_FAILURE;
+    XrActionSuggestedBinding bindings[]{{bilateral, aimPath}, {bilateral, rightAimPath}};
+    XrInteractionProfileSuggestedBinding bilateralBindings{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+    bilateralBindings.interactionProfile = profile;
+    bilateralBindings.countSuggestedBindings = 2; bilateralBindings.suggestedBindings = bindings;
+    if (suggest(instance, &bilateralBindings) != XR_SUCCESS) return EXIT_FAILURE;
+    XrSpace handSpaces[2]{};
+    for (int hand = 0; hand < 2; ++hand) {
+        XrActionSpaceCreateInfo info{XR_TYPE_ACTION_SPACE_CREATE_INFO};
+        info.action = bilateral; info.subactionPath = hands[hand]; info.poseInActionSpace.orientation.w = 1;
+        if (createActionSpace(session, &info, &handSpaces[hand]) != XR_SUCCESS) return EXIT_FAILURE;
+        inputFrame.aim_active[hand] = 1; inputFrame.aim_flags[hand] = 15;
+    }
+    for (int sample = 0; sample < 3; ++sample) {
+        inputFrame.aim[0] = {float(sample + 1), 2, 3};
+        inputFrame.aim[1] = {float(-sample - 1), 4, 5};
+        for (int hand = 0; hand < 2; ++hand) {
+            XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};
+            if (locateSpace(handSpaces[hand], space, 1, &location) != XR_SUCCESS ||
+                location.locationFlags != 15 || location.pose.position.x != inputFrame.aim[hand].x)
+                return EXIT_FAILURE;
+        }
+    }
 #endif
     std::vector<XrAction> actions;
     for (int i = 0; i < 256; ++i) {

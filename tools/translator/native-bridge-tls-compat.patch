@@ -1,0 +1,54 @@
+diff --git a/android_api/linker/__libc_init_main_thread.cpp b/android_api/linker/__libc_init_main_thread.cpp
+index fea38b2..50e9212 100644
+--- a/android_api/linker/__libc_init_main_thread.cpp
++++ b/android_api/linker/__libc_init_main_thread.cpp
+@@ -31,6 +31,9 @@ extern "C" void __native_bridge_config_static_tls(const NativeBridgeStaticTlsCon
+ 
+ // Get the current thread's host pthread_internal_t.
+ extern "C" pthread_t __native_bridge_get_host_pthread();
++#if defined(__aarch64__)
++extern "C" void* __native_bridge_get_host_bionic_tls();
++#endif
+ 
+ // The host has already initialized the thread and created its
+ // pthread_internal_t object. The guest needs to initialize its globals and the
+@@ -50,7 +53,12 @@ extern "C" void __libc_init_main_thread_early(const KernelArgumentBlock& args,
+ 
+ extern "C" void __libc_init_main_thread_late() {
+   // Reuse the host's bionic_tls structure.
++#if defined(__aarch64__)
++  // Host pthread_internal_t fields can move between Android releases.
++  __get_tls()[TLS_SLOT_BIONIC_TLS] = __native_bridge_get_host_bionic_tls();
++#else
+   __get_tls()[TLS_SLOT_BIONIC_TLS] = __get_thread()->bionic_tls;
++#endif
+ 
+   // There's currently no way for the guest to query the host's stack guard
+   // cookie, so just generate a new one.
+diff --git a/android_api/linker/init_static_tls_arm64.S b/android_api/linker/init_static_tls_arm64.S
+index 553e7a2..7e57691 100644
+--- a/android_api/linker/init_static_tls_arm64.S
++++ b/android_api/linker/init_static_tls_arm64.S
+@@ -27,3 +27,10 @@ __native_bridge_config_static_tls:
+ __native_bridge_get_host_pthread:
+   ldr x3, =0
+   blr x3
++
++.text
++.globl __native_bridge_get_host_bionic_tls
++.type __native_bridge_get_host_bionic_tls, #function
++__native_bridge_get_host_bionic_tls:
++  ldr x3, =0
++  blr x3
+diff --git a/android_api/linker/linker.generic.map b/android_api/linker/linker.generic.map
+index c1beb2f..898c641 100644
+--- a/android_api/linker/linker.generic.map
++++ b/android_api/linker/linker.generic.map
+@@ -41,6 +41,7 @@
+     rtld_db_dlactivity;
+     __native_bridge_config_static_tls;
+     __native_bridge_get_host_pthread;
++    __native_bridge_get_host_bionic_tls;
+     __loader_android_set_16kb_appcompat_mode;
+   local:
+     *;

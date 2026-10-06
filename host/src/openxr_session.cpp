@@ -147,9 +147,13 @@ bool OpenXrSession::initialize(const std::string& gameName)
         uint32_t parsed = 0;
         const auto end = value + std::strlen(value);
         const auto result = std::from_chars(value, end, parsed);
-        if (result.ec == std::errc{} && result.ptr == end && parsed <= 8000) freshFrameWaitUs_ = parsed;
+        if (result.ec == std::errc{} && result.ptr == end && parsed <= 8000) {
+            freshFrameWaitUs_ = parsed; fixedFreshFrameWait_ = true;
+        }
     }
-    std::fprintf(stderr, "AXRB timing experiment: max_fresh_wait_us=%u clock_extension=%s\n", freshFrameWaitUs_, performanceCounterTimeEnabled_ ? "available" : "unavailable");
+    std::fprintf(stderr, "AXRB frame pickup: mode=%s max_fresh_wait_us=%u clock_extension=%s\n",
+        fixedFreshFrameWait_ ? "fixed" : "adaptive", fixedFreshFrameWait_ ? freshFrameWaitUs_ : 8000,
+        performanceCounterTimeEnabled_ ? "available" : "unavailable");
 #endif
     std::fprintf(stderr, "AXRB compositor: equirect2=%s\n", equirectEnabled_ ? "enabled" : "unavailable");
     if (handTrackingEnabled_) {

@@ -83,7 +83,7 @@ class ReleaseChecksumTests(unittest.TestCase):
             for name in ('launcher', 'host', 'runtime', 'protocol', 'scripts/build', 'tests'):
                 (root / name).mkdir(parents=True)
             (root / 'launcher/package.json').write_text('{"version":"1.2.3"}')
-            for name in ('CMakeLists.txt', 'CMakePresets.json', 'README.md', '.gitignore', 'logo_axrb.png'):
+            for name in ('CMakeLists.txt', 'CMakePresets.json', 'README.md', '.gitignore', 'logo_axrb.png', 'LICENSE', 'CONTRIBUTING.md'):
                 (root / name).write_bytes(b'fixture')
             profile = root / 'launcher/profile'
             profile.mkdir()

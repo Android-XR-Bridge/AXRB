@@ -1,12 +1,14 @@
 #pragma once
-// Stores the game's ASTC textures as BC7.
+// Stores ASTC as GPU-transcoded BC3 (BC7 quality option) and ETC2/EAC as BC1/3/4/5.
+// GPU conversion uses primary one-time command buffers on compute queues;
+// unsupported uploads use CPU BC3, and unavailable GPU devices retain BC7.
 //
 // Desktop GPUs cannot sample ASTC, so the emulator's host renderer keeps every
 // ASTC image as RGBA8 (32 bits per texel) plus the compressed original: a
 // 2048 x 2048 ASTC 6x6 texture with mipmaps takes 24 MiB of VRAM instead of
 // 2.5 MiB. BC7 is sampled natively at 8 bits per texel (5.3 MiB).
 //
-// An ASTC image the game creates is created as the BC7 format of the same
+// An ASTC image the game creates is created as a BC format of the same
 // color space instead, and so are its views. A buffer-to-image copy into it
 // is recorded from a staging buffer of this layer; the ASTC bytes are copied
 // out of the game's buffer when the copy is recorded and transcoded by the
@@ -33,7 +35,9 @@
 #include <unordered_map>
 #include <vector>
 #include "astc_to_bc7.h"
+#include "etc2_to_bc.h"
 #include "transcode_workers.h"
+#include "gpu_astc.h"
 
 namespace axrb::texture {
 
@@ -48,10 +52,36 @@ inline bool astc_to_bc7_enabled() {
 
 inline VkFormat bc7_format(bool srgb) { return srgb ? VK_FORMAT_BC7_SRGB_BLOCK : VK_FORMAT_BC7_UNORM_BLOCK; }
 
+inline bool compressed_format(VkFormat format, int& bw, int& bh, bool& srgb,
+                              Codec& codec, VkFormat& target) {
+    if (astc::block_size(uint32_t(format), &bw, &bh, &srgb)) {
+        codec = Codec::Astc; target = bc7_format(srgb); return true;
+    }
+    bw = bh = 4; srgb = false;
+    switch (format) {
+    case VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK: srgb = true; [[fallthrough]];
+    case VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK: codec = Codec::Etc2Rgb; target = srgb ? VK_FORMAT_BC1_RGB_SRGB_BLOCK : VK_FORMAT_BC1_RGB_UNORM_BLOCK; break;
+    case VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK: srgb = true; [[fallthrough]];
+    case VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK: codec = Codec::Etc2RgbA1; target = srgb ? VK_FORMAT_BC1_RGBA_SRGB_BLOCK : VK_FORMAT_BC1_RGBA_UNORM_BLOCK; break;
+    case VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK: srgb = true; [[fallthrough]];
+    case VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK: codec = Codec::Etc2Rgba; target = srgb ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK; break;
+    case VK_FORMAT_EAC_R11_UNORM_BLOCK: codec = Codec::EacR; target = VK_FORMAT_BC4_UNORM_BLOCK; break;
+    case VK_FORMAT_EAC_R11_SNORM_BLOCK: codec = Codec::EacRSigned; target = VK_FORMAT_BC4_SNORM_BLOCK; break;
+    case VK_FORMAT_EAC_R11G11_UNORM_BLOCK: codec = Codec::EacRg; target = VK_FORMAT_BC5_UNORM_BLOCK; break;
+    case VK_FORMAT_EAC_R11G11_SNORM_BLOCK: codec = Codec::EacRgSigned; target = VK_FORMAT_BC5_SNORM_BLOCK; break;
+    default: return false;
+    }
+    return true;
+}
+
 // Next-layer entry points of one device.
 struct DeviceCalls {
     VkDevice device = VK_NULL_HANDLE;
     VkPhysicalDeviceMemoryProperties memory{};
+    PFN_vkGetDeviceProcAddr gdpa = nullptr;
+    PFN_vkSetDeviceLoaderData loader = nullptr;
+    uint32_t computeFamilies = 0;
+    VkDeviceSize maxStorageRange = 0;
     PFN_vkCreateImage createImage = nullptr;
     PFN_vkDestroyImage destroyImage = nullptr;
     PFN_vkCreateImageView createImageView = nullptr;
@@ -90,7 +120,10 @@ public:
         std::lock_guard lock(mutex_);
         devices_[calls.device] = std::make_shared<DeviceState>(calls);
         bc7_settings(false);
-        __android_log_print(ANDROID_LOG_INFO, tag, "ASTC textures stored as BC7; %d transcoding worker(s) off the main thread",
+        const auto& state = devices_[calls.device];
+        __android_log_print(ANDROID_LOG_INFO, tag, "ASTC mode: %s",
+                            state->gpu && state->gpu->ready() ? "GPU BC3 (CPU BC3 fallback)" : "CPU BC7");
+        __android_log_print(ANDROID_LOG_INFO, tag, "ASTC/ETC2/EAC textures stored as native BC; %d transcoding worker(s) off the main thread",
                             Workers::instance().count());
     }
     void remove_device(VkDevice device) {
@@ -120,17 +153,21 @@ public:
         auto state = device_state(device);
         int bw = 0, bh = 0;
         bool srgb = false;
-        if (!state || !info || !astc::block_size(uint32_t(info->format), &bw, &bh, &srgb) || !substitutable(*info))
+        Codec codec = Codec::None;
+        VkFormat target = VK_FORMAT_UNDEFINED;
+        if (!state || !info || !compressed_format(info->format, bw, bh, srgb, codec, target) || !substitutable(*info))
             return state ? state->calls.createImage(device, info, allocator, out) : VK_ERROR_INITIALIZATION_FAILED;
+        if (codec == Codec::Astc && state->gpu && state->gpu->ready())
+            target = srgb ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
         VkImageCreateInfo bc7 = *info;
-        bc7.format = bc7_format(srgb);
+        bc7.format = target;
         const VkResult result = state->calls.createImage(device, &bc7, allocator, out);
         if (result != VK_SUCCESS) return result;
         std::lock_guard lock(mutex_);
-        images_[*out] = {device, info->format, bw, bh, srgb, info->extent, info->mipLevels};
+        images_[*out] = {device, info->format, bw, bh, srgb, info->extent, info->mipLevels, codec, target};
         ++stats_.images;
-        stats_.emulatedBytes += emulated_bytes(*info, bw, bh);
-        stats_.bc7Bytes += bc7_bytes(*info);
+        stats_.emulatedBytes += emulated_bytes(*info, bw, bh, codec == Codec::Astc ? 16 : block_bytes(codec));
+        stats_.bc7Bytes += bc7_bytes(*info, codec == Codec::Astc ? 16 : block_bytes(codec));
         return result;
     }
     void destroy_image(VkDevice device, VkImage image, const VkAllocationCallbacks* allocator) {
@@ -151,7 +188,7 @@ public:
             auto it = images_.find(info->image);
             int bw, bh;
             bool srgb;
-            if (it != images_.end() && astc::block_size(uint32_t(info->format), &bw, &bh, &srgb)) view.format = bc7_format(srgb);
+            if (it != images_.end()) view.format = it->second.target;
         }
         return state->calls.createImageView(device, &view, allocator, out);
     }
@@ -192,9 +229,16 @@ public:
 
     // --- Command buffers --------------------------------------------------
 
-    void allocated_command_buffers(VkDevice device, VkCommandPool pool, uint32_t count, const VkCommandBuffer* buffers) {
+    void created_pool(VkCommandPool pool, uint32_t family) {
+        std::lock_guard lock(mutex_); families_[pool] = family;
+    }
+    void began(VkCommandBuffer command, VkCommandBufferUsageFlags flags) {
         std::lock_guard lock(mutex_);
-        for (uint32_t i = 0; i < count; ++i) pools_[buffers[i]] = pool;
+        oneTime_[command] = (flags & VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT) && !(flags & VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT);
+    }
+    void allocated_command_buffers(VkDevice device, VkCommandPool pool, uint32_t count, const VkCommandBuffer* buffers, bool primary = true) {
+        std::lock_guard lock(mutex_);
+        for (uint32_t i = 0; i < count; ++i) { pools_[buffers[i]] = pool; primaries_[buffers[i]] = primary; }
         (void)device;
     }
     // Reset, begin (an implicit reset), or free: the recorded uploads are done with.
@@ -215,7 +259,7 @@ public:
         for (uint32_t i = 0; i < count; ++i) {
             reset_command_buffer(buffers[i]);
             std::lock_guard lock(mutex_);
-            pools_.erase(buffers[i]);
+            pools_.erase(buffers[i]); primaries_.erase(buffers[i]); oneTime_.erase(buffers[i]);
         }
     }
     void reset_pool(VkCommandPool pool, bool destroyed) {
@@ -228,7 +272,10 @@ public:
         for (VkCommandBuffer command : members) reset_command_buffer(command);
         if (destroyed) {
             std::lock_guard lock(mutex_);
-            for (VkCommandBuffer command : members) pools_.erase(command);
+            for (VkCommandBuffer command : members) {
+                pools_.erase(command); primaries_.erase(command); oneTime_.erase(command);
+            }
+            families_.erase(pool);
         }
     }
     void executed(VkCommandBuffer primary, uint32_t count, const VkCommandBuffer* secondaries) {
@@ -311,7 +358,13 @@ public:
 
         std::lock_guard lock(mutex_);
         auto& command_ = command_state(command, state.get());
-        Staging staging = state->take(stagingSize, command_);
+        const bool bc3 = image.codec == Codec::Astc && image.target != bc7_format(image.srgb);
+        const uint32_t family = families_.count(pools_[command]) ? families_[pools_[command]] : 32;
+        const VkDeviceSize inputOffset = (stagingSize + 15) & ~VkDeviceSize(15);
+        const VkDeviceSize total = inputOffset + upload->source->size();
+        const bool gpu = bc3 && primaries_[command] && oneTime_[command] && family < 32 &&
+                         (state->calls.computeFamilies & (1u << family)) && total <= state->calls.maxStorageRange;
+        Staging staging = state->take(gpu ? total : stagingSize, command_);
         if (!staging.buffer) {
             warn("staging memory unavailable; texture left without that content");
             return true;
@@ -324,7 +377,25 @@ public:
             copy.bufferImageHeight = 0;
             staged.push_back(copy);
         }
-        start(*upload);
+        if (gpu && staging.size <= state->calls.maxStorageRange) {
+            std::vector<GpuAstc::Push> pushes;
+            std::vector<uint32_t> slices;
+            for (const auto& r : upload->regions) {
+                pushes.push_back({uint32_t((staging.offset + inputOffset + r.sourceOffset)/4),
+                    uint32_t((staging.offset+r.bc7Offset)/4), uint32_t(r.astcRowBytes/16), uint32_t(r.astcSliceBytes/16),
+                    uint32_t((r.width+image.bw-1)/image.bw), uint32_t((r.height+image.bh-1)/image.bh),
+                    uint32_t((r.width+3)/4), uint32_t((r.height+3)/4), uint32_t(r.width), uint32_t(r.height),
+                    uint32_t(image.bw) | uint32_t(image.bh)<<8 | uint32_t(image.srgb)<<16});
+                slices.push_back(r.slices);
+            }
+            upload->gpu = state->gpu->record(family, staging.buffer, staging.size, pushes, slices);
+            if (upload->gpu) {
+                upload->gpuSource = staging.mapped + inputOffset;
+                std::memcpy(upload->gpuSource, upload->source->data(), upload->source->size());
+                for (const auto& r : upload->regions) upload->texels += uint64_t(r.width)*r.height*r.slices;
+            }
+        }
+        if (!upload->gpu) start(*upload);
         command_.uploads.push_back(upload);
         stats_.uploads += 1;
         stats_.uploadTexels += upload->texels;
@@ -343,7 +414,7 @@ public:
         if (uploads.empty()) return;
         const auto begin = std::chrono::steady_clock::now();
         for (auto& upload : uploads) {
-            upload->batch->wait();
+            if (upload->batch) upload->batch->wait();
             // The game may write its upload buffer after recording the copy;
             // it can only be read while the memory is still mapped where it was.
             bool readable = false;
@@ -354,8 +425,8 @@ public:
             }
             if (readable && std::memcmp(upload->live, upload->source->data(), upload->source->size())) {
                 std::memcpy(upload->source->data(), upload->live, upload->source->size());
-                start(*upload);
-                upload->batch->wait();
+                if (upload->gpu) std::memcpy(upload->gpuSource, upload->source->data(), upload->source->size());
+                else { start(*upload); upload->batch->wait(); }
                 std::lock_guard lock(mutex_);
                 ++stats_.retranscodes;
             }
@@ -363,6 +434,14 @@ public:
         std::lock_guard lock(mutex_);
         stats_.submitWaitSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
         report();
+    }
+
+    void gpu_commands(VkCommandBuffer command, std::vector<VkCommandBuffer>& result) {
+        std::lock_guard lock(mutex_);
+        auto it = commands_.find(command);
+        if (it == commands_.end()) return;
+        for (const auto& upload : it->second->uploads)
+            if (upload->gpu) result.push_back(upload->gpu->command);
     }
 
     void warn(const char* what) {
@@ -383,6 +462,8 @@ private:
         bool srgb = false;
         VkExtent3D extent{};
         uint32_t mips = 1;
+        Codec codec = Codec::Astc;
+        VkFormat target = VK_FORMAT_BC7_UNORM_BLOCK;
     };
     struct Buffer {
         VkDeviceMemory memory = VK_NULL_HANDLE;
@@ -413,6 +494,8 @@ private:
         const uint8_t* liveMapping = nullptr;
         uint8_t* target = nullptr;                      // staging memory at the upload's offset
         std::shared_ptr<Batch> batch;
+        std::shared_ptr<GpuAstc::Job> gpu;
+        uint8_t* gpuSource = nullptr;
         uint64_t texels = 0;
     };
     struct Chunk {
@@ -425,10 +508,17 @@ private:
         VkBuffer buffer = VK_NULL_HANDLE;
         VkDeviceSize offset = 0;
         uint8_t* mapped = nullptr;
+        VkDeviceSize size = 0;
     };
     struct CommandState;
     struct DeviceState {
-        explicit DeviceState(const DeviceCalls& c) : calls(c) {}
+        explicit DeviceState(const DeviceCalls& c) : calls(c) {
+            char value[PROP_VALUE_MAX]{};
+            __system_property_get("debug.axrb.astc_gpu", value);
+            if (std::strcmp(value,"0") && c.gdpa && c.loader && c.computeFamilies && c.maxStorageRange >= (16u << 20))
+                gpu = std::make_unique<GpuAstc>(c.device, c.gdpa, c.loader);
+        }
+        std::unique_ptr<GpuAstc> gpu;
         DeviceCalls calls;
         std::vector<Chunk> free;
         std::mutex chunks;
@@ -443,7 +533,7 @@ private:
                 command.chunks.push_back(chunk);
             }
             Chunk& chunk = command.chunks.back();
-            Staging staging{chunk.buffer, chunk.used, chunk.mapped + chunk.used};
+            Staging staging{chunk.buffer, chunk.used, chunk.mapped + chunk.used, chunk.size};
             chunk.used += size;
             return staging;
         }
@@ -462,7 +552,7 @@ private:
             chunk.size = std::max<VkDeviceSize>(size, 16u << 20);
             VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
             info.size = chunk.size;
-            info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+            info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | (gpu && gpu->ready() ? VK_BUFFER_USAGE_STORAGE_BUFFER_BIT : 0);
             if (calls.createBuffer(calls.device, &info, nullptr, &chunk.buffer) != VK_SUCCESS) return {};
             VkMemoryRequirements requirements;
             calls.bufferRequirements(calls.device, chunk.buffer, &requirements);
@@ -543,18 +633,18 @@ private:
         return info.imageType == VK_IMAGE_TYPE_2D && info.tiling == VK_IMAGE_TILING_OPTIMAL && !(info.flags & reinterpreting) &&
                !(info.usage & ~plain) && info.pNext == nullptr;
     }
-    static uint64_t emulated_bytes(const VkImageCreateInfo& info, int bw, int bh) {
+    static uint64_t emulated_bytes(const VkImageCreateInfo& info, int bw, int bh, uint32_t blockBytes) {
         uint64_t bytes = 0;
         for (uint32_t mip = 0; mip < info.mipLevels; ++mip) {
             const uint64_t w = std::max(1u, info.extent.width >> mip), h = std::max(1u, info.extent.height >> mip);
-            bytes += w * h * 4 + (w + bw - 1) / bw * ((h + bh - 1) / bh) * 16;
+            bytes += w * h * 4 + (w + bw - 1) / bw * ((h + bh - 1) / bh) * blockBytes;
         }
         return bytes * info.arrayLayers;
     }
-    static uint64_t bc7_bytes(const VkImageCreateInfo& info) {
+    static uint64_t bc7_bytes(const VkImageCreateInfo& info, uint32_t blockBytes) {
         uint64_t bytes = 0;
         for (uint32_t mip = 0; mip < info.mipLevels; ++mip)
-            bytes += uint64_t((std::max(1u, info.extent.width >> mip) + 3) / 4) * ((std::max(1u, info.extent.height >> mip) + 3) / 4) * 16;
+            bytes += uint64_t((std::max(1u, info.extent.width >> mip) + 3) / 4) * ((std::max(1u, info.extent.height >> mip) + 3) / 4) * blockBytes;
         return bytes * info.arrayLayers;
     }
     static bool host_visible(const DeviceState& state, uint32_t type) {
@@ -582,11 +672,12 @@ private:
         r.slices = int(copy.imageSubresource.layerCount * std::max(1u, e.depth));
         const uint32_t rowTexels = copy.bufferRowLength ? copy.bufferRowLength : e.width;
         const uint32_t sliceTexels = copy.bufferImageHeight ? copy.bufferImageHeight : e.height;
-        r.astcRowBytes = size_t((rowTexels + image.bw - 1) / image.bw) * 16;
+        const auto blockBytes = image.codec == Codec::Astc ? 16 : block_bytes(image.codec);
+        r.astcRowBytes = size_t((rowTexels + image.bw - 1) / image.bw) * blockBytes;
         r.astcSliceBytes = r.astcRowBytes * ((sliceTexels + image.bh - 1) / image.bh);
         r.astcBytes = VkDeviceSize(r.astcSliceBytes) * (r.slices - 1) + r.astcRowBytes * ((e.height + image.bh - 1) / image.bh - 1) +
-                      VkDeviceSize((e.width + image.bw - 1) / image.bw) * 16;
-        r.bc7RowBytes = size_t((e.width + 3) / 4) * 16;
+                      VkDeviceSize((e.width + image.bw - 1) / image.bw) * blockBytes;
+        r.bc7RowBytes = size_t((e.width + 3) / 4) * blockBytes;
         r.bc7SliceBytes = r.bc7RowBytes * ((e.height + 3) / 4);
         r.bc7Bytes = VkDeviceSize(r.bc7SliceBytes) * r.slices;
         return true;
@@ -606,7 +697,16 @@ private:
                 const Bc7Output out{upload.target + region.bc7Offset + size_t(slice) * region.bc7SliceBytes, region.bc7RowBytes};
                 for (int y = 0; y < region.height; y += band) {
                     const int last = std::min(region.height, y + band);
-                    Workers::instance().submit(upload.batch, [in, out, y, last, source] { astc_to_bc7(in, out, y, last); });
+                    const Codec codec = upload.image.codec;
+                    const bool bc3 = upload.image.target != bc7_format(upload.image.srgb);
+                    Workers::instance().submit(upload.batch, [in, out, y, last, source, codec, bc3] {
+                        if (codec == Codec::Astc) { astc_to_bc7(in, out, y, last, bc3); return; }
+                        const auto bytes = block_bytes(codec);
+                        for (int row = y / 4; row < (last + 3) / 4; ++row)
+                            for (int col = 0; col < (in.width + 3) / 4; ++col)
+                                transcode_block(codec, in.blocks + row * in.rowBytes + col * bytes,
+                                                out.blocks + row * out.rowBytes + col * bytes);
+                    });
                 }
             }
             upload.texels += uint64_t(region.width) * region.height * region.slices;
@@ -620,7 +720,8 @@ private:
         for (VkCommandBuffer secondary : it->second->secondaries) collect(secondary, uploads);
     }
     void release(DeviceState& device, CommandState& state) {
-        for (auto& upload : state.uploads) upload->batch->wait(); // workers may still write staging memory
+        for (auto& upload : state.uploads) if (upload->batch) upload->batch->wait();
+        state.uploads.clear(); // workers may still write staging memory
         device.give_back(state.chunks);
     }
     CommandState& command_state(VkCommandBuffer command, DeviceState* device) {
@@ -645,6 +746,7 @@ private:
     // Development aid: debug.axrb.astc_dump=N saves the first N uploaded
     // regions as .astc files in the game's cache directory.
     void dump(const Upload& upload) {
+        if (upload.image.codec != Codec::Astc) return;
         static const int limit = [] {
             char value[PROP_VALUE_MAX]{};
             __system_property_get("debug.axrb.astc_dump", value);
@@ -681,7 +783,7 @@ private:
         if (now < stats_.nextReport) return;
         stats_.nextReport = now + std::chrono::seconds(10);
         __android_log_print(ANDROID_LOG_INFO, tag,
-                            "%llu ASTC images as BC7: %.1f MiB instead of %.1f MiB emulated; %llu uploads, %.1f Mtexel transcoded, "
+                            "%llu compressed images as BC: %.1f MiB instead of %.1f MiB emulated; %llu uploads, %.1f Mtexel transcoded, "
                             "%llu re-transcoded, %.2f s waited at submit",
                             (unsigned long long)stats_.images, stats_.bc7Bytes / 1048576.0, stats_.emulatedBytes / 1048576.0,
                             (unsigned long long)stats_.uploads, stats_.uploadTexels / 1e6, (unsigned long long)stats_.retranscodes,
@@ -694,6 +796,8 @@ private:
     std::unordered_map<VkBuffer, Buffer> buffers_;
     std::unordered_map<VkDeviceMemory, Memory> memories_;
     std::unordered_map<VkCommandBuffer, VkCommandPool> pools_;
+    std::unordered_map<VkCommandPool, uint32_t> families_;
+    std::unordered_map<VkCommandBuffer, bool> primaries_, oneTime_;
     std::unordered_map<VkCommandBuffer, std::shared_ptr<CommandState>> commands_;
     Stats stats_;
     std::mutex warnings_;

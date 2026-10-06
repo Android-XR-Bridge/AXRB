@@ -8,6 +8,7 @@ class ImageTransportClient {
 public:
     ~ImageTransportClient()
     {
+        g_vulkan.drain_publication();
         close_socket();
     }
 
@@ -199,8 +200,8 @@ private:
         char hardware[PROP_VALUE_MAX]{};
         __system_property_get("ro.hardware", hardware);
         if (std::strcmp(hardware, "ranchu") == 0 || std::strcmp(hardware, "goldfish") == 0) {
-            // Stock Android SELinux separates the app and broker's Unix sockets.
-            // Use adb reverse's native emulator pipe rather than its slow NAT.
+            // Refract: adb reverse can batch frames and accepts before the
+            // consumer is listening. Connect directly to the emulator host.
             int candidate = ::socket(AF_INET, SOCK_STREAM, 0);
             if (candidate < 0) { return false; }
             int noDelay = 1;
@@ -213,11 +214,15 @@ private:
             sockaddr_in address{};
             address.sin_family = AF_INET;
             address.sin_port = htons(38491);
-            inet_pton(AF_INET, "127.0.0.1", &address.sin_addr);
+            char transport[PROP_VALUE_MAX]{};
+            __system_property_get("debug.axrb.image_transport", transport);
+            const bool adbReverse = std::strcmp(transport, "adb") == 0;
+            inet_pton(AF_INET, adbReverse ? "127.0.0.1" : "10.0.2.2", &address.sin_addr);
             if (::connect(candidate, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0) {
                 socket_ = candidate;
                 directWindows_ = true;
-                note_connected("connected to Windows image stream via adb reverse :38491");
+                note_connected(adbReverse ? "connected to Windows image stream via adb reverse :38491" :
+                                           "connected to Windows image stream at 10.0.2.2:38491");
                 return true;
             }
             ::close(candidate);
@@ -580,6 +585,19 @@ void maybe_send_swapchain_image(const SwapchainRecord&) {}
 
 XrResult submit_projection_frame(const XrFrameEndInfo& info, uint32_t batchPart, bool validateOnly, PreparedGpuLayer* prepared)
 {
+#if defined(__ANDROID__)
+    // Preserve copy-before-ACK ownership. Only one export is outstanding; the
+    // app may render its next frame while the worker waits and sends this one.
+    if (!validateOnly && !g_vulkan.drain_publication()) {
+        __android_log_print(ANDROID_LOG_ERROR, "AXRB.GPU", "Asynchronous frame publication failed; export disabled");
+        return XR_ERROR_RUNTIME_FAILURE;
+    }
+    static const bool asyncExport = [] {
+        char value[PROP_VALUE_MAX]{};
+        __system_property_get("debug.axrb.async_export", value);
+        return std::strcmp(value, "0") != 0;
+    }();
+#endif
     auto invalid = [&](const char* reason) {
 #if defined(__ANDROID__)
         static uint32_t reports = 0;
@@ -656,12 +674,13 @@ XrResult submit_projection_frame(const XrFrameEndInfo& info, uint32_t batchPart,
                 }
             }
             std::vector<axrb::protocol::WindowsGpuFrame> exports;
-            if (!g_vulkan.export_batch(requests, exports)) return XR_ERROR_RUNTIME_FAILURE;
+            if (!g_vulkan.export_batch(requests, exports, asyncExport)) return XR_ERROR_RUNTIME_FAILURE;
             std::vector<axrb::protocol::GpuBatchPart> parts(info.layerCount);
             const auto timestamp = static_cast<uint64_t>(monotonic_time_ns());
             for (uint32_t i = 0; i < info.layerCount; ++i) {
                 auto& part = parts[i]; const auto& input = preparedLayers[i];
-                part.projection = input.projection; part.gpu = exports[i];
+                part.projection = input.projection;
+                if (!asyncExport) part.gpu = exports[i];
                 auto& header = part.header;
                 header.version = input.projection.is_equirect() ? axrb::protocol::kMixedEquirectGpuFrameVersion :
                     input.projection.quad_count() ? axrb::protocol::kMixedQuadGpuFrameVersion : axrb::protocol::kMixedProjectionGpuFrameVersion;
@@ -671,6 +690,16 @@ XrResult submit_projection_frame(const XrFrameEndInfo& info, uint32_t batchPart,
                 header.reserved = (info.layerCount << 16) | i;
                 header.sequence = g_imageFrameSequence++; header.monotonic_time_ns = timestamp;
                 header.payload_size = sizeof(part.gpu);
+            }
+            if (asyncExport) {
+                return g_vulkan.publish([parts = std::move(parts)]() mutable {
+                    std::vector<axrb::protocol::WindowsGpuFrame> completed;
+                    if (!g_vulkan.complete_batch(completed) || completed.size() != parts.size()) return false;
+                    for (size_t i = 0; i < parts.size(); ++i) parts[i].gpu = completed[i];
+                    const bool sent = image_transport_client().send_batch(parts);
+                    g_vulkan.acknowledge_batch(sent);
+                    return sent;
+                }) ? XR_SUCCESS : XR_ERROR_RUNTIME_FAILURE;
             }
             const bool sent = image_transport_client().send_batch(parts);
             g_vulkan.acknowledge_batch(sent);
@@ -850,7 +879,30 @@ XrResult submit_projection_frame(const XrFrameEndInfo& info, uint32_t batchPart,
         }
         const VulkanSwapchain* vkSwapchains[] = {&swapchains[0]->vulkan, &swapchains[1]->vulkan};
         const uint32_t indices[] = {swapchains[0]->releasedImage, swapchains[1]->releasedImage};
-        if (!g_vulkan.readback(vkSwapchains, indices, subimages, width, height, eyes, verticalFlip)) return XR_ERROR_RUNTIME_FAILURE;
+        const bool deferred = asyncExport;
+        if (batchPart && !g_vulkan.gpu_export_enabled()) return XR_ERROR_RUNTIME_FAILURE;
+        if (!g_vulkan.readback(vkSwapchains, indices, subimages, width, height, eyes, verticalFlip, deferred)) return XR_ERROR_RUNTIME_FAILURE;
+        if (deferred && g_vulkan.gpu_export_enabled()) {
+            const uint64_t sequence = g_imageFrameSequence++;
+            return g_vulkan.publish([sequence, width, height, projection, batchPart] {
+                if (!g_vulkan.complete_export()) return false;
+                const auto& marker = g_vulkan.gpu_marker();
+                axrb::protocol::WindowsGpuFrame gpu{marker.session, {marker.formats[0], marker.formats[1]}};
+                return image_transport_client().send_frame(sequence, width, height, 2,
+                    reinterpret_cast<const uint8_t*>(&gpu), sizeof(gpu), &projection, true, batchPart) &&
+                    image_transport_client().wait_gpu_ack_before_reuse();
+            }) ? XR_SUCCESS : XR_ERROR_RUNTIME_FAILURE;
+        }
+        if (deferred) {
+            const uint64_t sequence = g_imageFrameSequence++;
+            return g_vulkan.publish([sequence, width, height, projection] {
+                std::vector<uint8_t> pixels[2];
+                if (!g_vulkan.complete_readback(width, height, pixels)) return false;
+                pixels[0].insert(pixels[0].end(), pixels[1].begin(), pixels[1].end());
+                return image_transport_client().send_frame(sequence, width, height, 2,
+                    pixels[0].data(), pixels[0].size(), &projection);
+            }) ? XR_SUCCESS : XR_ERROR_RUNTIME_FAILURE;
+        }
         if (g_vulkan.gpu_marker().status == 1) {
             const auto& marker = g_vulkan.gpu_marker();
             axrb::protocol::WindowsGpuFrame gpu{marker.session, {marker.formats[0], marker.formats[1]}};

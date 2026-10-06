@@ -7,6 +7,7 @@ import subprocess
 import shlex
 from storage_policy import apply_storage_policy
 from audio_policy import apply_audio_policy
+from performance_policy import apply_performance_policy
 from distribution import bundled_library, ndk_compiler
 
 
@@ -37,6 +38,7 @@ def main():
     parser.add_argument('--serial', required=True)
     parser.add_argument('--package', required=True)
     parser.add_argument('--storage-read-ahead-kib', type=int, choices=(128, 1024), default=1024)
+    parser.add_argument('--texture-mode', choices=('gpu', 'bc7'), default='gpu')
     args = parser.parse_args()
     import re
     if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+', args.package):
@@ -51,6 +53,9 @@ def main():
     if run('shell', 'getprop ro.hardware') != 'ranchu':
         print(json.dumps({'status': 'skipped', 'reason': 'Not the AXRB emulator'})); return
     ensure_adb_root(run)
+    performance = apply_performance_policy(run)
+    run('shell', 'setprop debug.axrb.astc_gpu ' + ('1' if args.texture_mode == 'gpu' else '0'))
+    performance['texture_mode'] = args.texture_mode
     root = Path(__file__).resolve().parents[2]
     # Smaller audio buffers are a compatibility improvement, not a condition of
     # running: if the adapter cannot be applied, the game starts on the stock
@@ -109,7 +114,8 @@ def main():
     run('shell', 'settings delete global gpu_debug_layer_app')
     run('shell', 'sync')
     print(json.dumps({'status': 'ready', 'max_map_count': limit, 'vulkan_layer': remote,
-                      'gfxstream_debug_name_guard': debug_name_guard, 'storage': storage, 'audio': audio}))
+                      'gfxstream_debug_name_guard': debug_name_guard, 'storage': storage, 'audio': audio,
+                      'performance': performance}))
 
 
 if __name__ == '__main__': main()

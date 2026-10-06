@@ -1,0 +1,1840 @@
+diff --git a/assembler/include/berberis/assembler/machine_code.h b/assembler/include/berberis/assembler/machine_code.h
+index 48a2f40..7e2ef3a 100644
+--- a/assembler/include/berberis/assembler/machine_code.h
++++ b/assembler/include/berberis/assembler/machine_code.h
+@@ -50,6 +50,12 @@ enum class RelocationType {
+   // Add recovery point and recovery code to global recovery code map.
+   // TODO(eaeltsin): have recovery map for each region instead!
+   RelocRecoveryPoint,
++  // region digitalis
++  // A chainable direct-dispatch jump (x86_64::Assembler::ChainJmp32): dst is the offset of its rel32,
++  // data the guest pc it dispatches to. Installed as emitted (falling through to the table lookup);
++  // the runtime patches it later, see TranslationCache::ChainSite.
++  RelocChainSite,
++  // endregion
+ };
+ 
+ using RecoveryMap = ForeverMap<uintptr_t, uintptr_t>;
+@@ -99,6 +105,18 @@ class MachineCode {
+     relocations_.push_back(Relocation{dst, type, pc, data});
+   }
+ 
++  // region digitalis
++  // Calls fn(offset of the rel32, guest target pc) for each chainable jump (RelocChainSite).
++  template <typename Fn>
++  void ForEachChainSite(Fn fn) const {
++    for (const auto& rel : relocations_) {
++      if (rel.type == RelocationType::RelocChainSite) {
++        fn(rel.dst, rel.data);
++      }
++    }
++  }
++  // endregion
++
+   // Install to executable memory.
+   template <typename ExecRegionType>
+   void Install(ExecRegionType* exec, const uint8_t* code, RecoveryMap* recovery_map) {
+diff --git a/assembler/include/berberis/assembler/x86_64.h b/assembler/include/berberis/assembler/x86_64.h
+index a54f1fa..a73c085 100644
+--- a/assembler/include/berberis/assembler/x86_64.h
++++ b/assembler/include/berberis/assembler/x86_64.h
+@@ -252,6 +252,19 @@ class Assembler : public x86_32_or_x86_64::Assembler<Assembler> {
+     AddRelocation(pc() - 4, RelocationType::RelocAbsToDisp32, pc(), target);
+   }
+ 
++  // region digitalis
++  // A `jmp rel32` to the next instruction, recorded as a RelocChainSite for guest_target: the runtime
++  // later patches the displacement to jump straight to the target's translated code. The rel32 is
++  // 4-byte aligned (code is installed 64-byte aligned), so each patch is one atomic store and an
++  // executing thread sees either the old or the new jump.
++  void ChainJmp32(uintptr_t guest_target) {
++    Nop((4 - ((pc() + 1) & 3)) & 3);
++    Emit8(0xe9);
++    Emit32(0);
++    AddRelocation(pc() - 4, RelocationType::RelocChainSite, pc(), static_cast<intptr_t>(guest_target));
++  }
++  // endregion
++
+   void Jmp(const void* target) { Jmp(bit_cast<uintptr_t>(target)); }
+ 
+ #endif
+diff --git a/assembler/machine_code.cc b/assembler/machine_code.cc
+index e9d8986..ccfd760 100644
+--- a/assembler/machine_code.cc
++++ b/assembler/machine_code.cc
+@@ -86,6 +86,11 @@ void MachineCode::PerformRelocations(const uint8_t* code, RecoveryMap* recovery_
+         (*recovery_map)[fault_addr] = recovery_addr;
+         break;
+       }
++      // region digitalis
++      case RelocationType::RelocChainSite:
++        // Patched after install, once the target is translated.
++        break;
++      // endregion
+     }
+   }
+ }
+diff --git a/backend/common/machine_ir_debug.cc b/backend/common/machine_ir_debug.cc
+index 7d73000..40393db 100644
+--- a/backend/common/machine_ir_debug.cc
++++ b/backend/common/machine_ir_debug.cc
+@@ -167,6 +167,11 @@ std::string PseudoJump::GetDebugString() const {
+     case Kind::kExitGeneratedCode:
+       suffix = "_EXIT_GEN_CODE";
+       break;
++    // region digitalis
++    case Kind::kCall:
++      suffix = "_CALL";
++      break;
++    // endregion
+   }
+   if (IsConfigFlagSet(kDeterministicTracing)) {
+     return StringPrintf("PSEUDO_JUMP%s <ADDR STRIPPED>", suffix);
+@@ -175,7 +180,11 @@ std::string PseudoJump::GetDebugString() const {
+ }
+ 
+ std::string PseudoIndirectJump::GetDebugString() const {
+-  std::string out("PSEUDO_INDIRECT_JUMP ");
++  // region digitalis
++  std::string out(kind_ == Kind::kCall     ? "PSEUDO_INDIRECT_JUMP_CALL "
++                  : kind_ == Kind::kReturn ? "PSEUDO_INDIRECT_JUMP_RETURN "
++                                           : "PSEUDO_INDIRECT_JUMP ");
++  // endregion
+   out += GetMachineRegDebugString(src_);
+   return out;
+ }
+diff --git a/backend/include/berberis/backend/common/machine_ir.h b/backend/include/berberis/backend/common/machine_ir.h
+index cb1c5de..3ae783d 100644
+--- a/backend/include/berberis/backend/common/machine_ir.h
++++ b/backend/include/berberis/backend/common/machine_ir.h
+@@ -524,15 +524,23 @@ class PseudoJump final : public MachineInsn {
+     kJumpWithoutPendingSignalsCheck,
+     kExitGeneratedCode,
+     kSyscall,
++    // region digitalis
++    // A guest call returning to return_pc (host return prediction, see EmitDirectCallDispatch).
++    // Never becomes a branch inside the region.
++    kCall,
++    // endregion
+   };
+ 
+-  PseudoJump(GuestAddr target, Kind kind = Kind::kJumpWithPendingSignalsCheck);
++  PseudoJump(GuestAddr target,
++             Kind kind = Kind::kJumpWithPendingSignalsCheck,
++             GuestAddr return_pc = 0);
+ 
+   std::string GetDebugString() const override;
+   void Emit(CodeEmitter* as) const override;
+ 
+   GuestAddr target() const { return target_; }
+   Kind kind() const { return kind_; }
++  GuestAddr return_pc() const { return return_pc_; }
+ 
+  private:
+   friend PseudoJump* NewInArena<PseudoJump, const PseudoJump&>(Arena*, const PseudoJump&);
+@@ -540,11 +548,17 @@ class PseudoJump final : public MachineInsn {
+   MachineInsn* Clone(Arena* arena) const override;
+   GuestAddr target_;
+   Kind kind_;
++  GuestAddr return_pc_;
+ };
+ 
+ class PseudoIndirectJump final : public MachineInsn {
+  public:
+-  explicit PseudoIndirectJump(MachineReg src);
++  // region digitalis
++  // Calls and returns use host return prediction (see EmitIndirectCallDispatch).
++  enum class Kind { kJump, kCall, kReturn };
++  explicit PseudoIndirectJump(MachineReg src, Kind kind = Kind::kJump, GuestAddr return_pc = 0);
++  Kind kind() const { return kind_; }
++  // endregion
+ 
+   [[nodiscard]] std::string GetDebugString() const override;
+   void Emit(CodeEmitter* as) const override;
+@@ -556,6 +570,8 @@ class PseudoIndirectJump final : public MachineInsn {
+   PseudoIndirectJump(const PseudoIndirectJump&);
+   MachineInsn* Clone(Arena* arena) const override;
+   MachineReg src_;
++  Kind kind_;
++  GuestAddr return_pc_;
+ };
+ 
+ // Copy the value of given size between registers/memory.
+diff --git a/backend/x86_64/code.cc b/backend/x86_64/code.cc
+index a61c4dd..b585563 100644
+--- a/backend/x86_64/code.cc
++++ b/backend/x86_64/code.cc
+@@ -201,25 +201,31 @@ MachineInsn* PseudoCondBranch::Clone(Arena* arena) const {
+   return NewInArena<PseudoCondBranch, const PseudoCondBranch&>(arena, *this);
+ }
+ 
+-PseudoJump::PseudoJump(GuestAddr target, Kind kind)
++PseudoJump::PseudoJump(GuestAddr target, Kind kind, GuestAddr return_pc)
+     : MachineInsn(kMachineOpPseudoJump, 0, nullptr, nullptr, kMachineInsnSideEffects),
+       target_(target),
+-      kind_(kind) {}
++      kind_(kind),
++      return_pc_(return_pc) {}
+ 
+ MachineInsn* PseudoJump::Clone(Arena* arena) const {
+   return NewInArena<PseudoJump, const PseudoJump&>(arena, *this);
+ }
+ 
+-PseudoIndirectJump::PseudoIndirectJump(MachineReg src)
++PseudoIndirectJump::PseudoIndirectJump(MachineReg src, Kind kind, GuestAddr return_pc)
+     : MachineInsn(kMachineOpPseudoIndirectJump,
+                   1,
+                   x86_64::kPseudoIndirectJumpInfo,
+                   &src_,
+                   kMachineInsnSideEffects),
+-      src_(src) {}
++      src_(src),
++      kind_(kind),
++      return_pc_(return_pc) {}
+ 
+ PseudoIndirectJump::PseudoIndirectJump(const PseudoIndirectJump& insn)
+-    : MachineInsn(insn, &src_), src_{insn.src_} {}
++    : MachineInsn(insn, &src_),
++      src_{insn.src_},
++      kind_(insn.kind_),
++      return_pc_(insn.return_pc_) {}
+ 
+ MachineInsn* PseudoIndirectJump::Clone(Arena* arena) const {
+   return NewInArena<PseudoIndirectJump, const PseudoIndirectJump&>(arena, *this);
+diff --git a/backend/x86_64/code_emit.cc b/backend/x86_64/code_emit.cc
+index 4432771..d322879 100644
+--- a/backend/x86_64/code_emit.cc
++++ b/backend/x86_64/code_emit.cc
+@@ -281,6 +281,11 @@ void PseudoJump::Emit(CodeEmitter* as) const {
+       as->Movq(as->rax, target_);
+       EmitExitGeneratedCode(as, as->rax);
+       break;
++    // region digitalis
++    case Kind::kCall:
++      EmitDirectCallDispatch(as, target_, return_pc_);
++      break;
++    // endregion
+   }
+ }
+ 
+@@ -291,7 +296,19 @@ void PseudoIndirectJump::Emit(CodeEmitter* as) const {
+     as->Jmp(*as->exit_label_for_testing());
+     return;
+   }
+-  EmitIndirectDispatch(as, x86_64::GetGReg(RegAt(0)));
++  // region digitalis
++  switch (kind_) {
++    case Kind::kJump:
++      EmitIndirectDispatch(as, x86_64::GetGReg(RegAt(0)));
++      break;
++    case Kind::kCall:
++      EmitIndirectCallDispatch(as, x86_64::GetGReg(RegAt(0)), return_pc_);
++      break;
++    case Kind::kReturn:
++      EmitReturnDispatch(as, x86_64::GetGReg(RegAt(0)));
++      break;
++  }
++  // endregion
+ }
+ 
+ void PseudoCopy::Emit(CodeEmitter* as) const {
+diff --git a/base/include/berberis/base/config.h b/base/include/berberis/base/config.h
+index 3e74c92..177360c 100644
+--- a/base/include/berberis/base/config.h
++++ b/base/include/berberis/base/config.h
+@@ -42,6 +42,17 @@ inline const size_t kGuestPageSize = berberis::kPageSize;
+ // TODO(b/232598137): 12 is what we get on x86-32 after stack alignment, update
+ // with, say, 90-percentile of (dynamic) frame size.
+ inline constexpr uint32_t kFrameSizeAtTranslatedCode = sizeof(size_t) == 4 ? 12u : 8u;
++// region digitalis
++// Host return prediction (x86_64, see EmitDirectCallDispatch in code_gen_lib.cc). A guest call
++// pushes a pair: the host return address at [rsp + kHostReturnPairHostOffset] and the guest return
++// address at [rsp + kHostReturnPairGuestOffset], rsp being the callee's. The bytes below them are
++// the callee's (at least kFrameSizeAtTranslatedCode).
++inline constexpr int32_t kHostReturnPairHostOffset = 16;
++inline constexpr int32_t kHostReturnPairGuestOffset = 24;
++inline constexpr int32_t kHostReturnPairSize = 32;
++// Host stack the pairs of one berberis_RunGeneratedCode may take.
++inline constexpr int32_t kHostReturnStackSize = 16 * 1024;
++// endregion
+ // Attention: This flag traces every entry to RunGeneratedCode which
+ // may be *very* slow especially if kAllJumpsExitGeneratedCode flag is
+ // enabled.
+diff --git a/base/include/berberis/base/exec_region.h b/base/include/berberis/base/exec_region.h
+index 3d0209b..91674f0 100644
+--- a/base/include/berberis/base/exec_region.h
++++ b/base/include/berberis/base/exec_region.h
+@@ -68,6 +68,9 @@ class ExecRegion {
+   [[nodiscard]] const uint8_t* begin() const { return exec_; }
+   [[nodiscard]] const uint8_t* end() const { return exec_ + size_; }
+   [[nodiscard]] size_t size() const { return size_; }
++  // region digitalis
++  [[nodiscard]] uint8_t* writable_begin() const { return write_; }
++  // endregion
+ 
+   void Write(const uint8_t* dst, const void* src, size_t size);
+ 
+diff --git a/code_gen_lib/all_to_x86_64/code_gen_lib.cc b/code_gen_lib/all_to_x86_64/code_gen_lib.cc
+index 26f499c..478f8d5 100644
+--- a/code_gen_lib/all_to_x86_64/code_gen_lib.cc
++++ b/code_gen_lib/all_to_x86_64/code_gen_lib.cc
+@@ -16,6 +16,8 @@
+ 
+ #include "berberis/code_gen_lib/code_gen_lib.h"
+ 
++#include <cstring>
++
+ #include "berberis/assembler/machine_code.h"
+ #include "berberis/assembler/x86_64.h"
+ #include "berberis/base/checks.h"
+@@ -51,8 +53,132 @@ void EmitCheckSignalsAndMaybeReturn(x86_64::Assembler* as) {
+   as->Jcc32(x86_64::Assembler::Condition::kEqual, kEntryExitGeneratedCode);
+ }
+ 
++// region digitalis
++bool g_chain_direct_dispatch = true;
++
++// Host return prediction
++// ======================
++// A guest return is an indirect jump: its table lookup waits on a scattered table entry, and the
++// host predicts its target poorly (together ~10% of a Unity main thread). So a guest call also makes
++// a host call, which leaves a 32-byte pair on the host stack:
++//   [rsp + 24]  the guest return address (config::kHostReturnPairGuestOffset)
++//   [rsp + 16]  the host return address: a continuation in the caller, which pops the guest
++//               address and dispatches directly to it
++//   [rsp + 0]   16 free bytes, the callee's scratch (config::kFrameSizeAtTranslatedCode)
++// A guest return to the top pair's guest address takes it with a host ret, which the host predicts
++// through its return stack buffer. Any other return drops every pair (rsp back to the base frame of
++// berberis_RunGeneratedCode) and dispatches through the table.
++//
++// The pairs are only hints, so this stays right whatever the guest does with its stack (longjmp,
++// exceptions, calls that never return): a return only takes a pair holding the address it returns
++// to, and the continuation does what an ordinary dispatch to that address does. The base frame holds
++// a sentinel pair, whose host return exits generated code, so a return with no pairs is no special
++// case. Pairs may take config::kHostReturnStackSize bytes; a call past that drops them all first.
++bool g_predict_returns = true;
++
++template <typename EmitCallee>
++void EmitCallDispatch(x86_64::Assembler* as, GuestAddr return_pc, EmitCallee emit_callee) {
++  using Assembler = x86_64::Assembler;
++  const Assembler::Operand base = {
++      .base = Assembler::rbp,
++      .disp = static_cast<int32_t>(offsetof(ThreadState, host_return_stack.base))};
++  const Assembler::Operand limit = {
++      .base = Assembler::rbp,
++      .disp = static_cast<int32_t>(offsetof(ThreadState, host_return_stack.limit))};
++  Assembler::Label* push = as->MakeLabel();
++  Assembler::Label* callee = as->MakeLabel();
++  Assembler::Label* drop_pairs = as->MakeLabel();
++
++  as->Cmpq(as->rsp, limit);
++  as->Jcc(Assembler::Condition::kBelowEqual, *drop_pairs);
++  as->Bind(push);
++  as->Movq(as->rcx, return_pc);
++  as->Push(as->rcx);
++  as->Call(*callee);
++  // A guest return that took the pair lands here.
++  as->Addq(as->rsp, int32_t{8});
++  EmitDirectDispatch(as, return_pc, /*check_pending_signals=*/true);
++
++  as->Bind(callee);
++  as->Subq(as->rsp, int32_t{config::kHostReturnPairHostOffset});
++  emit_callee();
++
++  as->Bind(drop_pairs);
++  as->Movq(as->rsp, base);
++  as->Jmp(*push);
++}
++// endregion
++
+ }  // namespace
+ 
++// region digitalis
++void SetDirectDispatchChaining(bool enabled) {
++  g_chain_direct_dispatch = enabled;
++}
++
++void SetReturnPrediction(bool enabled) {
++  g_predict_returns = enabled;
++}
++
++GuestBranchKind GetArm64BranchKind(GuestAddr pc) {
++  uint32_t insn;
++  memcpy(&insn, ToHostAddr<const void>(pc), sizeof(insn));
++  if ((insn & 0xfc00'0000) == 0x9400'0000 || (insn & 0xffff'fc1f) == 0xd63f'0000) {
++    return GuestBranchKind::kCall;  // BL, BLR
++  }
++  if ((insn & 0xffff'fc1f) == 0xd65f'0000) {
++    return GuestBranchKind::kReturn;  // RET
++  }
++  return GuestBranchKind::kJump;
++}
++
++void EmitDirectCallDispatch(x86_64::Assembler* as, GuestAddr target, GuestAddr return_pc) {
++  if (!g_predict_returns || !config::kLinkJumpsBetweenRegions) {
++    EmitDirectDispatch(as, target, /*check_pending_signals=*/true);
++    return;
++  }
++  EmitCallDispatch(
++      as, return_pc, [&] { EmitDirectDispatch(as, target, /*check_pending_signals=*/true); });
++}
++
++void EmitIndirectCallDispatch(x86_64::Assembler* as,
++                              x86_64::Assembler::Register target,
++                              GuestAddr return_pc) {
++  if (!g_predict_returns || !config::kLinkJumpsBetweenRegions) {
++    EmitIndirectDispatch(as, target);
++    return;
++  }
++  // The pair is pushed with rcx: keep the target in rax, where the dispatch wants it anyway.
++  if (target != as->rax) {
++    as->Movq(as->rax, target);
++  }
++  EmitCallDispatch(as, return_pc, [&] { EmitIndirectDispatch(as, as->rax); });
++}
++
++void EmitReturnDispatch(x86_64::Assembler* as, x86_64::Assembler::Register target) {
++  if (!g_predict_returns || !config::kLinkJumpsBetweenRegions) {
++    EmitIndirectDispatch(as, target);
++    return;
++  }
++  using Assembler = x86_64::Assembler;
++  if (target != as->rax) {
++    as->Movq(as->rax, target);
++  }
++  Assembler::Label* miss = as->MakeLabel();
++  as->Cmpq(as->rax, {.base = Assembler::rsp, .disp = config::kHostReturnPairGuestOffset});
++  as->Jcc(Assembler::Condition::kNotEqual, *miss);
++  // The continuation checks pending signals.
++  as->Addq(as->rsp, int32_t{config::kHostReturnPairHostOffset});
++  as->Ret();
++
++  as->Bind(miss);
++  as->Movq(as->rsp,
++           {.base = Assembler::rbp,
++            .disp = static_cast<int32_t>(offsetof(ThreadState, host_return_stack.base))});
++  EmitIndirectDispatch(as, as->rax);
++}
++// endregion
++
+ void GenTrampolineAdaptor(MachineCode* mc,
+                           GuestAddr pc,
+                           HostCode marshall,
+@@ -65,7 +191,7 @@ void GenTrampolineAdaptor(MachineCode* mc,
+   // the trampoline that we call requires insn_addr to be up to date.
+   as.Movq(as.rdi, pc);
+   as.Movq({.base = as.rbp, .disp = offsetof(ThreadState, cpu.insn_addr)}, as.rdi);
+-  as.Movq({.base = as.rbp, .disp = offsetof(ThreadState, residence)}, kOutsideGeneratedCode);
++  as.Movb({.base = as.rbp, .disp = offsetof(ThreadState, residence)}, int8_t{kOutsideGeneratedCode});
+ 
+   if (kInstrumentTrampolines) {
+     if (auto instrument = GetOnTrampolineCall(name)) {
+@@ -97,8 +223,11 @@ void GenTrampolineAdaptor(MachineCode* mc,
+   // Prefer rdx, since rax/rcx will result in extra moves inside EmitIndirectDispatch.
+   as.Movq(as.rdx, {.base = as.rbp, .disp = kReturnAddressRegisterOffset});
+   // We are returning to generated code.
+-  as.Movq({.base = as.rbp, .disp = offsetof(ThreadState, residence)}, kInsideGeneratedCode);
+-  EmitIndirectDispatch(&as, as.rdx);
++  as.Movb({.base = as.rbp, .disp = offsetof(ThreadState, residence)}, int8_t{kInsideGeneratedCode});
++  // region digitalis
++  // A return from the guest call that reached this trampoline.
++  EmitReturnDispatch(&as, as.rdx);
++  // endregion
+   as.Finalize();
+ }
+ 
+@@ -106,14 +235,14 @@ void EmitSyscall(x86_64::Assembler* as, GuestAddr pc) {
+   // We may run guest signal handler during the syscall so insn_addr needs to be synched.
+   as->Movq(as->rdi, pc);
+   as->Movq({.base = as->rbp, .disp = offsetof(ThreadState, cpu.insn_addr)}, as->rdi);
+-  as->Movq({.base = as->rbp, .disp = offsetof(ThreadState, residence)}, kOutsideGeneratedCode);
++  as->Movb({.base = as->rbp, .disp = offsetof(ThreadState, residence)}, int8_t{kOutsideGeneratedCode});
+ 
+   // void RunGuestSyscall(ThreadState*);
+   as->Movq(as->rdi, as->rbp);
+   as->Call(AsHostCode(RunGuestSyscall));
+ 
+   // We are returning to generated code.
+-  as->Movq({.base = as->rbp, .disp = offsetof(ThreadState, residence)}, kInsideGeneratedCode);
++  as->Movb({.base = as->rbp, .disp = offsetof(ThreadState, residence)}, int8_t{kInsideGeneratedCode});
+   // Advance to the next instruction.
+   // TODO(b/161722184): if syscall is interrupted by signal, signal handler might overwrite the
+   // insn_addr, so incrementing insn_addr here may be incorrect. This problem also exists in the
+@@ -136,6 +265,15 @@ void EmitDirectDispatch(x86_64::Assembler* as, GuestAddr pc, bool check_pending_
+   }
+ 
+   CHECK_EQ(pc & 0xffff'0000'0000'0000, 0);
++  // region digitalis
++  // Block chaining: once pc is translated, this jump goes straight to its code, skipping the table
++  // load and the indirect jump below (together ~17% of a Unity main thread's time, mostly waiting on
++  // the scattered table entry). Unlinked, it falls through to them. The pending-signals check above
++  // stays in front, so FlushGuestCodeCache still stops chained code at every region exit.
++  if (g_chain_direct_dispatch) {
++    as->ChainJmp32(pc);
++  }
++  // endregion
+   as->Movq(as->rcx,
+            reinterpret_cast<uint64_t>(TranslationCache::GetInstance()->GetHostCodePtr(pc)));
+   as->Movl(as->rcx, {.base = as->rcx});
+diff --git a/code_gen_lib/include/berberis/code_gen_lib/code_gen_lib.h b/code_gen_lib/include/berberis/code_gen_lib/code_gen_lib.h
+index 6b1d4b6..83992df 100644
+--- a/code_gen_lib/include/berberis/code_gen_lib/code_gen_lib.h
++++ b/code_gen_lib/include/berberis/code_gen_lib/code_gen_lib.h
+@@ -44,6 +44,22 @@ void EmitIndirectJump(Assembler* as, Assembler::Register target);
+ #elif defined(__x86_64__)
+ void EmitSyscall(x86_64::Assembler* as, GuestAddr pc);
+ void EmitDirectDispatch(x86_64::Assembler* as, GuestAddr pc, bool check_pending_signals);
++// region digitalis
++// Whether direct dispatches get a chainable jump (default on; berberis.chain=0 turns it off).
++void SetDirectDispatchChaining(bool enabled);
++// Host return prediction (see code_gen_lib.cc): a guest call (BL, BLR) also makes a host call, so
++// that the guest return (RET) can use a host ret, which the host predicts. return_pc is the guest
++// call's pc + 4. Default on; berberis.retpred=0 turns it off.
++void EmitDirectCallDispatch(x86_64::Assembler* as, GuestAddr target, GuestAddr return_pc);
++void EmitIndirectCallDispatch(x86_64::Assembler* as,
++                              x86_64::Assembler::Register target,
++                              GuestAddr return_pc);
++void EmitReturnDispatch(x86_64::Assembler* as, x86_64::Assembler::Register target);
++void SetReturnPrediction(bool enabled);
++// What the ARM64 branch at pc does with the link register, for the calls above.
++enum class GuestBranchKind { kJump, kCall, kReturn };
++GuestBranchKind GetArm64BranchKind(GuestAddr pc);
++// endregion
+ void EmitIndirectDispatch(x86_64::Assembler* as, x86_64::Assembler::Register target);
+ void EmitExitGeneratedCode(x86_64::Assembler* as, x86_64::Assembler::Register target);
+ void EmitAllocStackFrame(x86_64::Assembler* as, uint32_t frame_size);
+diff --git a/guest_loader/guest_loader.cc b/guest_loader/guest_loader.cc
+index bd3fa56..80b413d 100644
+--- a/guest_loader/guest_loader.cc
++++ b/guest_loader/guest_loader.cc
+@@ -25,6 +25,9 @@
+ #include <functional>  // std::ref
+ #include <random>
+ #include <thread>
++#if defined(__BIONIC__)
++#include <platform/bionic/tls.h>
++#endif
+ 
+ // region digitalis
+ #include <fcntl.h>     // open, O_RDONLY, O_CLOEXEC
+@@ -208,6 +211,17 @@ void GetHostPthreadCallback(HostCode callee, ThreadState* state) {
+   ret = pthread_self();
+ }
+ 
++// Avoid depending on the host pthread_internal_t layout during guest startup.
++void GetHostBionicTlsCallback(HostCode callee, ThreadState* state) {
++  UNUSED(callee);
++  auto&& [ret] = GuestReturnReference<void*()>(state);
++#if defined(__BIONIC__)
++  ret = __get_tls()[TLS_SLOT_BIONIC_TLS];
++#else
++  ret = nullptr;
++#endif
++}
++
+ bool InitializeVdso(const LoadedElfFile& vdso_elf_file, std::string* error_msg) {
+   if (!MakeElfSymbolTrampolineCallable(
+           vdso_elf_file, "vdso", "native_bridge_trace", TraceCallback, nullptr, error_msg)) {
+@@ -259,6 +273,17 @@ bool InitializeLinker(LinkerCallbacks* linker_callbacks,
+     return false;
+   }
+ 
++#if defined(NATIVE_BRIDGE_GUEST_ARCH_ARM64)
++  if (!MakeElfSymbolTrampolineCallable(linker_elf_file,
++                                       "linker",
++                                       "__native_bridge_get_host_bionic_tls",
++                                       GetHostBionicTlsCallback,
++                                       nullptr,
++                                       error_msg)) {
++    return false;
++  }
++#endif
++
+   return InitializeLinkerCallbacks(linker_callbacks, linker_elf_file, error_msg) &&
+          InitializeLinkerCallbacksArch(linker_callbacks, linker_elf_file, error_msg);
+ }
+diff --git a/guest_os_primitives/guest_thread_clone.cc b/guest_os_primitives/guest_thread_clone.cc
+index 05dd141..1779b4d 100644
+--- a/guest_os_primitives/guest_thread_clone.cc
++++ b/guest_os_primitives/guest_thread_clone.cc
+@@ -28,6 +28,7 @@
+ #include "berberis/guest_os_primitives/scoped_pending_signals.h"
+ #include "berberis/guest_state/guest_addr.h"
+ #include "berberis/guest_state/guest_state_opaque.h"
++#include "berberis/runtime_primitives/code_pool.h"  // MarkPatchableExecRegionsShared
+ #include "berberis/runtime/execute_guest.h"
+ #include "berberis/runtime_primitives/runtime_library.h"
+ 
+@@ -131,6 +132,11 @@ pid_t CloneGuestThread(GuestThread* thread,
+     // ATTENTION: Do not set new tls for the host - tls might be incompatible.
+     // TODO(b/280551726): Consider forcing new host tls to 0.
+     long pid = CloneSyscall(flags & ~CLONE_SETTLS, 0, parent_tid, 0, child_tid);
++    // region digitalis
++    if (pid > 0) {
++      MarkPatchableExecRegionsShared();  // The child maps them too.
++    }
++    // endregion
+     if (pid == 0) {
+       // Child, reset thread table.
+       ResetCurrentGuestThreadAfterFork(thread);
+diff --git a/guest_state/arm64/include/berberis/guest_state/guest_state_arch.h b/guest_state/arm64/include/berberis/guest_state/guest_state_arch.h
+index fe03977..4a687fc 100644
+--- a/guest_state/arm64/include/berberis/guest_state/guest_state_arch.h
++++ b/guest_state/arm64/include/berberis/guest_state/guest_state_arch.h
+@@ -59,6 +59,11 @@ struct ThreadState {
+ 
+   // Point to the guest thread memory start position.
+   void* thread_state_storage;
++
++  // region digitalis
++  // Set by berberis_RunGeneratedCode, see HostReturnStack.
++  HostReturnStack host_return_stack;
++  // endregion
+ };
+ 
+ inline constexpr unsigned kNumGuestRegs = std::size(CPUState{}.x);
+diff --git a/guest_state/guest_state.cc b/guest_state/guest_state.cc
+index 8b94949..8fabb39 100644
+--- a/guest_state/guest_state.cc
++++ b/guest_state/guest_state.cc
+@@ -136,6 +136,16 @@ void SetResidence(ThreadState& state, GuestThreadResidence residence) {
+   state.residence = residence;
+ }
+ 
++// region digitalis
++HostReturnStack GetHostReturnStack(const ThreadState& state) {
++  return state.host_return_stack;
++}
++
++void SetHostReturnStack(ThreadState& state, HostReturnStack stack) {
++  state.host_return_stack = stack;
++}
++// endregion
++
+ std::atomic<uint_least8_t>& GetPendingSignalsStatusAtomic(ThreadState& state) {
+   return state.pending_signals_status;
+ }
+diff --git a/guest_state/include/berberis/guest_state/guest_state_opaque.h b/guest_state/include/berberis/guest_state/guest_state_opaque.h
+index 79119b6..bc96f98 100644
+--- a/guest_state/include/berberis/guest_state/guest_state_opaque.h
++++ b/guest_state/include/berberis/guest_state/guest_state_opaque.h
+@@ -48,6 +48,17 @@ enum GuestThreadResidence : uint8_t {
+ GuestThreadResidence GetResidence(const ThreadState& state);
+ void SetResidence(ThreadState& state, GuestThreadResidence residence);
+ 
++// region digitalis
++// Host return prediction (see EmitDirectCallDispatch in code_gen_lib): where the current
++// berberis_RunGeneratedCode's host call pairs start (its base frame) and how low they may go.
++struct HostReturnStack {
++  uintptr_t base;
++  uintptr_t limit;
++};
++HostReturnStack GetHostReturnStack(const ThreadState& state);
++void SetHostReturnStack(ThreadState& state, HostReturnStack stack);
++// endregion
++
+ // TODO(b/28058920): Refactor into GuestThread.
+ // Pending signals status state machine:
+ //   disabled <-> enabled <-> enabled and pending signals present
+diff --git a/guest_state/riscv64/include/berberis/guest_state/guest_state_arch.h b/guest_state/riscv64/include/berberis/guest_state/guest_state_arch.h
+index a497adb..2f0f079 100644
+--- a/guest_state/riscv64/include/berberis/guest_state/guest_state_arch.h
++++ b/guest_state/riscv64/include/berberis/guest_state/guest_state_arch.h
+@@ -152,6 +152,11 @@ struct ThreadState {
+   // TODO(b/329463428): Consider removing this pointer and not having ThreadState and
+   // NativeBridgeGuestStateHeader in the same mapping. The latter possibly managed by GuestThread.
+   void* thread_state_storage;
++
++  // region digitalis
++  // Set by berberis_RunGeneratedCode, see HostReturnStack.
++  HostReturnStack host_return_stack;
++  // endregion
+ };
+ 
+ template <CsrName>
+diff --git a/heavy_optimizer/arm64/frontend.cc b/heavy_optimizer/arm64/frontend.cc
+index 2d643ea..c229757 100644
+--- a/heavy_optimizer/arm64/frontend.cc
++++ b/heavy_optimizer/arm64/frontend.cc
+@@ -157,10 +157,50 @@ void HeavyOptimizerFrontend::ExitGeneratedCode(GuestAddr target) {
+   builder_.Gen<PseudoJump>(target, PseudoJump::Kind::kExitGeneratedCode);
+ }
+ 
++// region digitalis
++namespace {
++
++// Mirrors GetArm64BranchKind in code_gen_lib (return prediction), whose headers this library
++// doesn't get.
++enum class LinkKind { kJump, kCall, kReturn };
++
++LinkKind GetLinkKind(GuestAddr pc) {
++  uint32_t insn = *ToHostAddr<const uint32_t>(pc);
++  if ((insn & 0xfc00'0000) == 0x9400'0000 || (insn & 0xffff'fc1f) == 0xd63f'0000) {
++    return LinkKind::kCall;  // BL, BLR
++  }
++  if ((insn & 0xffff'fc1f) == 0xd65f'0000) {
++    return LinkKind::kReturn;  // RET
++  }
++  return LinkKind::kJump;
++}
++
++}  // namespace
++// endregion
++
+ void HeavyOptimizerFrontend::ExitRegionIndirect(Register target) {
++  // region digitalis
++  switch (GetLinkKind(GetInsnAddr())) {
++    case LinkKind::kCall:
++      builder_.Gen<PseudoIndirectJump>(
++          target, PseudoIndirectJump::Kind::kCall, GetInsnAddr() + 4);
++      return;
++    case LinkKind::kReturn:
++      builder_.Gen<PseudoIndirectJump>(target, PseudoIndirectJump::Kind::kReturn);
++      return;
++    case LinkKind::kJump:
++      break;
++  }
++  // endregion
+   builder_.Gen<PseudoIndirectJump>(target);
+ }
+ 
++// region digitalis
++void HeavyOptimizerFrontend::GenCall(GuestAddr target) {
++  builder_.Gen<PseudoJump>(target, PseudoJump::Kind::kCall, GetInsnAddr() + 4);
++}
++// endregion
++
+ // After a faulting host memory access, split off a recovery basic block that
+ // exits the region so the guest signal handler runs. This mechanism is
+ // guest-agnostic and is copied verbatim from heavy_optimizer/riscv64.
+@@ -195,6 +235,12 @@ void HeavyOptimizerFrontend::Branch(int32_t offset) {
+     return;
+   }
+   is_uncond_branch_ = true;
++  // region digitalis
++  if (GetLinkKind(GetInsnAddr()) == LinkKind::kCall) {
++    GenCall(GetInsnAddr() + offset);
++    return;
++  }
++  // endregion
+   GenJump(GetInsnAddr() + offset);
+ }
+ 
+@@ -2276,8 +2322,9 @@ void HeavyOptimizerFrontend::ResolveJumps() {
+ 
+     auto* jump = static_cast<const PseudoJump*>(last_insn);
+     if (jump->kind() == PseudoJump::Kind::kSyscall ||
+-        jump->kind() == PseudoJump::Kind::kExitGeneratedCode) {
+-      // Syscall or generated-code exit must always exit the region.
++        jump->kind() == PseudoJump::Kind::kExitGeneratedCode ||
++        jump->kind() == PseudoJump::Kind::kCall) {
++      // Syscall, generated-code exit or call (digitalis) must always exit the region.
+       continue;
+     }
+ 
+diff --git a/heavy_optimizer/arm64/frontend.h b/heavy_optimizer/arm64/frontend.h
+index f613d1c..5305ccb 100644
+--- a/heavy_optimizer/arm64/frontend.h
++++ b/heavy_optimizer/arm64/frontend.h
+@@ -939,6 +939,10 @@ class HeavyOptimizerFrontend {
+   void GenJump(GuestAddr target);
+   void ExitGeneratedCode(GuestAddr target);
+   void ExitRegionIndirect(Register target);
++  // region digitalis
++  // A BL (return prediction, see EmitDirectCallDispatch): always leaves the region.
++  void GenCall(GuestAddr target);
++  // endregion
+ 
+   // After a faulting host memory access, split off a recovery basic block that
+   // exits the region so the guest signal handler runs. Guest-agnostic; copied
+diff --git a/kernel_api/open_emulation.cc b/kernel_api/open_emulation.cc
+index 633970c..ba237d5 100644
+--- a/kernel_api/open_emulation.cc
++++ b/kernel_api/open_emulation.cc
+@@ -374,6 +374,46 @@ const char* TryRedirectGuestLinker64(const char* path) {
+   TRACE("openat: redirecting guest linker \"%s\" to %s", path, kGuestLinker64RealPath);
+   return kGuestLinker64RealPath;
+ }
++
++inline constexpr char kHostSystemLib64Dir[] = "/system/lib64/";
++inline constexpr char kHostBionicLib64Dir[] = "/apex/com.android.runtime/lib64/bionic/";
++inline constexpr char kGuestSystemLib64Dir[] = "/system/lib64/arm64/";
++
++// Same problem as the linker above, for system libraries. Meta's XR Audio SDK
++// (android_namespace_loader::LoadNamespace, e.g. in libMetaXRAudioWwise.so)
++// finds libc's non-exported android_get_exported_namespace by reading
++// "/system/lib64/libc.so" from disk: it adds the .symtab distance between that
++// function and android_get_device_api_level to dlsym's address of the latter.
++// On the x86_64 host image the canonical path is the HOST libc, so the distance
++// comes from the wrong ELF and the guest jumps into the middle of an ARM64
++// function (SIGILL on Batman: Arkham Shadow's Wwise audio thread at startup).
++// On a real ARM64 device these paths ARE the ARM64 libraries, so redirect guest
++// opens of /system/lib64/<name>.so and the bionic APEX directory to the guest
++// copy in /system/lib64/arm64/ when one exists. Writes the path into buf.
++bool TryRedirectHostSystemLibrary(const char* path, char* buf, size_t buf_size) {
++  if (path == nullptr) {
++    return false;
++  }
++  const char* name = nullptr;
++  if (strncmp(path, kHostSystemLib64Dir, sizeof(kHostSystemLib64Dir) - 1) == 0) {
++    name = path + sizeof(kHostSystemLib64Dir) - 1;
++  } else if (strncmp(path, kHostBionicLib64Dir, sizeof(kHostBionicLib64Dir) - 1) == 0) {
++    name = path + sizeof(kHostBionicLib64Dir) - 1;
++  } else {
++    return false;
++  }
++  // Only direct children (this also leaves /system/lib64/arm64/... alone).
++  size_t name_len = strlen(name);
++  if (name_len <= 3 || strchr(name, '/') != nullptr || strcmp(name + name_len - 3, ".so") != 0) {
++    return false;
++  }
++  int n = snprintf(buf, buf_size, "%s%s", kGuestSystemLib64Dir, name);
++  if (n < 0 || static_cast<size_t>(n) >= buf_size || access(buf, F_OK) != 0) {
++    return false;
++  }
++  TRACE("openat: redirecting host system library \"%s\" to %s", path, buf);
++  return true;
++}
+ #endif  // NATIVE_BRIDGE_GUEST_ARCH_ARM64
+ // endregion
+ 
+@@ -401,6 +441,11 @@ int OpenatForGuest(int dirfd, const char* path, int guest_flags, mode_t mode) {
+   if (real_path == nullptr) {
+     real_path = TryRedirectGuestLinker64(path);
+   }
++  char guest_library_path[256];
++  if (real_path == nullptr &&
++      TryRedirectHostSystemLibrary(path, guest_library_path, sizeof(guest_library_path))) {
++    real_path = guest_library_path;
++  }
+ #endif
+ 
+ #if defined(NATIVE_BRIDGE_GUEST_ARCH_ARM64)
+diff --git a/lite_translator/arm64_to_x86_64/lite_translator.cc b/lite_translator/arm64_to_x86_64/lite_translator.cc
+index 9323eb1..a3d6e24 100644
+--- a/lite_translator/arm64_to_x86_64/lite_translator.cc
++++ b/lite_translator/arm64_to_x86_64/lite_translator.cc
+@@ -121,18 +121,22 @@ void LiteTranslator::Svc(uint16_t imm) {
+   EmitSyscall(&as_, GetInsnAddr());
+ }
+ 
+-void LiteTranslator::ExitRegion(GuestAddr target) {
++void LiteTranslator::ExitRegion(GuestAddr target, GuestBranchKind kind) {
+   StoreMappedRegs();
+   EmitMxcsrToFpsrMirror();
+   if (params_.allow_dispatch) {
+-    EmitDirectDispatch(&as_, target, /* check_pending_signals */ true);
++    if (kind == GuestBranchKind::kCall) {
++      EmitDirectCallDispatch(&as_, target, GetInsnAddr() + 4);
++    } else {
++      EmitDirectDispatch(&as_, target, /* check_pending_signals */ true);
++    }
+   } else {
+     as_.Movq(as_.rax, target);
+     EmitExitGeneratedCode(&as_, as_.rax);
+   }
+ }
+ 
+-void LiteTranslator::ExitRegionIndirect(Register target) {
++void LiteTranslator::ExitRegionIndirect(Register target, GuestBranchKind kind) {
+   StoreMappedRegs();
+   // skip the mirror-spill scaffolding entirely when no
+   // FP/SIMD work happened in this region (see EmitMxcsrToFpsrMirror comment).
+@@ -154,7 +158,13 @@ void LiteTranslator::ExitRegionIndirect(Register target) {
+     as_.Addq(as_.rsp, int32_t{16});
+   }
+   if (params_.allow_dispatch) {
+-    EmitIndirectDispatch(&as_, as_.rax);
++    if (kind == GuestBranchKind::kCall) {
++      EmitIndirectCallDispatch(&as_, as_.rax, GetInsnAddr() + 4);
++    } else if (kind == GuestBranchKind::kReturn) {
++      EmitReturnDispatch(&as_, as_.rax);
++    } else {
++      EmitIndirectDispatch(&as_, as_.rax);
++    }
+   } else {
+     EmitExitGeneratedCode(&as_, as_.rax);
+   }
+diff --git a/lite_translator/arm64_to_x86_64/lite_translator.h b/lite_translator/arm64_to_x86_64/lite_translator.h
+index f2cfbba..f29a68f 100644
+--- a/lite_translator/arm64_to_x86_64/lite_translator.h
++++ b/lite_translator/arm64_to_x86_64/lite_translator.h
+@@ -25,6 +25,7 @@
+ #include "berberis/assembler/x86_64.h"
+ #include "berberis/base/checks.h"
+ #include "berberis/base/macros.h"
++#include "berberis/code_gen_lib/code_gen_lib.h"
+ #include "berberis/decoder/arm64/decoder.h"
+ #include "berberis/decoder/arm64/semantics_player.h"
+ #include "berberis/guest_state/guest_addr.h"
+@@ -157,8 +158,8 @@ class LiteTranslator {
+   //
+ 
+   void ExitGeneratedCode(GuestAddr target);
+-  void ExitRegion(GuestAddr target);
+-  void ExitRegionIndirect(Register target);
++  void ExitRegion(GuestAddr target, GuestBranchKind kind = GuestBranchKind::kJump);
++  void ExitRegionIndirect(Register target, GuestBranchKind kind = GuestBranchKind::kJump);
+ 
+   // Mirror host MXCSR cumulative exception bits into emulated_fpsr at ARM FPSR
+   // positions. Called from every region-exit path: System V x86_64 ABI lets
+diff --git a/lite_translator/arm64_to_x86_64/lite_translator_integer_ctrl.inc b/lite_translator/arm64_to_x86_64/lite_translator_integer_ctrl.inc
+index 86691d8..f68b877 100644
+--- a/lite_translator/arm64_to_x86_64/lite_translator_integer_ctrl.inc
++++ b/lite_translator/arm64_to_x86_64/lite_translator_integer_ctrl.inc
+@@ -418,14 +418,14 @@
+ 
+   void Branch(int32_t offset) {
+     is_region_end_reached_ = true;
+-    ExitRegion(GetInsnAddr() + offset);
++    ExitRegion(GetInsnAddr() + offset, GetArm64BranchKind(GetInsnAddr()));
+   }
+ 
+   void BranchCond(Decoder::Condition cond, int32_t offset);  // implemented in .cc
+ 
+   void BranchRegister(Register target) {
+     is_region_end_reached_ = true;
+-    ExitRegionIndirect(target);
++    ExitRegionIndirect(target, GetArm64BranchKind(GetInsnAddr()));
+   }
+ 
+   void CompareAndBranch(bool is_nonzero, bool is_64bit, Register src, int32_t offset) {
+@@ -494,7 +494,7 @@
+ 
+   Register Load(Decoder::LoadStoreSize size, bool is_signed, bool is_64bit_target,
+                 Register base, int32_t offset) {
+-    // apply TBI mask before using base as memory operand.
++    // ARM64 tagged pointers must remain valid regardless of translator flags.
+     base = ApplyTbi(base);
+     AssemblerBase::Label* recovery_label = as_.MakeLabel();
+     as_.SetRecoveryPoint(recovery_label);
+@@ -547,7 +547,7 @@
+   }
+ 
+   void Store(Decoder::LoadStoreSize size, Register base, int32_t offset, Register data) {
+-    // apply TBI mask before using base as memory operand.
++    // ARM64 tagged pointers must remain valid regardless of translator flags.
+     base = ApplyTbi(base);
+     AssemblerBase::Label* recovery_label = as_.MakeLabel();
+     as_.SetRecoveryPoint(recovery_label);
+diff --git a/runtime/arm64/execute_guest_test.cc b/runtime/arm64/execute_guest_test.cc
+index fbcc4ef..0149b76 100644
+--- a/runtime/arm64/execute_guest_test.cc
++++ b/runtime/arm64/execute_guest_test.cc
+@@ -19,6 +19,10 @@
+ #include "berberis/runtime/execute_guest.h"
+ 
+ #include <cstdint>
++#include <cstring>
++#include <iterator>
++
++#include "berberis/base/bit_util.h"
+ 
+ #include "berberis/guest_os_primitives/guest_map_shadow.h"
+ #include "berberis/guest_os_primitives/guest_thread_manager.h"
+@@ -59,6 +63,151 @@ TEST(Arm64ExecuteGuest, Basic) {
+   GuestMapShadow::GetInstance()->ClearExecutable(ToGuestAddr(&code[0]), sizeof(code));
+ }
+ 
++// region digitalis
++// A loop through chained regions (block chaining, see EmitDirectDispatch): the loop region's exit to
++// itself is linked to its own code and re-linked when it gears up (~1000 runs); the count must come
++// out exact.
++TEST(Arm64ExecuteGuest, ChainedLoop) {
++  static const uint32_t code[] = {
++      0xd2800000,  // movz x0, #0
++      0x91000400,  // loop: add x0, x0, #1
++      0xf13e801f,  // cmp x0, #4000
++      0x54ffffc1,  // b.ne loop
++      0x14000001,  // b .+4  (to stop_pc)
++  };
++
++  InitBerberis();
++
++  GuestMapShadow::GetInstance()->SetExecutable(ToGuestAddr(&code[0]), sizeof(code));
++
++  GuestThread* thread = GetCurrentGuestThread();
++  auto& cpu_state = thread->state()->cpu;
++  cpu_state.insn_addr = ToGuestAddr(&code[0]);
++  cpu_state.x[0] = 7;
++  GuestAddr stop_pc = ToGuestAddr(&code[0]) + sizeof(code);
++  auto cache = TranslationCache::GetInstance();
++  cache->SetStop(stop_pc);
++  ExecuteGuest(thread->state());
++  cache->TestingClearStop(stop_pc);
++  EXPECT_EQ(cpu_state.x[0], 4000u);
++
++  // The entry region's jump into the loop is linked to the loop's current code, which by now has
++  // geared up (it ran ~4000 times), so the link followed it from its lite code.
++  auto links_to = [&](GuestAddr from_pc, HostCodeAddr target) {
++    GuestCodeEntry* from = cache->LookupGuestCodeEntryUnsafeForTesting(from_pc);
++    if (!from) {
++      return false;
++    }
++    HostCodeAddr from_code = cache->GetHostCodePtr(from_pc)->load();
++    for (uint32_t i = 3; i + 5 <= from->host_size; i += 4) {
++      const auto* bytes = bit_cast<const uint8_t*>(uintptr_t{from_code + i});
++      int32_t disp;
++      memcpy(&disp, bytes + 1, 4);
++      if (bytes[0] == 0xe9 && int64_t{from_code} + i + 5 + disp == int64_t{target}) {
++        return true;
++      }
++    }
++    return false;
++  };
++  GuestAddr loop_pc = ToGuestAddr(&code[1]);
++  GuestCodeEntry* loop = cache->LookupGuestCodeEntryUnsafeForTesting(loop_pc);
++  ASSERT_TRUE(loop);
++  EXPECT_EQ(loop->kind, GuestCodeEntry::Kind::kHeavyOptimized);
++  EXPECT_TRUE(links_to(ToGuestAddr(&code[0]), cache->GetHostCodePtr(loop_pc)->load()));
++
++  // Run it again over the now fully linked code.
++  cpu_state.insn_addr = ToGuestAddr(&code[0]);
++  cache->SetStop(stop_pc);
++  ExecuteGuest(thread->state());
++  cache->TestingClearStop(stop_pc);
++  EXPECT_EQ(cpu_state.x[0], 4000u);
++
++  cache->InvalidateGuestRange(ToGuestAddr(&code[0]), stop_pc);
++  GuestMapShadow::GetInstance()->ClearExecutable(ToGuestAddr(&code[0]), sizeof(code));
++}
++// endregion
++
++// region digitalis
++// Host return prediction (see EmitDirectCallDispatch): guest calls push host call pairs that guest
++// returns take. These run long enough to gear up, so both tiers' calls and returns run.
++void RunToEnd(const uint32_t* code, size_t size) {
++  alignas(16) static uint64_t stack[8192];
++  GuestMapShadow::GetInstance()->SetExecutable(ToGuestAddr(code), size);
++  GuestThread* thread = GetCurrentGuestThread();
++  auto& cpu_state = thread->state()->cpu;
++  GuestAddr saved_sp = cpu_state.sp;
++  cpu_state.sp = ToGuestAddr(&stack[std::size(stack)]);
++  cpu_state.insn_addr = ToGuestAddr(code);
++  GuestAddr stop_pc = ToGuestAddr(code) + size;
++  auto cache = TranslationCache::GetInstance();
++  cache->SetStop(stop_pc);
++  ExecuteGuest(thread->state());
++  cache->TestingClearStop(stop_pc);
++  EXPECT_EQ(cpu_state.sp, ToGuestAddr(&stack[std::size(stack)]));
++  cpu_state.sp = saved_sp;
++  cache->InvalidateGuestRange(ToGuestAddr(code), stop_pc);
++  GuestMapShadow::GetInstance()->ClearExecutable(ToGuestAddr(code), size);
++}
++
++// Recursion 1000 deep, past what the pairs may take (config::kHostReturnStackSize), 20 times.
++TEST(Arm64ExecuteGuest, DeepRecursion) {
++  static const uint32_t code[] = {
++      0xd2800013,  //   mov x19, #0
++      0xd2800001,  //   mov x1, #0
++      0xd2807d00,  // outer: mov x0, #1000
++      0x94000005,  //   bl rec
++      0x91000673,  //   add x19, x19, #1
++      0xf100527f,  //   cmp x19, #20
++      0x54ffff81,  //   b.ne outer
++      0x14000008,  //   b end
++      0xb40000c0,  // rec: cbz x0, rec_ret
++      0xa9bf7bfd,  //   stp x29, x30, [sp, #-16]!
++      0xd1000400,  //   sub x0, x0, #1
++      0x97fffffd,  //   bl rec
++      0x91000421,  //   add x1, x1, #1
++      0xa8c17bfd,  //   ldp x29, x30, [sp], #16
++      0xd65f03c0,  // rec_ret: ret
++                   // end:
++  };
++  InitBerberis();
++  RunToEnd(code, sizeof(code));
++  auto& cpu_state = GetCurrentGuestThread()->state()->cpu;
++  EXPECT_EQ(cpu_state.x[1], 20'000u);
++  EXPECT_EQ(cpu_state.x[19], 20u);
++}
++
++// Calls that never return (each leaves a pair behind), a return to somewhere other than the return
++// address, and indirect calls.
++TEST(Arm64ExecuteGuest, UnpairedCallsAndReturns) {
++  static const uint32_t code[] = {
++      0xd2800013,  //   mov x19, #0
++      0xd2800001,  //   mov x1, #0
++      0x10000183,  //   adr x3, leaf
++      0x94000009,  // loop: bl escape
++      0x9400000a,  // back: bl leaf
++      0xd63f0060,  //   blr x3
++      0x9400000a,  //   bl skip
++      0x91019021,  //   add x1, x1, #100 (skipped)
++      0x91000673,  //   add x19, x19, #1
++      0xf11f427f,  //   cmp x19, #2000
++      0x54ffff21,  //   b.ne loop
++      0x14000007,  //   b end
++      0x10ffff02,  // escape: adr x2, back
++      0xd61f0040,  //   br x2
++      0x91000421,  // leaf: add x1, x1, #1
++      0xd65f03c0,  //   ret
++      0x910013de,  // skip: add x30, x30, #4
++      0xd65f03c0,  //   ret
++                   // end:
++  };
++  InitBerberis();
++  RunToEnd(code, sizeof(code));
++  auto& cpu_state = GetCurrentGuestThread()->state()->cpu;
++  EXPECT_EQ(cpu_state.x[1], 4000u);
++  EXPECT_EQ(cpu_state.x[19], 2000u);
++}
++// endregion
++
+ }  // namespace
+ 
+ }  // namespace berberis
+diff --git a/runtime/arm64/translator.cc b/runtime/arm64/translator.cc
+index 43d0590..0570baa 100644
+--- a/runtime/arm64/translator.cc
++++ b/runtime/arm64/translator.cc
+@@ -46,11 +46,27 @@ alignas(4) uint32_t g_native_bridge_call_guest[] = {
+ 
+ }  // namespace
+ 
++// region digitalis
++std::vector<TranslationCache::ChainSite>& LastInstalledChainSites() {
++  static thread_local std::vector<TranslationCache::ChainSite> sites;
++  return sites;
++}
++// endregion
++
+ HostCodePiece InstallTranslated(MachineCode* machine_code,
+                                 GuestAddr pc,
+                                 size_t size,
+                                 const char* prefix) {
+   HostCodeAddr host_code = GetDefaultCodePoolInstance()->Add(machine_code);
++  // region digitalis
++  auto& sites = LastInstalledChainSites();
++  sites.clear();
++  if (host_code != kNullHostCodeAddr) {
++    machine_code->ForEachChainSite([&](uint32_t offset, intptr_t target) {
++      sites.push_back({host_code + offset, static_cast<GuestAddr>(target)});
++    });
++  }
++  // endregion
+   ProfilerLogGeneratedCode(AsHostCode(host_code), machine_code->install_size(), pc, size, prefix);
+   return {host_code, machine_code->install_size()};
+ }
+diff --git a/runtime/arm64/translator.h b/runtime/arm64/translator.h
+index 8a94e10..3989864 100644
+--- a/runtime/arm64/translator.h
++++ b/runtime/arm64/translator.h
+@@ -20,6 +20,7 @@
+ #include <cstdint>
+ #include <cstdlib>
+ #include <tuple>
++#include <vector>
+ 
+ #include "berberis/assembler/machine_code.h"
+ #include "berberis/guest_os_primitives/guest_map_shadow.h"
+@@ -29,6 +30,11 @@
+ 
+ namespace berberis {
+ 
++// region digitalis
++// The chainable jumps of the code the last InstallTranslated on this thread installed.
++std::vector<TranslationCache::ChainSite>& LastInstalledChainSites();
++// endregion
++
+ HostCodePiece InstallTranslated(MachineCode* machine_code,
+                                 GuestAddr pc,
+                                 size_t size,
+diff --git a/runtime/arm64/translator_x86_64.cc b/runtime/arm64/translator_x86_64.cc
+index 0bc3e62..f798233 100644
+--- a/runtime/arm64/translator_x86_64.cc
++++ b/runtime/arm64/translator_x86_64.cc
+@@ -104,6 +104,12 @@ size_t GetExecutableRegionSize(GuestAddr pc) {
+ 
+ }  // namespace
+ 
++// region digitalis
++// From code_gen_lib (EmitDirectDispatch); this library does not get its headers.
++void SetDirectDispatchChaining(bool enabled);
++void SetReturnPrediction(bool enabled);
++// endregion
++
+ void InitTranslatorArch() {
+   // Install Berberis's host SIGSEGV/SIGBUS handler. This used to live in
+   // runtime/berberis.cc inside `#if defined(NATIVE_BRIDGE_GUEST_ARCH_ARM64)`,
+@@ -113,6 +119,16 @@ void InitTranslatorArch() {
+   // claimed for arm64 guest processes.
+   ClaimHostFaultSignals();
+   UpdateTranslationMode();
++  // region digitalis
++  // Block chaining of direct dispatches (EmitDirectDispatch); berberis.chain=0 turns it off.
++  static ConfigStr chain_config("BERBERIS_CHAIN", "berberis.chain");
++  const char* chain = chain_config.get();
++  SetDirectDispatchChaining(!(chain && chain[0] == '0'));
++  // Host return prediction (EmitDirectCallDispatch); berberis.retpred=0 turns it off.
++  static ConfigStr retpred_config("BERBERIS_RETPRED", "berberis.retpred");
++  const char* retpred = retpred_config.get();
++  SetReturnPrediction(!(retpred && retpred[0] == '0'));
++  // endregion
+ }
+ 
+ // Exported for testing only.
+@@ -320,7 +336,10 @@ void TranslateRegion(GuestAddr pc) {
+     size = first_insn_size;
+     kind = kInterpreted;
+   }
+-  cache->SetTranslatedAndUnlock(pc, entry, size, kind, host_code_piece);
++  // region digitalis
++  cache->SetTranslatedAndUnlock(
++      pc, entry, size, kind, host_code_piece, success ? &LastInstalledChainSites() : nullptr);
++  // endregion
+ 
+   // profiling
+   if (success) {
+diff --git a/runtime/arm64/translator_x86_64_test.cc b/runtime/arm64/translator_x86_64_test.cc
+index f8218b7..c150a45 100644
+--- a/runtime/arm64/translator_x86_64_test.cc
++++ b/runtime/arm64/translator_x86_64_test.cc
+@@ -20,8 +20,15 @@
+ #include <cstdint>
+ #include <tuple>
+ 
++#include <vector>
++
++#include "berberis/assembler/machine_code.h"
++#include "berberis/assembler/x86_64.h"
++#include "berberis/base/bit_util.h"
+ #include "berberis/guest_state/guest_addr.h"
+ #include "berberis/lite_translator/lite_translate_region.h"
++#include "berberis/runtime_primitives/code_pool.h"
++#include "berberis/runtime_primitives/runtime_library.h"
+ #include "berberis/runtime_primitives/host_code.h"
+ #include "berberis/runtime_primitives/translation_cache.h"
+ #include "berberis/test_utils/scoped_guest_exec_region.h"
+@@ -154,6 +161,125 @@ TEST_F(Arm64RuntimeTranslator, HeavyOptimizeLargeSupportedRegion) {
+   EXPECT_EQ(kind, GuestCodeEntry::Kind::kHeavyOptimized);
+ }
+ 
++// region digitalis chain-sites
++// Block chaining (EmitDirectDispatch, TranslationCache::ChainSite): a chainable jump is linked once its
++// target is translated, follows the target to its new code on gear-up, and is unlinked when the target
++// is invalidated or ends up interpreted.
++TEST(Arm64ChainSites, LinkRelinkUnlink) {
++  constexpr GuestAddr kFrom = 0x10'0000;
++  constexpr GuestAddr kTo = 0x20'0000;
++  MachineCode jump;
++  x86_64::Assembler as(&jump);
++  as.ChainJmp32(kTo);
++  as.Finalize();
++  HostCodeAddr jump_code = GetDefaultCodePoolInstance()->Add(&jump);
++  std::vector<TranslationCache::ChainSite> sites;
++  jump.ForEachChainSite([&](uint32_t offset, intptr_t target) {
++    sites.push_back({jump_code + offset, static_cast<GuestAddr>(target)});
++  });
++  ASSERT_EQ(sites.size(), 1u);
++  EXPECT_EQ(sites[0].site % 4, 0u);
++  EXPECT_EQ(sites[0].target, kTo);
++  auto rel32 = [&] { return *bit_cast<const int32_t*>(uintptr_t{sites[0].site}); };
++  auto to = [&](HostCodeAddr code) {
++    return static_cast<int32_t>(int64_t{code} - int64_t{sites[0].site} - 4);
++  };
++
++  TranslationCache tc;
++  GuestCodeEntry* from = tc.AddAndLockForTranslation(kFrom, 0);
++  ASSERT_TRUE(from);
++  tc.SetTranslatedAndUnlock(kFrom,
++                            from,
++                            4,
++                            GuestCodeEntry::Kind::kLiteTranslated,
++                            {jump_code, jump.install_size()},
++                            &sites);
++  EXPECT_EQ(rel32(), 0);  // Target not translated: falls through to the table lookup.
++
++  MachineCode lite_code, heavy_code;
++  lite_code.AddU8(0xc3);
++  heavy_code.AddU8(0xc3);
++  HostCodeAddr lite = GetDefaultCodePoolInstance()->Add(&lite_code);
++  HostCodeAddr heavy = GetDefaultCodePoolInstance()->Add(&heavy_code);
++
++  GuestCodeEntry* target = tc.AddAndLockForTranslation(kTo, 0);
++  ASSERT_TRUE(target);
++  tc.SetTranslatedAndUnlock(kTo, target, 4, GuestCodeEntry::Kind::kLiteTranslated, {lite, 1});
++  EXPECT_EQ(rel32(), to(lite));
++
++  target = tc.LockForGearUpTranslation(kTo);
++  ASSERT_TRUE(target);
++  EXPECT_EQ(rel32(), to(lite));  // The lite code stays linked while the target gears up.
++  tc.SetTranslatedAndUnlock(kTo, target, 4, GuestCodeEntry::Kind::kHeavyOptimized, {heavy, 1});
++  EXPECT_EQ(rel32(), to(heavy));
++
++  tc.InvalidateGuestRange(kTo, kTo + 4);
++  EXPECT_EQ(rel32(), 0);
++
++  target = tc.AddAndLockForTranslation(kTo, 0);
++  ASSERT_TRUE(target);
++  tc.SetTranslatedAndUnlock(kTo, target, 4, GuestCodeEntry::Kind::kInterpreted, {kEntryInterpret, 0});
++  EXPECT_EQ(rel32(), 0);
++
++  // Invalidating while the target gears up unlinks its still-linked lite code.
++  tc.InvalidateGuestRange(kTo, kTo + 4);
++  target = tc.AddAndLockForTranslation(kTo, 0);
++  ASSERT_TRUE(target);
++  tc.SetTranslatedAndUnlock(kTo, target, 4, GuestCodeEntry::Kind::kLiteTranslated, {lite, 1});
++  EXPECT_EQ(rel32(), to(lite));
++  target = tc.LockForGearUpTranslation(kTo);
++  ASSERT_TRUE(target);
++  tc.InvalidateGuestRange(kTo, kTo + 4);
++  EXPECT_EQ(rel32(), 0);
++  tc.SetTranslatedAndUnlock(kTo, target, 4, GuestCodeEntry::Kind::kHeavyOptimized, {heavy, 1});
++  EXPECT_EQ(rel32(), 0);  // That translation was invalidated; it is dropped, not linked.
++}
++
++// After a fork, jumps only link to code at least as old as themselves (every process that maps the jump
++// maps that code); unlinking always works.
++TEST(Arm64ChainSites, LinksNeverReachNewerRegionsAfterFork) {
++  auto chain_jump = [](GuestAddr target, MachineCode* code) {
++    x86_64::Assembler as(code);
++    as.ChainJmp32(target);
++    as.Finalize();
++    HostCodeAddr installed = GetDefaultCodePoolInstance()->Add(code);
++    HostCodeAddr site = kNullHostCodeAddr;
++    code->ForEachChainSite([&](uint32_t offset, intptr_t) { site = installed + offset; });
++    return site;
++  };
++  auto rel32 = [](HostCodeAddr site) { return *bit_cast<const int32_t*>(uintptr_t{site}); };
++  auto ret = [] {
++    MachineCode code;
++    code.AddU8(0xc3);
++    return GetDefaultCodePoolInstance()->Add(&code);
++  };
++
++  MachineCode old_jump;
++  HostCodeAddr old_site = chain_jump(0x30'0000, &old_jump);
++  ASSERT_NE(old_site, kNullHostCodeAddr);
++  HostCodeAddr old_target = ret();
++  ASSERT_TRUE(PatchChainSite(old_site, old_target));
++  EXPECT_EQ(rel32(old_site), static_cast<int32_t>(int64_t{old_target} - int64_t{old_site} - 4));
++
++  MarkPatchableExecRegionsShared();  // A fork: CodePool::Add moves to a new region by itself.
++  HostCodeAddr new_target = ret();
++  MachineCode new_jump;
++  HostCodeAddr new_site = chain_jump(0x40'0000, &new_jump);
++
++  // Old jump -> new code: refused, and left unlinked.
++  EXPECT_FALSE(PatchChainSite(old_site, new_target));
++  EXPECT_EQ(rel32(old_site), 0);
++  // Old jump -> old code, and new jump -> old or new code: fine.
++  EXPECT_TRUE(PatchChainSite(old_site, old_target));
++  EXPECT_NE(rel32(old_site), 0);
++  EXPECT_TRUE(PatchChainSite(new_site, old_target));
++  EXPECT_TRUE(PatchChainSite(new_site, new_target));
++  // Unlinking always works.
++  EXPECT_TRUE(PatchChainSite(old_site, kNullHostCodeAddr));
++  EXPECT_EQ(rel32(old_site), 0);
++}
++// endregion
++
+ }  // namespace
+ 
+ }  // namespace berberis
+diff --git a/runtime/execute_guest_call.cc b/runtime/execute_guest_call.cc
+index dfb7645..2c2ee4b 100644
+--- a/runtime/execute_guest_call.cc
++++ b/runtime/execute_guest_call.cc
+@@ -32,6 +32,12 @@ void ExecuteGuestCall(ThreadState* state) {
+   GuestCallExecution guest_call_execution{.parent = thread->guest_call_execution(),
+                                           .sp = GetStackRegister(GetCPUState(*state))};
+ 
++  // region digitalis
++  // A siglongjmp back to us skips the exits of the generated code it unwinds, which would have put
++  // back the host return stack of the generated code that called us (see berberis_RunGeneratedCode).
++  const HostReturnStack host_return_stack = GetHostReturnStack(*state);
++  // endregion
++
+   // ATTENTION: don't save/restore signal mask, this is done by guest!
+   sigsetjmp(guest_call_execution.buf, 0);
+   // Set current execution for normal flow, or reset it after a longjmp.
+@@ -39,6 +45,10 @@ void ExecuteGuestCall(ThreadState* state) {
+ 
+   ExecuteGuest(state);
+ 
++  // region digitalis
++  SetHostReturnStack(*state, host_return_stack);
++  // endregion
++
+   thread->set_guest_call_execution(guest_call_execution.parent);
+ 
+   if (guest_call_execution.sp == GetStackRegister(GetCPUState(*state))) {
+diff --git a/runtime/runtime_library_x86_64.cc b/runtime/runtime_library_x86_64.cc
+index a322719..e81ee6a 100644
+--- a/runtime/runtime_library_x86_64.cc
++++ b/runtime/runtime_library_x86_64.cc
+@@ -37,8 +37,12 @@
+        */                                                               \
+       "mov %%rbp, %%rdi\n"                                              \
+                                                                         \
+-      /* Restore stack */                                               \
+-      "add %[FrameSizeAtTranslatedCode], %%rsp\n"                       \
++      /* Restore stack: drop host return pairs and the base frame, */   \
++      /* and put back the caller's host return stack. */                \
++      "mov %[RetBase](%%rbp), %%rsp\n"                                  \
++      "add %[BaseFrameSize], %%rsp\n"                                   \
++      "pop %[RetLimit](%%rbp)\n"                                        \
++      "pop %[RetBase](%%rbp)\n"                                         \
+                                                                         \
+       /* Epilogue */                                                    \
+       "pop %%r15\n"                                                     \
+@@ -51,11 +55,24 @@
+       ::[InsnAddr] "p"(offsetof(berberis::ThreadState, cpu.insn_addr)), \
+       [Residence] "p"(offsetof(berberis::ThreadState, residence)),      \
+       [OutsideGeneratedCode] "J"(berberis::kOutsideGeneratedCode),      \
+-      [FrameSizeAtTranslatedCode] "J"(berberis::config::kFrameSizeAtTranslatedCode))
++      [RetBase] "p"(offsetof(berberis::ThreadState, host_return_stack.base)),   \
++      [RetLimit] "p"(offsetof(berberis::ThreadState, host_return_stack.limit)), \
++      [BaseFrameSize] "J"(berberis::kBaseFrameSize))
+ // clang-format on
+ 
+ namespace berberis {
+ 
++// region digitalis
++// The frame berberis_RunGeneratedCode sets up below its saved registers: the scratch the regions
++// may use, and a sentinel host return pair (see kHostReturnPairSize), plus alignment.
++inline constexpr uint32_t kBaseFrameSize = 40;
++static_assert(kBaseFrameSize >= config::kHostReturnPairSize);
++static_assert(config::kHostReturnPairHostOffset >= int32_t{config::kFrameSizeAtTranslatedCode});
++// Return address, 6 saved registers and the caller's host return stack, then the base frame: the
++// stack must end up aligned for calls.
++static_assert((8 + 6 * 8 + 2 * 8 + kBaseFrameSize) % 16 == 0);
++// endregion
++
+ // "Calling conventions" among generated code and trampolines
+ // ==========================================================
+ //
+@@ -88,6 +105,13 @@ namespace berberis {
+ // Each region is allowed to use the stack pointed to by %rsp. However, it must
+ // restore %rsp before exiting.
+ //
++// region digitalis
++// Host return prediction: a guest call pushes a 32-byte pair onto the host stack before it enters
++// its callee, and a guest return may pop it (see EmitDirectCallDispatch). So %rsp at a region entry
++// is the base frame's or lower, always aligned the same. Exiting generated code takes %rsp from
++// ThreadState::host_return_stack.base, which drops any pairs.
++// endregion
++//
+ // %rbx, %rbp, and %r12-%r15 are callee saved, all other registers are
+ // "caller saved". That is, regions are allowed to use them without restoring
+ // their original values.
+@@ -138,8 +162,26 @@ extern "C" {
+     "push %%r14\n"
+     "push %%r15\n"
+ 
++    // region digitalis
++    // Save the host return stack of the generated code that called us, if any (put back by
++    // END_GENERATED_CODE), and set up ours: no pairs yet, and a sentinel pair a guest return only
++    // matches if it returns to 0, whose host return exits generated code.
++    "push %[RetBase](%%rdi)\n"
++    "push %[RetLimit](%%rdi)\n"
++    // endregion
++
+     // Align stack for next call
+-    "sub %[FrameSizeAtTranslatedCode], %%rsp\n"  // kStackAlignAtCall, kFrameSizeAtTranslatedCode
++    "sub %[BaseFrameSize], %%rsp\n"  // kStackAlignAtCall, kFrameSizeAtTranslatedCode
++
++    // region digitalis
++    "mov %%rsp, %[RetBase](%%rdi)\n"
++    "mov %%rsp, %%rcx\n"
++    "sub %[RetStackSize], %%rcx\n"
++    "mov %%rcx, %[RetLimit](%%rdi)\n"
++    "mov berberis_entry_ExitGeneratedCode@GOTPCREL(%%rip), %%rcx\n"
++    "mov %%rcx, %[PairHost](%%rsp)\n"
++    "movq $0, %[PairGuest](%%rsp)\n"
++    // endregion
+ 
+     // Set state pointer
+     "mov %%rdi, %%rbp\n"  // kStateRegister, kOmitFramePointer
+@@ -154,7 +196,12 @@ extern "C" {
+     ::[InsnAddr] "p"(offsetof(ThreadState, cpu.insn_addr)),
+     [Residence] "p"(offsetof(ThreadState, residence)),
+     [InsideGeneratedCode] "J"(kInsideGeneratedCode),
+-    [FrameSizeAtTranslatedCode] "J"(config::kFrameSizeAtTranslatedCode));
++    [RetBase] "p"(offsetof(ThreadState, host_return_stack.base)),
++    [RetLimit] "p"(offsetof(ThreadState, host_return_stack.limit)),
++    [RetStackSize] "i"(config::kHostReturnStackSize),
++    [PairHost] "p"(config::kHostReturnPairHostOffset),
++    [PairGuest] "p"(config::kHostReturnPairGuestOffset),
++    [BaseFrameSize] "J"(kBaseFrameSize));
+   // clang-format on
+ }
+ 
+diff --git a/runtime_primitives/code_pool.cc b/runtime_primitives/code_pool.cc
+index 6ca7a50..c3e9d87 100644
+--- a/runtime_primitives/code_pool.cc
++++ b/runtime_primitives/code_pool.cc
+@@ -16,10 +16,17 @@
+ 
+ #include "berberis/runtime_primitives/code_pool.h"
+ 
++#include <pthread.h>
++#include <unistd.h>
++
++#include <atomic>
++#include <climits>
+ #include <cstring>
+ #include <mutex>
++#include <vector>
+ 
+ #include "berberis/base/forever_alloc.h"
++#include "berberis/base/tracing.h"
+ #include "berberis/runtime_primitives/exec_region_anonymous.h"
+ 
+ #if defined(__BIONIC__)
+@@ -40,16 +47,123 @@ void* DataPool::AddRaw(const void* ptr, uint32_t size) {
+ }
+ 
+ void ResetAllExecRegions() {
++  // region digitalis
++  MarkPatchableExecRegionsShared();
++  // endregion
+   GetDefaultCodePoolInstance()->ResetExecRegion();
+   GetColdCodePoolInstance()->ResetExecRegion();
+   GetFunctionWrapperCodePoolInstance()->ResetExecRegion();
+ }
+ 
+ CodePool<ExecRegionAnonymousFactory>* GetDefaultCodePoolInstance() {
+-  static auto* g_code_pool = NewForever<CodePool<ExecRegionAnonymousFactory>>();
++  // region digitalis
++  static auto* g_code_pool = [] {
++    auto* pool = NewForever<CodePool<ExecRegionAnonymousFactory>>();
++    pool->EnableChainPatching();
++    return pool;
++  }();
++  // endregion
+   return g_code_pool;
+ }
+ 
++// region digitalis
++namespace {
++
++struct PatchableRegion {
++  uintptr_t begin;
++  uintptr_t end;
++  uint8_t* write;
++  uint32_t generation;  // Forks before the region was created.
++};
++
++std::mutex g_patch_mutex;
++pid_t g_patch_pid = 0;
++std::atomic<uint32_t> g_fork_generation{0};
++
++std::vector<PatchableRegion>& PatchableRegions() {
++  static auto* regions = NewForever<std::vector<PatchableRegion>>();
++  return *regions;
++}
++
++void MarkSharedLocked() {
++  uint32_t generation = g_fork_generation.fetch_add(1, std::memory_order_relaxed) + 1;
++  TRACE_AND_ALOGD("berberis: chain: fork, code generation %u", generation);
++}
++
++const PatchableRegion* FindRegionLocked(uintptr_t addr, size_t size) {
++  for (const auto& region : PatchableRegions()) {
++    if (region.begin <= addr && addr + size <= region.end) {
++      return &region;
++    }
++  }
++  return nullptr;
++}
++
++// Every fork, in both processes: what exists now is mapped by both. The mutex is held across the fork
++// so the child never inherits it locked.
++void LockForFork() {
++  g_patch_mutex.lock();
++}
++void MarkSharedAfterFork() {
++  MarkSharedLocked();
++  g_patch_pid = getpid();
++  g_patch_mutex.unlock();
++}
++
++}  // namespace
++
++void RegisterPatchableExecRegion(const uint8_t* exec, size_t size, uint8_t* write) {
++  static const bool kAtForkRegistered =
++      pthread_atfork(LockForFork, MarkSharedAfterFork, MarkSharedAfterFork) == 0;
++  (void)kAtForkRegistered;
++  std::lock_guard<std::mutex> lock(g_patch_mutex);
++  if (g_patch_pid == 0) {
++    g_patch_pid = getpid();
++  }
++  if (write == nullptr) {
++    return;
++  }
++  auto begin = bit_cast<uintptr_t>(exec);
++  PatchableRegions().push_back(
++      {begin, begin + size, write, g_fork_generation.load(std::memory_order_relaxed)});
++}
++
++void MarkPatchableExecRegionsShared() {
++  std::lock_guard<std::mutex> lock(g_patch_mutex);
++  MarkSharedLocked();
++}
++
++uint32_t PatchableExecRegionsGeneration() {
++  return g_fork_generation.load(std::memory_order_relaxed);
++}
++
++bool PatchChainSite(HostCodeAddr site, HostCodeAddr target) {
++  std::lock_guard<std::mutex> lock(g_patch_mutex);
++  // A fork that bypassed both pthread_atfork and the guest clone path.
++  if (pid_t pid = getpid(); pid != g_patch_pid) {
++    MarkSharedLocked();
++    g_patch_pid = pid;
++  }
++  const PatchableRegion* region = site % 4 == 0 ? FindRegionLocked(site, 4) : nullptr;
++  if (region == nullptr) {
++    return false;
++  }
++  int32_t disp = 0;
++  bool linked = false;
++  if (target != kNullHostCodeAddr) {
++    const PatchableRegion* target_region = FindRegionLocked(target, 1);
++    int64_t wide = int64_t{target} - int64_t{site} - 4;
++    if (target_region != nullptr && target_region->generation <= region->generation &&
++        wide >= INT32_MIN && wide <= INT32_MAX) {
++      disp = static_cast<int32_t>(wide);
++      linked = true;
++    }
++  }
++  __atomic_store_n(bit_cast<int32_t*>(region->write + (site - region->begin)), disp, __ATOMIC_RELEASE);
++  return target == kNullHostCodeAddr || linked;
++}
++// endregion
++
+ CodePool<ExecRegionAnonymousFactory>* GetColdCodePoolInstance() {
+   static auto* g_cold_code_pool = NewForever<CodePool<ExecRegionAnonymousFactory>>();
+   return g_cold_code_pool;
+diff --git a/runtime_primitives/include/berberis/runtime_primitives/code_pool.h b/runtime_primitives/include/berberis/runtime_primitives/code_pool.h
+index 1a18321..edf50a2 100644
+--- a/runtime_primitives/include/berberis/runtime_primitives/code_pool.h
++++ b/runtime_primitives/include/berberis/runtime_primitives/code_pool.h
+@@ -40,6 +40,22 @@
+ 
+ namespace berberis {
+ 
++// region digitalis
++// Block chaining (see EmitDirectDispatch). Exec regions with chainable jumps stay registered with
++// their writable alias mapped, so TranslationCache can patch jumps in any of them.
++// Exec regions are MAP_SHARED, so a forked process maps every region that existed at the fork and
++// sees later patches to them. Each region records how many forks preceded it (its generation), and a
++// jump is only linked to code in a region of the same or an older generation: every process that maps
++// the jump then maps the target too. Unlinking (back to the table lookup) is right in every process.
++void RegisterPatchableExecRegion(const uint8_t* exec, size_t size, uint8_t* write);
++// Points the chainable jump whose rel32 is at site to target, or unlinks it for kNullHostCodeAddr.
++// A link that isn't allowed (see above), or out of range, unlinks instead and returns false.
++bool PatchChainSite(HostCodeAddr site, HostCodeAddr target);
++// A fork happened (or is detected): regions from now on are a newer generation.
++void MarkPatchableExecRegionsShared();
++uint32_t PatchableExecRegionsGeneration();
++// endregion
++
+ // Code pool is an arena used to store fragments of generated code.
+ // TODO(b/232598137): Consider freeing allocated regions.
+ template <typename ExecRegionFactory>
+@@ -79,9 +95,15 @@ class CodePool {
+     // (inherited copy-on-write) still resolve.
+     pid_t cur_pid = getpid();
+     if (cur_pid != owner_pid_) {
++      MarkPatchableExecRegionsShared();
+       ResetExecRegion();
+       owner_pid_ = cur_pid;
+     }
++    // After a fork, new code goes to a new region (a newer generation), so no jump in a region the
++    // other process maps can be linked to code written after the fork.
++    if (chain_patching_ && generation_ != PatchableExecRegionsGeneration()) {
++      ResetExecRegion();
++    }
+     // endregion
+ 
+     uint32_t size = code->install_size();
+@@ -131,11 +153,21 @@ class CodePool {
+ 
+   void ResetExecRegion(uint32_t size = ExecRegionFactory::kExecRegionSize) {
+     detached_size_ += exec_.size();
+-    exec_.Detach();
++    RetireExecRegion();
+     exec_ = ExecRegionFactory::Create(std::max(size, ExecRegionFactory::kExecRegionSize));
+     current_address_ = exec_.begin();
++    RegisterIfPatchable();
+   }
+ 
++  // region digitalis
++  // For the pool of translated regions: keep every region patchable (see PatchChainSite).
++  void EnableChainPatching() {
++    std::lock_guard<std::mutex> lock(mutex_);
++    chain_patching_ = true;
++    RegisterIfPatchable();
++  }
++  // endregion
++
+   // region digitalis
+   // Non-fatal variant: returns false and leaves the pool untouched when the
+   // host cannot provide a new executable region (memory pressure). See the
+@@ -159,9 +191,10 @@ class CodePool {
+       return false;
+     }
+     detached_size_ += exec_.size();
+-    exec_.Detach();
++    RetireExecRegion();
+     exec_ = std::move(fresh);
+     current_address_ = exec_.begin();
++    RegisterIfPatchable();
+     return true;
+   }
+   // endregion
+@@ -169,6 +202,23 @@ class CodePool {
+   size_t GetTotalSize() const { return detached_size_ + (current_address_ - exec_.begin()); }
+ 
+  private:
++  // region digitalis
++  // A full region's writable alias stays mapped (and registered) when its jumps may be patched.
++  void RetireExecRegion() {
++    if (!chain_patching_) {
++      exec_.Detach();
++    }
++  }
++  void RegisterIfPatchable() {
++    if (chain_patching_ && exec_.begin() != nullptr) {
++      generation_ = PatchableExecRegionsGeneration();
++      RegisterPatchableExecRegion(exec_.begin(), exec_.size(), exec_.writable_begin());
++    }
++  }
++  bool chain_patching_ = false;
++  uint32_t generation_ = 0;
++  // endregion
++
+   ExecRegion exec_;
+   const uint8_t* current_address_;
+   // TODO(b/232598137): have recovery map for each region instead!
+diff --git a/runtime_primitives/include/berberis/runtime_primitives/translation_cache.h b/runtime_primitives/include/berberis/runtime_primitives/translation_cache.h
+index 8d12408..7c3cec8 100644
+--- a/runtime_primitives/include/berberis/runtime_primitives/translation_cache.h
++++ b/runtime_primitives/include/berberis/runtime_primitives/translation_cache.h
+@@ -20,6 +20,8 @@
+ #include <atomic>
+ #include <cstdint>
+ #include <mutex>
++#include <unordered_map>
++#include <vector>
+ 
+ #include "berberis/base/forever_map.h"
+ #include "berberis/base/forever_set.h"
+@@ -133,13 +135,26 @@ class TranslationCache {
+   // If successful returns the locked entry, otherwise returns nullptr.
+   [[nodiscard]] GuestCodeEntry* LockForGearUpTranslation(GuestAddr pc);
+ 
++  // region digitalis
++  // A chainable direct-dispatch jump in installed code (x86_64::Assembler::ChainJmp32).
++  struct ChainSite {
++    HostCodeAddr site;  // Address of the jump's rel32.
++    GuestAddr target;
++  };
++  // endregion
++
+   // Transitions the entry for the given guest address from Translating to Translated, making it
+   // available to other threads.
++  // region digitalis
++  // Also chains: jumps that dispatch to pc go straight to the new code, and chain_sites (the jumps in
++  // that code) are registered and linked to targets that are translated already.
++  // endregion
+   void SetTranslatedAndUnlock(GuestAddr pc,
+                               GuestCodeEntry* entry,
+                               uint32_t guest_size,
+                               GuestCodeEntry::Kind kind,
+-                              HostCodePiece code);
++                              HostCodePiece code,
++                              const std::vector<ChainSite>* chain_sites = nullptr);
+ 
+   // ATTENTION: interpreter doesn't handle code that is being wrapped!
+   [[nodiscard]] GuestCodeEntry* AddAndLockForWrapping(GuestAddr pc);
+@@ -209,6 +224,14 @@ class TranslationCache {
+ 
+   void InvalidateEntriesBeingTranslatedUnsafe();
+ 
++  // region digitalis
++  // Points every chainable jump to pc at code (kNullHostCodeAddr unlinks them).
++  void PatchChainSitesToUnsafe(GuestAddr pc, HostCodeAddr code);
++  // Chainable jumps by the guest pc they dispatch to (mutex_). Includes jumps in code that is no longer
++  // reachable: patching those is harmless, code memory is never reused.
++  std::unordered_map<GuestAddr, std::vector<HostCodeAddr>> chain_sites_;
++  // endregion
++
+   // ATTENTION: all GuestCodeEntry state transitions must be protected by mutex!
+   mutable std::mutex mutex_;
+ 
+diff --git a/runtime_primitives/translation_cache.cc b/runtime_primitives/translation_cache.cc
+index 790cb97..af472a1 100644
+--- a/runtime_primitives/translation_cache.cc
++++ b/runtime_primitives/translation_cache.cc
+@@ -25,6 +25,7 @@
+ #include "berberis/base/config.h"
+ #include "berberis/base/forever_alloc.h"
+ #include "berberis/guest_state/guest_addr.h"
++#include "berberis/runtime_primitives/code_pool.h"  // PatchChainSite
+ #include "berberis/runtime_primitives/host_code.h"
+ #include "berberis/runtime_primitives/runtime_library.h"
+ 
+@@ -97,7 +98,8 @@ void TranslationCache::SetTranslatedAndUnlock(GuestAddr pc,
+                                               GuestCodeEntry* entry,
+                                               uint32_t guest_size,
+                                               GuestCodeEntry::Kind kind,
+-                                              HostCodePiece code) {
++                                              HostCodePiece code,
++                                              const std::vector<ChainSite>* chain_sites) {
+   CHECK(kind != GuestCodeEntry::Kind::kUnderProcessing);
+   CHECK(kind != GuestCodeEntry::Kind::kGuestWrapped);
+   CHECK(kind != GuestCodeEntry::Kind::kHostWrapped);
+@@ -133,7 +135,37 @@ void TranslationCache::SetTranslatedAndUnlock(GuestAddr pc,
+   if (max_guest_size_ < guest_size) {
+     max_guest_size_ = guest_size;
+   }
++
++  // region digitalis
++  // Jumps to pc follow it to its new code (after a gear-up too); an interpreted pc unlinks them.
++  auto chainable = [](const GuestCodeEntry& e) {
++    return e.kind == GuestCodeEntry::Kind::kLiteTranslated ||
++           e.kind == GuestCodeEntry::Kind::kHeavyOptimized;
++  };
++  PatchChainSitesToUnsafe(pc, chainable(*entry) ? code.code : kNullHostCodeAddr);
++  if (chain_sites != nullptr && chainable(*entry)) {
++    for (const ChainSite& site : *chain_sites) {
++      chain_sites_[site.target].push_back(site.site);
++      const GuestCodeEntry* target = LookupGuestCodeEntryUnsafe(site.target);
++      if (target != nullptr && chainable(*target)) {
++        PatchChainSite(site.site, target->host_code->load());
++      }
++    }
++  }
++  // endregion
++}
++
++// region digitalis
++void TranslationCache::PatchChainSitesToUnsafe(GuestAddr pc, HostCodeAddr code) {
++  auto it = chain_sites_.find(pc);
++  if (it == chain_sites_.end()) {
++    return;
++  }
++  for (HostCodeAddr site : it->second) {
++    PatchChainSite(site, code);
++  }
+ }
++// endregion
+ 
+ GuestCodeEntry* TranslationCache::AddAndLockForWrapping(GuestAddr pc) {
+   // This should be relatively rare, don't need a fast pass.
+@@ -297,6 +329,11 @@ bool TranslationCache::InvalidateGuestRange(GuestAddr start, GuestAddr end) {
+ 
+     HostCodeAddr current = entry->host_code->load();
+ 
++    // region digitalis
++    // Chained jumps must not reach code for the invalidated range, including the lite code of an entry
++    // that is gearing up (still linked while it translates).
++    PatchChainSitesToUnsafe(guest_pc, kNullHostCodeAddr);
++    // endregion
+     if (current == kEntryInvalidating) {
+       // Translating but invalidated entry is handled in SetTranslatedAndUnlock.
+     } else if (current == kEntryWrapping) {

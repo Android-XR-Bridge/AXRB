@@ -185,6 +185,29 @@ XrResult XRAPI_CALL xrLocateSpace_impl(
     const XrPosef spaceWorld = world_pose_for_space(*spaceRecord, poseFrame);
     const XrPosef baseWorld = world_pose_for_space(*baseRecord, poseFrame);
     location->pose = multiply_pose(inverse_pose(baseWorld), spaceWorld);
+#if defined(__ANDROID__)
+    // Independent counters avoid always sampling the head in head/left/right
+    // call cycles. Log even when the caller does not request velocity.
+    static std::atomic<uint64_t> poseCalls[7]{};
+    const auto kindIndex = static_cast<unsigned>(spaceRecord->kind);
+    if (kindIndex < 7) {
+        const auto sample = poseCalls[kindIndex].fetch_add(1, std::memory_order_relaxed);
+        if (sample < 3 || sample % 900 == 0) {
+            const auto& p = location->pose;
+            __android_log_print(ANDROID_LOG_INFO, "AXRB.Space",
+                "locate kind=%u base=%d seq=%llu flags=%llu sourceFlags=%llu baseFlags=%llu "
+                "world=(%.4f %.4f %.4f) q=(%.4f %.4f %.4f %.4f) "
+                "result=(%.4f %.4f %.4f) q=(%.4f %.4f %.4f %.4f)",
+                kindIndex, static_cast<int>(baseRecord->kind), (unsigned long long)poseFrame.sequence,
+                (unsigned long long)location->locationFlags, (unsigned long long)tracking_flags(*spaceRecord),
+                (unsigned long long)tracking_flags(*baseRecord),
+                spaceWorld.position.x, spaceWorld.position.y, spaceWorld.position.z,
+                spaceWorld.orientation.x, spaceWorld.orientation.y, spaceWorld.orientation.z, spaceWorld.orientation.w,
+                p.position.x, p.position.y, p.position.z,
+                p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w);
+        }
+    }
+#endif
     struct Chain { XrStructureType type; void* next; };
     for (auto* chain=static_cast<Chain*>(location->next); chain; chain=static_cast<Chain*>(chain->next)) {
         if (chain->type != XR_TYPE_SPACE_VELOCITY) continue;

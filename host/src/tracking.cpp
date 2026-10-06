@@ -235,6 +235,9 @@ axrb::protocol::PoseFrame OpenXrSession::make_frame(uint64_t sequence)
     publish_pose(frame);
 
     if (beganFrame) {
+#if defined(_WIN32)
+        pickupBudget_.observe(frameDisplayTime, frameDisplayPeriod, monotonic_time_ns());
+#endif
         XrCompositionLayerQuad fpsHud{XR_TYPE_COMPOSITION_LAYER_QUAD};
 #if defined(_WIN32)
         auto& layers = nativeSubmission_.layers;
@@ -262,7 +265,10 @@ axrb::protocol::PoseFrame OpenXrSession::make_frame(uint64_t sequence)
         }
         if (result != XR_SUCCESS) {
             std::fprintf(stderr, "AXRB OpenXR: xrEndFrame failed: %s (%d)\n", xr_result_name(result), result);
-            useFrameLoop_ = false;
+            // A rejected layer is recoverable on the next frame. Disabling
+            // pacing here leaves the headset frozen after one bad submission.
+            if (result == XR_ERROR_SESSION_LOST || result == XR_ERROR_INSTANCE_LOST)
+                useFrameLoop_ = false;
         }
 #if defined(_WIN32)
 #if defined(AXRB_ENABLE_PERFORMANCE_OVERLAY)
@@ -307,8 +313,24 @@ axrb::protocol::PoseFrame OpenXrSession::latest_frame(uint64_t sequence)
 
 void OpenXrSession::publish_pose(const axrb::protocol::PoseFrame& frame)
 {
-    std::lock_guard<std::mutex> lock(frameMutex_);
-    latest_ = frame;
+    {
+        std::lock_guard<std::mutex> lock(frameMutex_);
+        latest_ = frame;
+        ++poseGeneration_;
+    }
+    poseUpdated_.notify_all();
+}
+
+axrb::protocol::PoseFrame OpenXrSession::wait_for_pose(uint64_t& generation)
+{
+    std::unique_lock<std::mutex> lock(frameMutex_);
+    // A bounded heartbeat keeps reconnects/session transitions responsive.
+    // Preserve the capture sequence and timestamp rather than relabeling stale poses.
+    poseUpdated_.wait_for(lock, std::chrono::milliseconds(100), [&] {
+        return poseGeneration_ != generation;
+    });
+    generation = poseGeneration_;
+    return latest_;
 }
 
 bool OpenXrSession::create_reference_space(XrReferenceSpaceType type, XrSpace* space)
@@ -643,6 +665,9 @@ void OpenXrSession::locate_controller_spaces(axrb::protocol::PoseFrame& frame, X
         diagnostic.aimInvalid += (frame.aim_flags[i] & 3) != 3;
         diagnostic.gripInvalid += (frame.grip_flags[i] & 3) != 3;
         if (diagnostic.samples == 1 || diagnostic.samples % kPoseLogInterval == 0) {
+            const auto& aim = frame.aim[i];
+            std::fprintf(stderr, "AXRB Input: pose seq=%llu hand=%zu aim=(%.4f %.4f %.4f) q=(%.4f %.4f %.4f %.4f)\n",
+                (unsigned long long)frame.sequence, i, aim.x, aim.y, aim.z, aim.qx, aim.qy, aim.qz, aim.qw);
             std::fprintf(stderr,
                 "AXRB Input: hand=%zu samples=%llu inactive(aim/grip)=%llu/%llu invalidPose(aim/grip)=%llu/%llu "
                 "stateResult=%d/%d locateResult=%d/%d active=%u/%u poseFlags=%llx/%llx velocityFlags=%u/%u\n",

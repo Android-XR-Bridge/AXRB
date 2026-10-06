@@ -299,7 +299,21 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice physical,const Vk
             state.getMemoryFdProperties=function<PFN_vkGetMemoryFdPropertiesKHR>(state,"vkGetMemoryFdPropertiesKHR");
         }
         if(astc){
-            axrb::texture::DeviceCalls calls;calls.device=*out;
+            axrb::texture::DeviceCalls calls;calls.device=*out;calls.gdpa=gdpa;
+            for (auto* node=static_cast<const VkBaseInStructure*>(info->pNext);node;node=node->pNext)
+                if(node->sType==VK_STRUCTURE_TYPE_LOADER_DEVICE_CREATE_INFO){
+                    auto* loader=reinterpret_cast<const VkLayerDeviceCreateInfo*>(node);
+                    if(loader->function==VK_LOADER_DATA_CALLBACK)calls.loader=loader->u.pfnSetDeviceLoaderData;
+                }
+            // GPU/BC3 is the performance default; astc_gpu=0 retains BC7.
+            char gpuMode[PROP_VALUE_MAX]{};__system_property_get("debug.axrb.astc_gpu",gpuMode);
+            if(std::strcmp(gpuMode,"0")){
+                auto query=function<PFN_vkGetPhysicalDeviceQueueFamilyProperties>(s,"vkGetPhysicalDeviceQueueFamilyProperties");
+                uint32_t n=0;query(physical,&n,nullptr);std::vector<VkQueueFamilyProperties> families(n);query(physical,&n,families.data());
+                for(uint32_t i=0;i<n&&i<32;++i)if(families[i].queueFlags&VK_QUEUE_COMPUTE_BIT)calls.computeFamilies|=1u<<i;
+                VkPhysicalDeviceProperties props{};function<PFN_vkGetPhysicalDeviceProperties>(s,"vkGetPhysicalDeviceProperties")(physical,&props);
+                calls.maxStorageRange=props.limits.maxStorageBufferRange;
+            }
             function<PFN_vkGetPhysicalDeviceMemoryProperties>(s,"vkGetPhysicalDeviceMemoryProperties")(physical,&calls.memory);
 #define AXRB_CALL(field,name) calls.field=function<decltype(calls.field)>(state,#name)
             AXRB_CALL(createImage,vkCreateImage);AXRB_CALL(destroyImage,vkDestroyImage);AXRB_CALL(createImageView,vkCreateImageView);
@@ -427,9 +441,14 @@ VKAPI_ATTR void VKAPI_CALL vkUnmapMemory(VkDevice h,VkDeviceMemory memory){
     auto s=device(h);if(s.astc)axrb::texture::astc_images().unmapped(memory);
     (s.astc?s.astc->unmapMemory:function<PFN_vkUnmapMemory>(s,"vkUnmapMemory"))(h,memory);
 }
+VKAPI_ATTR VkResult VKAPI_CALL vkCreateCommandPool(VkDevice h,const VkCommandPoolCreateInfo* info,const VkAllocationCallbacks* alloc,VkCommandPool* out){
+    auto s=device(h);auto result=function<PFN_vkCreateCommandPool>(s,"vkCreateCommandPool")(h,info,alloc,out);
+    if(result==VK_SUCCESS&&s.astc)axrb::texture::astc_images().created_pool(*out,info->queueFamilyIndex);
+    return result;
+}
 VKAPI_ATTR VkResult VKAPI_CALL vkAllocateCommandBuffers(VkDevice h,const VkCommandBufferAllocateInfo* info,VkCommandBuffer* out){
     auto s=device(h);auto result=(s.astc?s.astc->allocateCommandBuffers:function<PFN_vkAllocateCommandBuffers>(s,"vkAllocateCommandBuffers"))(h,info,out);
-    if(result==VK_SUCCESS&&s.astc)axrb::texture::astc_images().allocated_command_buffers(h,info->commandPool,info->commandBufferCount,out);
+    if(result==VK_SUCCESS&&s.astc)axrb::texture::astc_images().allocated_command_buffers(h,info->commandPool,info->commandBufferCount,out,info->level==VK_COMMAND_BUFFER_LEVEL_PRIMARY);
     return result;
 }
 VKAPI_ATTR void VKAPI_CALL vkFreeCommandBuffers(VkDevice h,VkCommandPool pool,uint32_t count,const VkCommandBuffer* buffers){
@@ -446,7 +465,9 @@ VKAPI_ATTR void VKAPI_CALL vkDestroyCommandPool(VkDevice h,VkCommandPool pool,co
 }
 VKAPI_ATTR VkResult VKAPI_CALL vkBeginCommandBuffer(VkCommandBuffer h,const VkCommandBufferBeginInfo* info){
     auto s=device(h);if(s.astc)axrb::texture::astc_images().reset_command_buffer(h);
-    return (s.astc?s.astc->beginCommandBuffer:function<PFN_vkBeginCommandBuffer>(s,"vkBeginCommandBuffer"))(h,info);
+    auto result=(s.astc?s.astc->beginCommandBuffer:function<PFN_vkBeginCommandBuffer>(s,"vkBeginCommandBuffer"))(h,info);
+    if(result==VK_SUCCESS&&s.astc)axrb::texture::astc_images().began(h,info->flags);
+    return result;
 }
 VKAPI_ATTR VkResult VKAPI_CALL vkResetCommandBuffer(VkCommandBuffer h,VkCommandBufferResetFlags flags){
     auto s=device(h);if(s.astc)axrb::texture::astc_images().reset_command_buffer(h);
@@ -476,7 +497,21 @@ VKAPI_ATTR void VKAPI_CALL vkCmdExecuteCommands(VkCommandBuffer h,uint32_t count
 VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit(VkQueue h,uint32_t count,const VkSubmitInfo* submits,VkFence fence){
     auto s=device(h);
     if(s.astc)for(uint32_t i=0;i<count;++i)axrb::texture::astc_images().before_submit(submits[i].commandBufferCount,submits[i].pCommandBuffers);
-    return (s.astc?s.astc->queueSubmit:function<PFN_vkQueueSubmit>(s,"vkQueueSubmit"))(h,count,submits,fence);
+    if(!s.astc || !s.astc->computeFamilies)
+        return (s.astc?s.astc->queueSubmit:function<PFN_vkQueueSubmit>(s,"vkQueueSubmit"))(h,count,submits,fence);
+    std::vector<VkSubmitInfo> modified;
+    std::vector<std::vector<VkCommandBuffer>> lists(count);
+    if(s.astc)for(uint32_t i=0;i<count;++i){
+        for(uint32_t j=0;j<submits[i].commandBufferCount;++j){
+            axrb::texture::astc_images().gpu_commands(submits[i].pCommandBuffers[j],lists[i]);
+            lists[i].push_back(submits[i].pCommandBuffers[j]);
+        }
+        if(lists[i].size()!=submits[i].commandBufferCount){
+            if(modified.empty())modified.assign(submits,submits+count);
+            modified[i].commandBufferCount=uint32_t(lists[i].size());modified[i].pCommandBuffers=lists[i].data();
+        }
+    }
+    return (s.astc?s.astc->queueSubmit:function<PFN_vkQueueSubmit>(s,"vkQueueSubmit"))(h,count,modified.empty()?submits:modified.data(),fence);
 }
 VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit2(VkQueue h,uint32_t count,const VkSubmitInfo2* submits,VkFence fence){
     auto s=device(h);
@@ -487,7 +522,23 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit2(VkQueue h,uint32_t count,const VkS
     }
     auto next=s.astc?s.astc->queueSubmit2:function<PFN_vkQueueSubmit2>(s,"vkQueueSubmit2");
     if(!next)next=function<PFN_vkQueueSubmit2>(s,"vkQueueSubmit2KHR");
-    return next(h,count,submits,fence);
+    if(!s.astc || !s.astc->computeFamilies)return next(h,count,submits,fence);
+    std::vector<VkSubmitInfo2> modified;
+    std::vector<std::vector<VkCommandBufferSubmitInfo>> lists(count);
+    if(s.astc)for(uint32_t i=0;i<count;++i){
+        for(uint32_t j=0;j<submits[i].commandBufferInfoCount;++j){
+            const auto& original=submits[i].pCommandBufferInfos[j];
+            std::vector<VkCommandBuffer> extra;
+            axrb::texture::astc_images().gpu_commands(original.commandBuffer,extra);
+            for(auto command:extra){VkCommandBufferSubmitInfo item{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};item.commandBuffer=command;item.deviceMask=original.deviceMask;lists[i].push_back(item);}
+            lists[i].push_back(original);
+        }
+        if(lists[i].size()!=submits[i].commandBufferInfoCount){
+            if(modified.empty())modified.assign(submits,submits+count);
+            modified[i].commandBufferInfoCount=uint32_t(lists[i].size());modified[i].pCommandBufferInfos=lists[i].data();
+        }
+    }
+    return next(h,count,modified.empty()?submits:modified.data(),fence);
 }
 VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit2KHR(VkQueue h,uint32_t count,const VkSubmitInfo2* submits,VkFence fence){return vkQueueSubmit2(h,count,submits,fence);}
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance h,const char* name){
@@ -522,7 +573,7 @@ PFN_vkVoidFunction intercept(const char* name){
     if(axrb::texture::astc_to_bc7_enabled()){
         ENTRY(vkCreateImage);ENTRY(vkDestroyImage);ENTRY(vkCreateImageView);ENTRY(vkCreateBuffer);ENTRY(vkDestroyBuffer);
         ENTRY(vkBindBufferMemory);ENTRY(vkBindBufferMemory2);ENTRY(vkBindBufferMemory2KHR);ENTRY(vkFreeMemory);ENTRY(vkMapMemory);ENTRY(vkUnmapMemory);
-        ENTRY(vkAllocateCommandBuffers);ENTRY(vkFreeCommandBuffers);ENTRY(vkResetCommandPool);ENTRY(vkDestroyCommandPool);
+        ENTRY(vkCreateCommandPool);ENTRY(vkAllocateCommandBuffers);ENTRY(vkFreeCommandBuffers);ENTRY(vkResetCommandPool);ENTRY(vkDestroyCommandPool);
         ENTRY(vkBeginCommandBuffer);ENTRY(vkResetCommandBuffer);ENTRY(vkCmdCopyBufferToImage);ENTRY(vkCmdCopyBufferToImage2);
         ENTRY(vkCmdCopyBufferToImage2KHR);ENTRY(vkCmdExecuteCommands);ENTRY(vkQueueSubmit);ENTRY(vkQueueSubmit2);ENTRY(vkQueueSubmit2KHR);
     }
