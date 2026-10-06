@@ -1,0 +1,135 @@
+--- a/heavy_optimizer/arm64/frontend.h
++++ b/heavy_optimizer/arm64/frontend.h
+@@ -718,6 +718,15 @@
+     return tbi;
+   }
+ 
++  // Address register for an access that only READS the result as a memory-operand base.
++  // Without the top-byte-ignore config flag (the lite tier's condition too), guest pointers
++  // carry no tag, so base itself is used and the copy + shift pair (~12% of heavy-tier
++  // instructions in Batman's UnityMain) disappears. Callers that write to the returned
++  // register (exclusive/atomic and structure helpers) must keep ApplyTbi: see above.
++  [[nodiscard]] Register ReadOnlyMemBase(Register base) {
++    return IsConfigFlagSet(kTopByteIgnore) ? ApplyTbi(base) : base;
++  }
++
+   [[nodiscard]] Register EmitRegOffsetAddr(Register base,
+                                            Register offset_reg,
+                                            uint8_t extend_type,
+--- a/heavy_optimizer/arm64/frontend.cc
++++ b/heavy_optimizer/arm64/frontend.cc
+@@ -2875,7 +2875,7 @@
+   if (!success()) {
+     return AllocTempReg();
+   }
+-  Register masked = ApplyTbi(base);
++  Register masked = ReadOnlyMemBase(base);
+   Register res;
+   switch (size) {
+     case Decoder::LoadStoreSize::k64bit:
+@@ -2927,7 +2927,7 @@
+   if (!success()) {
+     return;
+   }
+-  Register masked = ApplyTbi(base);
++  Register masked = ReadOnlyMemBase(base);
+   switch (size) {
+     case Decoder::LoadStoreSize::k64bit:
+       Gen<x86_64::MovqOpReg>({.base = masked, .disp = offset}, data);
+@@ -5438,7 +5438,7 @@
+     UndefinedReturningVoid(BailReason::kUnsupportedSize);
+     return;
+   }
+-  Register masked = ApplyTbi(base);
++  Register masked = ReadOnlyMemBase(base);
+   const int32_t off = static_cast<int32_t>(args.offset);
+   const int32_t vreg_off = GetVRegOffset(args.rt);
+   FpRegister xmm = AllocTempSimdReg();
+@@ -5495,7 +5495,7 @@
+       UndefinedReturningVoid();
+       return;
+   }
+-  Register masked = ApplyTbi(addr);
++  Register masked = ReadOnlyMemBase(addr);
+   const int32_t v1_off = GetVRegOffset(args.rt1);
+   const int32_t v2_off = GetVRegOffset(args.rt2);
+   if (args.is_store) {
+@@ -5577,7 +5577,7 @@
+     return;
+   }
+   Register addr = EmitRegOffsetAddr(base, offset, args.extend_type, args.shift_amount);
+-  Register masked = ApplyTbi(addr);
++  Register masked = ReadOnlyMemBase(addr);
+   const int32_t vreg_off = GetVRegOffset(args.rt);
+   FpRegister xmm = AllocTempSimdReg();
+   if (args.is_store) {
+diff --git a/heavy_optimizer/arm64/heavy_memory_differential_fuzz_tests.cc b/heavy_optimizer/arm64/heavy_memory_differential_fuzz_tests.cc
+index a584efc3..1017ae48 100644
+--- a/heavy_optimizer/arm64/heavy_memory_differential_fuzz_tests.cc
++++ b/heavy_optimizer/arm64/heavy_memory_differential_fuzz_tests.cc
+@@ -60,6 +60,7 @@
+ 
+ #include <string>
+ 
++#include "berberis/base/config_globals.h"
+ #include "berberis/assembler/machine_code.h"
+ #include "berberis/guest_state/guest_addr.h"
+ #include "berberis/guest_state/guest_state.h"
+@@ -265,7 +266,9 @@ class Arm64HeavyMemoryDifferentialFuzz : public ::testing::Test {
+   void PinBase(InitState* in, int rn, size_t align, bool tagged) {
+     uint64_t off = kWindowBase + (Rnd() % 64) * align;
+     uint64_t addr = (ScratchBase() + off) & ~(static_cast<uint64_t>(align) - 1);
+-    if (tagged) {
++    // Tag only when the tiers strip tags (top-byte-ignore config flag); without it guest
++    // pointers are untagged and used as-is, and the region still runs with a plain base.
++    if (tagged && IsConfigFlagSet(kTopByteIgnore)) {
+       // Any non-zero top byte. ARM64 ignores it on access; x86_64 does not even
+       // consider such an address canonical, so both tiers must strip it.
+       addr |= (0x11ULL + (Rnd() & 0x7f)) << 56;
+@@ -381,6 +384,11 @@ TEST_F(Arm64HeavyMemoryDifferentialFuzz, ScalarLoadStoreImm) {
+ // register carries a non-zero address tag the way a Scudo-allocated pointer
+ // does. Both tiers must strip bits [63:56] at the point of access.
+ TEST_F(Arm64HeavyMemoryDifferentialFuzz, TaggedBaseAddressIsIgnored) {
++  // Both tiers strip the tag only with the top-byte-ignore config flag; without it guest
++  // pointers are untagged (the guest heap is the host's Scudo) and are used unmodified.
++  if (!IsConfigFlagSet(kTopByteIgnore)) {
++    GTEST_SKIP() << "top-byte-ignore config flag is off";
++  }
+   Seed(0x7B1A5EA5ULL);
+   int iters = 3000 * FuzzScale();
+   int compared = 0;
+diff --git a/lite_translator/arm64_to_x86_64/memory_differential_fuzz_tests.cc b/lite_translator/arm64_to_x86_64/memory_differential_fuzz_tests.cc
+index 291d1bd6..4a3f8015 100644
+--- a/lite_translator/arm64_to_x86_64/memory_differential_fuzz_tests.cc
++++ b/lite_translator/arm64_to_x86_64/memory_differential_fuzz_tests.cc
+@@ -54,6 +54,7 @@
+ 
+ #include <string>
+ 
++#include "berberis/base/config_globals.h"
+ #include "berberis/assembler/machine_code.h"
+ #include "berberis/guest_state/guest_addr.h"
+ #include "berberis/guest_state/guest_state.h"
+@@ -260,7 +261,9 @@ class Arm64MemoryDifferentialFuzz : public ::testing::Test {
+   void PinBase(InitState* in, int rn, size_t align, bool tagged) {
+     uint64_t off = kWindowBase + (Rnd() % 64) * align;
+     uint64_t addr = (ScratchBase() + off) & ~(static_cast<uint64_t>(align) - 1);
+-    if (tagged) {
++    // Tag only when the tiers strip tags (top-byte-ignore config flag); without it guest
++    // pointers are untagged and used as-is, and the region still runs with a plain base.
++    if (tagged && IsConfigFlagSet(kTopByteIgnore)) {
+       // Any non-zero top byte. ARM64 ignores it on access; x86_64 does not even
+       // consider such an address canonical, so both tiers must strip it.
+       addr |= (0x11ULL + (Rnd() & 0x7f)) << 56;
+@@ -376,6 +379,11 @@ TEST_F(Arm64MemoryDifferentialFuzz, ScalarLoadStoreImm) {
+ // register carries a non-zero address tag the way a Scudo-allocated pointer
+ // does. Both tiers must strip bits [63:56] at the point of access.
+ TEST_F(Arm64MemoryDifferentialFuzz, TaggedBaseAddressIsIgnored) {
++  // Both tiers strip the tag only with the top-byte-ignore config flag; without it guest
++  // pointers are untagged (the guest heap is the host's Scudo) and are used unmodified.
++  if (!IsConfigFlagSet(kTopByteIgnore)) {
++    GTEST_SKIP() << "top-byte-ignore config flag is off";
++  }
+   Seed(0x7B1A5EULL);
+   int iters = 3000 * FuzzScale();
+   int compared = 0;

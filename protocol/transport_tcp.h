@@ -13,7 +13,8 @@ public:
     int serve_with_producer(
         uint16_t port,
         uint32_t maxFrames,
-        const std::function<PoseFrame(uint64_t)>& producer);
+        const std::function<PoseFrame(uint64_t)>& producer,
+        bool producerPaces = false);
 };
 
 } // namespace axrb::protocol

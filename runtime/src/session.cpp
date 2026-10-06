@@ -91,6 +91,9 @@ XrResult XRAPI_CALL xrEndSession_impl(XrSession session)
         return XR_ERROR_SESSION_NOT_RUNNING;
     }
 
+#if defined(__ANDROID__)
+    g_vulkan.drain_publication();
+#endif
     queue_session_state(XR_SESSION_STATE_STOPPING);
     queue_session_state(XR_SESSION_STATE_IDLE);
     queue_session_state(XR_SESSION_STATE_READY);

@@ -139,6 +139,11 @@ export async function inspectGameFolder(directory, inspect, { signal, update = (
 }
 
 export async function importGameZip(file, downloadDir, inspect, { signal, update = () => {}, progress = () => {}, reserve } = {}) {
+  const games = await importGameArchive(file, downloadDir, inspect, { signal, update, progress, reserve, collection: false });
+  return games[0];
+}
+
+export async function importGameArchive(file, downloadDir, inspect, { signal, update = () => {}, progress = () => {}, reserve, collection = true } = {}) {
   const directory = path.join(downloadDir, 'imports', randomUUID());
   try {
     update('Checking ZIP');
@@ -146,7 +151,24 @@ export async function importGameZip(file, downloadDir, inspect, { signal, update
     await checkSpace(directory, size, reserve === undefined ? {} : { reserve });
     update('Extracting ZIP');
     await extractZip(file, directory, { signal, limit: 256 * 1024 ** 3, progress });
-    return await inspectGameFolder(directory, inspect, { signal, update });
+    const manifestPath = path.join(directory, 'axrb-games.json');
+    const manifestStat = await fs.stat(manifestPath).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+    if (!manifestStat) return [await inspectGameFolder(directory, inspect, { signal, update })];
+    if (!collection || manifestStat.size > 1024 ** 2) throw new Error('Invalid game collection manifest.');
+    const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+    if (manifest?.format !== 'axrb-games' || manifest.version !== 1 || !Array.isArray(manifest.games) || !manifest.games.length || manifest.games.length > 1000 ||
+        manifest.games.some(folder => typeof folder !== 'string' || !/^games\/[0-9]{4}$/.test(folder)) || new Set(manifest.games).size !== manifest.games.length) throw new Error('Invalid game collection manifest.');
+    for (const name of await walkFiles(directory)) {
+      if (name !== 'axrb-games.json' && !manifest.games.some(folder => name.startsWith(folder + '/'))) throw new Error('Collection contains files outside its game folders.');
+    }
+    const games = [], packages = new Set();
+    for (const folder of manifest.games) {
+      signal?.throwIfAborted();
+      const game = await inspectGameFolder(path.join(directory, folder), inspect, { signal, update });
+      if (packages.has(game.package)) throw new Error('Collection contains multiple builds of the same game.');
+      packages.add(game.package); games.push(game);
+    }
+    return games;
   } catch (error) { await fs.rm(directory, { recursive: true, force: true }); throw error; }
 }
 

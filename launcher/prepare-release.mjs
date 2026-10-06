@@ -40,11 +40,24 @@ const files = [
     'scripts/emulator/gpu_validation.ps1', 'scripts/emulator/windows_gpu.py',
     'scripts/emulator/android_runtime_policy.py', 'scripts/emulator/audio_policy.py', 'scripts/emulator/distribution.py',
     'scripts/emulator/storage_policy.py', 'scripts/emulator/unreal_memory_policy.py', 'scripts/emulator/qemu_multicore.py',
+    'scripts/emulator/performance_policy.py', 'scripts/emulator/translator.py', 'scripts/emulator/p_core_affinity.ps1',
     'scripts/run/run_windows_game.ps1', 'scripts/run/fps_hud.ps1', 'scripts/run/stop_game.ps1',
     'scripts/run/performance_scan.ps1',
     'modules/performance_overlay/collect_guest_cpu.py', 'modules/performance_overlay/resource_history.py',
     'scripts/run/open_windows_features.ps1', 'scripts/run/android_app_label.py', 'scripts/run/steamvr_app_identity.py'].map(p => [p, p]),
 ];
+// Include a locally built Digitalis bundle, with its notices and provenance.
+// A source checkout without one still supports the existing Google translator.
+async function addDigitalis(directory, relative = 'out/digitalis/prebuilts') {
+  for (const item of await fs.readdir(directory, { withFileTypes: true })) {
+    const next = `${relative}/${item.name}`;
+    if (item.isDirectory()) await addDigitalis(path.join(directory, item.name), next);
+    else files.push([next, next]);
+  }
+}
+const digitalis = path.join(root, 'out/digitalis/prebuilts');
+try { if (process.env.AXRB_SKIP_DIGITALIS !== '1') { await fs.access(digitalis); await addDigitalis(digitalis); } }
+catch (error) { if (error.code !== 'ENOENT') throw error; }
 const sha256 = {};
 for (const [from, to] of files) {
   const bytes = await fs.readFile(path.join(root, from));

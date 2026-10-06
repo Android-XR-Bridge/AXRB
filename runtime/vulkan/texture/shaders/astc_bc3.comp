@@ -1,0 +1,536 @@
+// ASTC LDR -> BC3 on the GPU, for vulkan_texture_transcoder.h. A port of astc_decode.h (decode) and
+// texture_transcode.h (encode_bc3); runtime/vulkan/texture/gen_astc_bc3_shader.py adds the BC1 single-colour tables and compiles it
+// to tools/astc_bc3_spirv.h.
+//
+// One workgroup per 16x16-texel tile of one slice: the (up to 4x4) ASTC blocks under the tile are parsed into shared
+// memory, every thread decodes one texel, then 16 threads encode the tile's 4x4 BC3 blocks. Texels past the region
+// edge repeat the last row/column, as the CPU path does. Error blocks and HDR decode to magenta.
+#version 450
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer Source { uint source[]; };
+layout(std430, binding = 1) writeonly buffer Destination { uint destination[]; };
+layout(push_constant) uniform Region {
+    uint sourceOffset, destinationOffset;  // in 32-bit words
+    uint rowBlocks, sliceBlocks;           // source stride in ASTC blocks
+    uint blocksX, blocksY;                 // ASTC blocks covering the region
+    uint outBlocksX, outBlocksY;           // BC blocks written per slice (tightly packed)
+    uint width, height;                    // region extent in texels
+    uint format;                           // bw | bh << 8 | srgb << 16 | decodeOnly << 17 (RGBA8 texels out, for tests)
+} region;
+
+// Integer sequence encodings: bits, trits, quints per level (astc_decode.h kLevels).
+const uint kBits[21] = uint[](1, 0, 2, 0, 1, 3, 1, 2, 4, 2, 3, 5, 3, 4, 6, 4, 5, 7, 5, 6, 8);
+const uint kTrits[21] = uint[](0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0);
+const uint kQuints[21] = uint[](0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0);
+
+// SINGLE_COLOR_TABLES (kFive, kSix: best endpoint pair a | b << 8 per 8-bit value) are inserted here by the generator.
+
+int iseBits(int count, uint level) {
+    return int(kBits[level]) * count + (kTrits[level] != 0 ? (8 * count + 4) / 5 : 0) + (kQuints[level] != 0 ? (7 * count + 2) / 3 : 0);
+}
+
+// 128-bit block read LSB-first; bits at or past `end` read as zero.
+uint getBits(uvec4 w, int start, int count, int end) {
+    const int n = min(start + count, end) - start;
+    if (n <= 0) return 0u;
+    const int index = start >> 5, shift = start & 31;
+    uint v = w[index] >> shift;
+    if (shift != 0 && index < 3) v |= w[index + 1] << (32 - shift);
+    return n >= 32 ? v : v & ((1u << n) - 1u);
+}
+
+uint ise[64];  // decode_ise output (per invocation)
+void decodeIse(uvec4 w, int start, int count, uint level) {
+    const int n = int(kBits[level]), end = start + iseBits(count, level);
+    int p = start;
+    if (kTrits[level] != 0) {
+        for (int i = 0; i < count; i += 5) {
+            uint m[5], T;
+            m[0] = getBits(w, p, n, end); p += n; T = getBits(w, p, 2, end); p += 2;
+            m[1] = getBits(w, p, n, end); p += n; T |= getBits(w, p, 2, end) << 2; p += 2;
+            m[2] = getBits(w, p, n, end); p += n; T |= getBits(w, p, 1, end) << 4; p += 1;
+            m[3] = getBits(w, p, n, end); p += n; T |= getBits(w, p, 2, end) << 5; p += 2;
+            m[4] = getBits(w, p, n, end); p += n; T |= getBits(w, p, 1, end) << 7; p += 1;
+            uint t[5], C;
+            if ((T >> 2 & 7u) == 7u) { C = (T >> 5 & 7u) << 2 | (T & 3u); t[4] = 2u; t[3] = 2u; }
+            else {
+                C = T & 31u;
+                if ((T >> 5 & 3u) == 3u) { t[4] = 2u; t[3] = T >> 7 & 1u; }
+                else { t[4] = T >> 7 & 1u; t[3] = T >> 5 & 3u; }
+            }
+            if ((C & 3u) == 3u) { t[2] = 2u; t[1] = C >> 4 & 1u; t[0] = (C >> 3 & 1u) << 1 | ((C >> 2 & 1u) & ~(C >> 3) & 1u); }
+            else if ((C >> 2 & 3u) == 3u) { t[2] = 2u; t[1] = 2u; t[0] = C & 3u; }
+            else { t[2] = C >> 4 & 1u; t[1] = C >> 2 & 3u; t[0] = (C >> 1 & 1u) << 1 | ((C & 1u) & ~(C >> 1) & 1u); }
+            for (int k = 0; k < 5 && i + k < count; ++k) ise[i + k] = t[k] << n | m[k];
+        }
+    } else if (kQuints[level] != 0) {
+        for (int i = 0; i < count; i += 3) {
+            uint m[3], Q;
+            m[0] = getBits(w, p, n, end); p += n; Q = getBits(w, p, 3, end); p += 3;
+            m[1] = getBits(w, p, n, end); p += n; Q |= getBits(w, p, 2, end) << 3; p += 2;
+            m[2] = getBits(w, p, n, end); p += n; Q |= getBits(w, p, 2, end) << 5; p += 2;
+            uint q[3];
+            if ((Q >> 1 & 3u) == 3u && (Q >> 5 & 3u) == 0u) {
+                q[2] = (Q & 1u) << 2 | ((Q >> 4 & 1u) & ~Q & 1u) << 1 | ((Q >> 3 & 1u) & ~Q & 1u);
+                q[1] = 4u; q[0] = 4u;
+            } else {
+                uint C;
+                if ((Q >> 1 & 3u) == 3u) { q[2] = 4u; C = (Q >> 3 & 3u) << 3 | (~Q >> 5 & 3u) << 1 | (Q & 1u); }
+                else { q[2] = Q >> 5 & 3u; C = Q & 31u; }
+                if ((C & 7u) == 5u) { q[1] = 4u; q[0] = C >> 3 & 3u; }
+                else { q[1] = C >> 3 & 3u; q[0] = C & 7u; }
+            }
+            for (int k = 0; k < 3 && i + k < count; ++k) ise[i + k] = q[k] << n | m[k];
+        }
+    } else {
+        for (int i = 0; i < count; ++i) { ise[i] = getBits(w, p, n, end); p += n; }
+    }
+}
+
+// Unquantisation (astc_decode.h Tables): colour values to 0..255, weights to 0..64.
+uint unquantizeColor(uint level, uint v) {
+    const int bits = int(kBits[level]);
+    if (kTrits[level] == 0 && kQuints[level] == 0) {
+        int out_ = 0;
+        for (int shift = 8 - bits; shift > -bits; shift -= bits) out_ |= shift >= 0 ? int(v) << shift : int(v) >> -shift;
+        return uint(out_ & 255);
+    }
+    const uint n = uint(bits), m = v & ((1u << n) - 1u), d = v >> n;
+    const uint a = (m & 1u) != 0u ? 0x1FFu : 0u, b = m >> 1 & 1u, c = m >> 2 & 1u, dd = m >> 3 & 1u, e = m >> 4 & 1u, f = m >> 5 & 1u;
+    uint B = 0u, C = 0u;
+    if (kTrits[level] != 0) {
+        if (n == 1u) C = 204u;
+        else if (n == 2u) { C = 93u; B = b << 8 | b << 4 | b << 2 | b << 1; }
+        else if (n == 3u) { C = 44u; B = c << 8 | b << 7 | c << 3 | b << 2 | c << 1 | b; }
+        else if (n == 4u) { C = 22u; B = dd << 8 | c << 7 | b << 6 | dd << 2 | c << 1 | b; }
+        else if (n == 5u) { C = 11u; B = e << 8 | dd << 7 | c << 6 | b << 5 | e << 1 | dd; }
+        else if (n == 6u) { C = 5u; B = f << 8 | e << 7 | dd << 6 | c << 5 | b << 4 | f; }
+    } else {
+        if (n == 1u) C = 113u;
+        else if (n == 2u) { C = 54u; B = b << 8 | b << 3 | b << 2; }
+        else if (n == 3u) { C = 26u; B = c << 8 | b << 7 | c << 2 | b << 1 | c; }
+        else if (n == 4u) { C = 13u; B = dd << 8 | c << 7 | b << 6 | dd << 1 | c; }
+        else if (n == 5u) { C = 6u; B = e << 8 | dd << 7 | c << 6 | b << 5 | e; }
+    }
+    uint t = d * C + B;
+    t ^= a;
+    return (a & 0x80u) | (t >> 2 & 0x7Fu);
+}
+uint unquantizeWeight(uint level, uint v) {
+    const int bits = int(kBits[level]);
+    int out_;
+    if (kTrits[level] == 0 && kQuints[level] == 0) {
+        out_ = 0;
+        for (int shift = 6 - bits; shift > -bits; shift -= bits) out_ |= shift >= 0 ? int(v) << shift : int(v) >> -shift;
+        out_ &= 63;
+    } else if (bits == 0) {
+        const int trit[3] = int[](0, 32, 63), quint[5] = int[](0, 16, 32, 47, 63);
+        out_ = kTrits[level] != 0 ? trit[v] : quint[v];
+    } else {
+        const uint n = uint(bits), m = v & ((1u << n) - 1u), d = v >> n;
+        const uint a = (m & 1u) != 0u ? 0x7Fu : 0u, b = m >> 1 & 1u, c = m >> 2 & 1u;
+        uint B = 0u, C = 0u;
+        if (kTrits[level] != 0) {
+            if (n == 1u) C = 50u;
+            else if (n == 2u) { C = 23u; B = b << 6 | b << 2 | b; }
+            else { C = 11u; B = c << 6 | b << 5 | c << 1 | b; }
+        } else {
+            if (n == 1u) C = 28u;
+            else { C = 13u; B = b << 6 | b << 1; }
+        }
+        uint t = d * C + B;
+        t ^= a;
+        out_ = int((a & 0x20u) | (t >> 2));
+    }
+    return uint(out_ > 32 ? out_ + 1 : out_);
+}
+
+int clamp255(int v) { return clamp(v, 0, 255); }
+void bitTransferSigned(inout int a, inout int b) {
+    b >>= 1; b |= a & 0x80; a >>= 1; a &= 0x3F;
+    if ((a & 0x20) != 0) a -= 0x40;
+}
+ivec4 set4(int r, int g, int b, int a) { return ivec4(clamp255(r), clamp255(g), clamp255(b), clamp255(a)); }
+ivec4 contract4(int r, int g, int b, int a) { return set4((r + b) >> 1, (g + b) >> 1, b, a); }
+// LDR endpoint modes (astc_decode.h decode_endpoints); false for HDR.
+bool decodeEndpoints(uint mode, int v[8], out ivec4 e0, out ivec4 e1) {
+    int a0, a1, a2, a3, b0, b1, b2, b3;
+    e0 = ivec4(0); e1 = ivec4(0);
+    switch (mode) {
+    case 0u: e0 = set4(v[0], v[0], v[0], 255); e1 = set4(v[1], v[1], v[1], 255); return true;
+    case 1u: {
+        const int l0 = (v[0] >> 2) | (v[1] & 0xC0), l1 = min(l0 + (v[1] & 0x3F), 255);
+        e0 = set4(l0, l0, l0, 255); e1 = set4(l1, l1, l1, 255); return true;
+    }
+    case 4u: e0 = set4(v[0], v[0], v[0], v[2]); e1 = set4(v[1], v[1], v[1], v[3]); return true;
+    case 5u:
+        a0 = v[0]; b0 = v[1]; a1 = v[2]; b1 = v[3];
+        bitTransferSigned(b0, a0); bitTransferSigned(b1, a1);
+        e0 = set4(a0, a0, a0, a1); e1 = set4(a0 + b0, a0 + b0, a0 + b0, a1 + b1); return true;
+    case 6u: e0 = set4(v[0] * v[3] >> 8, v[1] * v[3] >> 8, v[2] * v[3] >> 8, 255); e1 = set4(v[0], v[1], v[2], 255); return true;
+    case 8u: case 12u: {
+        const int alpha0 = mode == 12u ? v[6] : 255, alpha1 = mode == 12u ? v[7] : 255;
+        if (v[1] + v[3] + v[5] >= v[0] + v[2] + v[4]) { e0 = set4(v[0], v[2], v[4], alpha0); e1 = set4(v[1], v[3], v[5], alpha1); }
+        else { e0 = contract4(v[1], v[3], v[5], alpha1); e1 = contract4(v[0], v[2], v[4], alpha0); }
+        return true;
+    }
+    case 9u: case 13u: {
+        a0 = v[0]; b0 = v[1]; a1 = v[2]; b1 = v[3]; a2 = v[4]; b2 = v[5];
+        a3 = mode == 13u ? v[6] : 255; b3 = mode == 13u ? v[7] : 0;
+        bitTransferSigned(b0, a0); bitTransferSigned(b1, a1); bitTransferSigned(b2, a2);
+        if (mode == 13u) bitTransferSigned(b3, a3);
+        if (b0 + b1 + b2 >= 0) { e0 = set4(a0, a1, a2, a3); e1 = set4(a0 + b0, a1 + b1, a2 + b2, a3 + b3); }
+        else { e0 = contract4(a0 + b0, a1 + b1, a2 + b2, a3 + b3); e1 = contract4(a0, a1, a2, a3); }
+        return true;
+    }
+    case 10u:
+        e0 = set4(v[0] * v[3] >> 8, v[1] * v[3] >> 8, v[2] * v[3] >> 8, v[4]); e1 = set4(v[0], v[1], v[2], v[5]); return true;
+    }
+    return false;
+}
+
+// Parsed blocks of the tile. info: kind (0 normal, 1 error, 2 void extent) | partitions-1 << 2 | dual << 4 |
+// plane2+1 << 5 | gw << 8 | gh << 12 | seed << 16 (10 bits) | small << 26. Endpoints are 16-bit values (sRGB or
+// UNORM expanded) packed c0 | c1 << 16, per partition and channel; a void extent keeps its RGBA8 colour in [0].
+shared uint sInfo[16];
+shared uint sEndpoints[16][16];
+shared uint sWeights[16][16];  // 64 weights (0..64) as bytes
+shared uint sTexels[256];      // decoded tile, RGBA8
+
+const uint kError = 1u, kVoid = 2u;
+
+void parseBlock(uint slot, uvec4 w, bool srgb, int bw, int bh) {
+    const int texels = bw * bh;
+    const uint mode = getBits(w, 0, 11, 128);
+    if ((mode & 0x1FFu) == 0x1FCu) {  // void extent
+        if ((mode & 0x200u) != 0u) { sInfo[slot] = kError; return; }
+        sInfo[slot] = kVoid;
+        sEndpoints[slot][0] = (getBits(w, 64, 16, 128) >> 8) | (getBits(w, 80, 16, 128) >> 8) << 8 |
+                              (getBits(w, 96, 16, 128) >> 8) << 16 | (getBits(w, 112, 16, 128) >> 8) << 24;
+        return;
+    }
+    int gw, gh;
+    uint quant = mode >> 4 & 1u, hbit = mode >> 9 & 1u, dual = mode >> 10 & 1u;
+    const int A = int(mode >> 5 & 3u);
+    if ((mode & 3u) != 0u) {
+        quant |= (mode & 3u) << 1;
+        int B = int(mode >> 7 & 3u);
+        const uint kind = mode >> 2 & 3u;
+        if (kind == 0u) { gw = B + 4; gh = A + 2; }
+        else if (kind == 1u) { gw = B + 8; gh = A + 2; }
+        else if (kind == 2u) { gw = A + 2; gh = B + 8; }
+        else {
+            B &= 1;
+            if ((mode & 0x100u) != 0u) { gw = B + 2; gh = A + 2; } else { gw = A + 2; gh = B + 6; }
+        }
+    } else {
+        quant |= (mode >> 2 & 3u) << 1;
+        if ((mode >> 2 & 3u) == 0u) { sInfo[slot] = kError; return; }
+        const int B = int(mode >> 9 & 3u);
+        const uint kind = mode >> 7 & 3u;
+        if (kind == 0u) { gw = 12; gh = A + 2; }
+        else if (kind == 1u) { gw = A + 2; gh = 12; }
+        else if (kind == 2u) { gw = A + 6; gh = B + 6; dual = 0u; hbit = 0u; }
+        else {
+            if (A == 0) { gw = 6; gh = 10; } else if (A == 1) { gw = 10; gh = 6; } else { sInfo[slot] = kError; return; }
+        }
+    }
+    const uint weightLevel = quant - 2u + 6u * hbit;
+    const int weightCount = gw * gh * int(dual + 1u);
+    if (gw > bw || gh > bh || weightCount > 64) { sInfo[slot] = kError; return; }
+    const int weightBits = iseBits(weightCount, weightLevel);
+    if (weightBits < 24 || weightBits > 96) { sInfo[slot] = kError; return; }
+    const int partitions = int(getBits(w, 11, 2, 128)) + 1;
+    if (dual != 0u && partitions == 4) { sInfo[slot] = kError; return; }
+
+    int below = 128 - weightBits, colorStart;
+    uint seed = 0u, cem[4];
+    if (partitions == 1) { cem[0] = getBits(w, 13, 4, 128); colorStart = 17; }
+    else {
+        seed = getBits(w, 13, 10, 128); colorStart = 29;
+        const uint selector = getBits(w, 23, 6, 128);
+        if ((selector & 3u) == 0u) { for (int i = 0; i < partitions; ++i) cem[i] = selector >> 2; }
+        else {
+            const int extra = 3 * partitions - 4;
+            below -= extra;
+            const uint encoded = selector | getBits(w, below, extra, 128) << 6;
+            const uint base = (selector & 3u) - 1u;
+            for (int i = 0; i < partitions; ++i)
+                cem[i] = (base + (encoded >> (2 + i) & 1u)) << 2 | (encoded >> (2 + partitions + 2 * i) & 3u);
+        }
+    }
+    int plane2 = -1;
+    if (dual != 0u) { below -= 2; plane2 = int(getBits(w, below, 2, 128)); }
+
+    int valueCount = 0;
+    for (int i = 0; i < partitions; ++i) valueCount += 2 * int((cem[i] >> 2) + 1u);
+    const int colorBits = below - colorStart;
+    if (valueCount > 18 || colorBits < (13 * valueCount + 4) / 5) { sInfo[slot] = kError; return; }
+    uint colorLevel = 20u;
+    while (colorLevel > 0u && iseBits(valueCount, colorLevel) > colorBits) --colorLevel;
+    decodeIse(w, colorStart, valueCount, colorLevel);
+    int values[18];
+    for (int i = 0; i < valueCount; ++i) values[i] = int(unquantizeColor(colorLevel, ise[i]));
+    for (int i = 0, at = 0; i < partitions; ++i) {
+        int v[8];
+        for (int k = 0; k < 8; ++k) v[k] = at + k < 18 ? values[at + k] : 0;
+        ivec4 e0, e1;
+        if (!decodeEndpoints(cem[i], v, e0, e1)) { sInfo[slot] = kError; return; }
+        for (int c = 0; c < 4; ++c) {
+            const uint c0 = srgb ? uint(e0[c] << 8 | 0x80) : uint(e0[c] * 257);
+            const uint c1 = srgb ? uint(e1[c] << 8 | 0x80) : uint(e1[c] * 257);
+            sEndpoints[slot][i * 4 + c] = c0 | c1 << 16;
+        }
+        at += 2 * int((cem[i] >> 2) + 1u);
+    }
+    // Weights are stored bit-reversed from the top of the block.
+    const uvec4 reversed = uvec4(bitfieldReverse(w.w), bitfieldReverse(w.z), bitfieldReverse(w.y), bitfieldReverse(w.x));
+    decodeIse(reversed, 0, weightCount, weightLevel);
+    for (int i = 0; i < 16; ++i) sWeights[slot][i] = 0u;
+    for (int i = 0; i < weightCount; ++i) sWeights[slot][i >> 2] |= unquantizeWeight(weightLevel, ise[i]) << ((i & 3) * 8);
+    sInfo[slot] = uint(partitions - 1) << 2 | dual << 4 | uint(plane2 + 1) << 5 | uint(gw) << 8 | uint(gh) << 12 |
+                  seed << 16 | (texels < 31 ? 1u : 0u) << 26;
+}
+
+uint hash52(uint p) {
+    p ^= p >> 15; p -= p << 17; p += p << 7; p += p << 4; p ^= p >> 5;
+    p += p << 16; p ^= p >> 7; p ^= p >> 3; p ^= p << 6; p ^= p >> 17;
+    return p;
+}
+int selectPartition(uint seed, int x, int y, int partitions, bool small) {
+    if (small) { x <<= 1; y <<= 1; }
+    seed += uint(partitions - 1) * 1024u;
+    const uint rnum = hash52(seed);
+    uint s[8];
+    for (int i = 0; i < 8; ++i) { s[i] = rnum >> (4 * i) & 15u; s[i] *= s[i]; }
+    int sh1, sh2;
+    if ((seed & 1u) != 0u) { sh1 = (seed & 2u) != 0u ? 4 : 5; sh2 = partitions == 3 ? 6 : 5; }
+    else { sh1 = partitions == 3 ? 6 : 5; sh2 = (seed & 2u) != 0u ? 4 : 5; }
+    for (int i = 0; i < 8; ++i) s[i] >>= (i & 1) != 0 ? sh2 : sh1;
+    const uint ux = uint(x), uy = uint(y);
+    const uint a = (s[0] * ux + s[1] * uy + (rnum >> 14)) & 0x3Fu;
+    const uint b = (s[2] * ux + s[3] * uy + (rnum >> 10)) & 0x3Fu;
+    const uint c = partitions < 3 ? 0u : (s[4] * ux + s[5] * uy + (rnum >> 6)) & 0x3Fu;
+    const uint d = partitions < 4 ? 0u : (s[6] * ux + s[7] * uy + (rnum >> 2)) & 0x3Fu;
+    if (a >= b && a >= c && a >= d) return 0;
+    if (b >= c && b >= d) return 1;
+    if (c >= d) return 2;
+    return 3;
+}
+uint weightAt(uint slot, int i) { return sWeights[slot][i >> 2] >> ((i & 3) * 8) & 0xFFu; }
+
+uint decodeTexel(uint slot, int x, int y, int bw, int bh) {
+    const uint info = sInfo[slot];
+    if ((info & 3u) == kError) return 0xFFFF00FFu;
+    if ((info & 3u) == kVoid) return sEndpoints[slot][0];
+    const int partitions = int(info >> 2 & 3u) + 1, planes = int(info >> 4 & 1u) + 1, plane2 = int(info >> 5 & 7u) - 1;
+    const int gw = int(info >> 8 & 15u), gh = int(info >> 12 & 15u);
+    const int ds = (1024 + bw / 2) / (bw - 1), dt = (1024 + bh / 2) / (bh - 1);
+    const int gs = (ds * x * (gw - 1) + 32) >> 6, gt = (dt * y * (gh - 1) + 32) >> 6;
+    const int js = gs >> 4, fs = gs & 15, jt = gt >> 4, ft = gt & 15;
+    const int w11 = (fs * ft + 8) >> 4, w10 = ft - w11, w01 = fs - w11, w00 = 16 - fs - ft + w11;
+    const int v0 = js + jt * gw, cells = gw * gh;
+    int weight[2];
+    for (int p = 0; p < planes; ++p) {
+        int sum = 8;
+        if (v0 < cells) sum += int(weightAt(slot, v0 * planes + p)) * w00;
+        if (v0 + 1 < cells) sum += int(weightAt(slot, (v0 + 1) * planes + p)) * w01;
+        if (v0 + gw < cells) sum += int(weightAt(slot, (v0 + gw) * planes + p)) * w10;
+        if (v0 + gw + 1 < cells) sum += int(weightAt(slot, (v0 + gw + 1) * planes + p)) * w11;
+        weight[p] = sum >> 4;
+    }
+    if (planes == 1) weight[1] = weight[0];
+    const int part = partitions > 1 ? selectPartition(info >> 16 & 0x3FFu, x, y, partitions, (info >> 26 & 1u) != 0u) : 0;
+    uint texel = 0u;
+    for (int c = 0; c < 4; ++c) {
+        const uint e = sEndpoints[slot][part * 4 + c];
+        const int c0 = int(e & 0xFFFFu), c1 = int(e >> 16);
+        const int wc = c == plane2 ? weight[1] : weight[0];
+        texel |= uint(((c0 * (64 - wc) + c1 * wc + 32) >> 6) >> 8) << (8 * c);
+    }
+    return texel;
+}
+
+// ---- BC3 encode (texture_transcode.h encode_bc4 + encode_bc1, 4-colour mode) ----
+uint channel(uint texel, int c) { return texel >> (8 * c) & 0xFFu; }
+
+// BC4 alpha block: returns the two words (e0 | e1 << 8 | indices...).
+uvec2 encodeAlpha(uint first) {
+    int v[16], lo = 255, hi = 0;
+    for (int i = 0; i < 16; ++i) {
+        v[i] = int(channel(sTexels[first + uint((i >> 2) * 16 + (i & 3))], 3));
+        lo = min(lo, v[i]); hi = max(hi, v[i]);
+    }
+    int bestE0 = hi, bestE1 = lo, bestError = 0;
+    uint bestLow = 0u, bestHigh = 0u;
+    if (hi != lo) {
+        bestError = 1 << 30;
+        int innerLo = 255, innerHi = 0;
+        for (int i = 0; i < 16; ++i) if (v[i] != 0 && v[i] != 255) { innerLo = min(innerLo, v[i]); innerHi = max(innerHi, v[i]); }
+        const bool tryInner = innerLo <= innerHi && (lo == 0 || hi == 255);
+        for (int attempt = 0; attempt < (tryInner ? 2 : 1); ++attempt) {
+            const int e0 = attempt == 0 ? hi : innerLo, e1 = attempt == 0 ? lo : innerHi;
+            int palette[8];
+            palette[0] = e0; palette[1] = e1;
+            if (e0 > e1) { for (int k = 2; k < 8; ++k) palette[k] = ((8 - k) * e0 + (k - 1) * e1 + 3) / 7; }
+            else { for (int k = 2; k < 6; ++k) palette[k] = ((6 - k) * e0 + (k - 1) * e1 + 2) / 5; palette[6] = 0; palette[7] = 255; }
+            int error = 0;
+            uint low = 0u, high = 0u;
+            for (int i = 0; i < 16; ++i) {
+                int best = 1 << 30, index = 0;
+                for (int k = 0; k < 8; ++k) { const int e = (v[i] - palette[k]) * (v[i] - palette[k]); if (e < best) { best = e; index = k; } }
+                error += best;
+                const int bit = 3 * i;
+                if (bit + 3 <= 32) low |= uint(index) << bit;
+                else if (bit >= 32) high |= uint(index) << (bit - 32);
+                else { low |= uint(index) << bit; high |= uint(index) >> (32 - bit); }
+            }
+            if (error < bestError) { bestError = error; bestE0 = e0; bestE1 = e1; bestLow = low; bestHigh = high; }
+        }
+    }
+    return uvec2(uint(bestE0) | uint(bestE1) << 8 | (bestLow & 0xFFFFu) << 16, bestLow >> 16 | bestHigh << 16);
+}
+
+int ext5(int v) { return v << 3 | v >> 2; }
+int ext6(int v) { return v << 2 | v >> 4; }
+ivec3 unpack565(uint v) { return ivec3(ext5(int(v >> 11)), ext6(int(v >> 5 & 63u)), ext5(int(v & 31u))); }
+uint quantize565(vec3 c) {
+    const int r = clamp(int(c.x * 31.0 / 255.0 + 0.5), 0, 31), g = clamp(int(c.y * 63.0 / 255.0 + 0.5), 0, 63);
+    const int b = clamp(int(c.z * 31.0 / 255.0 + 0.5), 0, 31);
+    return uint(r << 11 | g << 5 | b);
+}
+int idot(ivec3 a, ivec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+int dist2(ivec3 a, ivec3 b) { const ivec3 d = a - b; return d.x * d.x + d.y * d.y + d.z * d.z; }
+
+ivec3 px[16];
+uint fitIndex[16];
+// Nearest palette entries along the palette line; returns the squared error.
+int evaluate(uint c0, uint c1) {
+    ivec3 p[4];
+    p[0] = unpack565(c0); p[1] = unpack565(c1);
+    p[2] = (2 * p[0] + p[1]) / 3; p[3] = (p[0] + 2 * p[1]) / 3;
+    const ivec3 dir = p[0] - p[1];
+    const int s0 = idot(p[0], dir), s1 = idot(p[1], dir), s2 = idot(p[2], dir), s3 = idot(p[3], dir);
+    const int lowMid = s1 + s3, middle = s3 + s2, highMid = s2 + s0;
+    int error = 0;
+    for (int i = 0; i < 16; ++i) {
+        const int d = 2 * idot(px[i], dir);
+        const int index = d < middle ? (d <= lowMid ? 1 : 3) : (d < highMid ? 2 : 0);
+        fitIndex[i] = uint(index);
+        error += dist2(px[i], p[index]);
+    }
+    return error;
+}
+uvec2 packColor(uint c0, uint c1, uint indices[16]) {
+    uint bits = 0u;
+    for (int i = 0; i < 16; ++i) bits |= indices[i] << (2 * i);
+    return uvec2(c0 | c1 << 16, bits);
+}
+
+uvec2 encodeColor(uint first) {
+    ivec3 sum = ivec3(0);
+    int products[6] = int[](0, 0, 0, 0, 0, 0);
+    bool solid = true;
+    for (int i = 0; i < 16; ++i) {
+        const uint t = sTexels[first + uint((i >> 2) * 16 + (i & 3))];
+        px[i] = ivec3(int(channel(t, 0)), int(channel(t, 1)), int(channel(t, 2)));
+        if (i > 0 && px[i] != px[0]) solid = false;
+        sum += px[i];
+        products[0] += px[i].x * px[i].x; products[1] += px[i].x * px[i].y; products[2] += px[i].x * px[i].z;
+        products[3] += px[i].y * px[i].y; products[4] += px[i].y * px[i].z; products[5] += px[i].z * px[i].z;
+    }
+    uint indices[16];
+    if (solid) {
+        const uint r = kFive[px[0].x], g = kSix[px[0].y], b = kFive[px[0].z];
+        const uint c0 = (r & 0xFFu) << 11 | (g & 0xFFu) << 5 | (b & 0xFFu);
+        const uint c1 = (r >> 8) << 11 | (g >> 8) << 5 | (b >> 8);
+        const uint index = c0 > c1 ? 2u : c0 < c1 ? 3u : 0u;
+        for (int i = 0; i < 16; ++i) indices[i] = index;
+        return c0 >= c1 ? packColor(c0, c1, indices) : packColor(c1, c0, indices);
+    }
+    const vec3 mean = vec3(sum) / 16.0;
+    float cov[6];
+    cov[0] = float(products[0]) - float(sum.x) * mean.x; cov[1] = float(products[1]) - float(sum.x) * mean.y;
+    cov[2] = float(products[2]) - float(sum.x) * mean.z; cov[3] = float(products[3]) - float(sum.y) * mean.y;
+    cov[4] = float(products[4]) - float(sum.y) * mean.z; cov[5] = float(products[5]) - float(sum.z) * mean.z;
+    // Principal axis by power iteration, started from the covariance row of the widest channel.
+    vec3 axis = cov[0] >= cov[3] && cov[0] >= cov[5] ? vec3(cov[0], cov[1], cov[2]) :
+                cov[3] >= cov[5] ? vec3(cov[1], cov[3], cov[4]) : vec3(cov[2], cov[4], cov[5]);
+    for (int it = 0; it < 4; ++it) {
+        const vec3 n = vec3(cov[0] * axis.x + cov[1] * axis.y + cov[2] * axis.z,
+                            cov[1] * axis.x + cov[3] * axis.y + cov[4] * axis.z,
+                            cov[2] * axis.x + cov[4] * axis.y + cov[5] * axis.z);
+        const float len = max(abs(n.x), max(abs(n.y), abs(n.z)));
+        if (len < 1e-6) break;
+        axis = n * (1.0 / len);
+    }
+    float lo = 1e30, hi = -1e30;
+    for (int i = 0; i < 16; ++i) { const float t = dot(vec3(px[i]) - mean, axis); lo = min(lo, t); hi = max(hi, t); }
+    const float norm = dot(axis, axis);
+    const vec3 scale = norm > 1e-12 ? axis / norm : vec3(0.0);
+    uint c0 = quantize565(clamp(mean + scale * hi, 0.0, 255.0)), c1 = quantize565(clamp(mean + scale * lo, 0.0, 255.0));
+    int error = evaluate(c0, c1);
+    for (int i = 0; i < 16; ++i) indices[i] = fitIndex[i];
+    // One least-squares pass on the endpoints (weights of endpoint 0 in thirds).
+    if (error > 0) {
+        const int weights[4] = int[](3, 0, 2, 1);
+        int aa = 0, bb = 0, ab = 0;
+        ivec3 ax = ivec3(0), bx = ivec3(0);
+        for (int i = 0; i < 16; ++i) {
+            const int a = weights[indices[i]], b = 3 - a;
+            aa += a * a; bb += b * b; ab += a * b; ax += a * px[i]; bx += b * px[i];
+        }
+        const int det = aa * bb - ab * ab;
+        if (det != 0) {
+            const float f = 3.0 / float(det);
+            const uint n0 = quantize565(f * vec3(ax * bb - bx * ab)), n1 = quantize565(f * vec3(bx * aa - ax * ab));
+            const int nextError = evaluate(n0, n1);
+            if (nextError < error) { error = nextError; c0 = n0; c1 = n1; for (int i = 0; i < 16; ++i) indices[i] = fitIndex[i]; }
+        }
+    }
+    // c0 > c1 selects the 4-colour mode.
+    if (c0 < c1) { const uint t = c0; c0 = c1; c1 = t; for (int i = 0; i < 16; ++i) indices[i] ^= 1u; }
+    else if (c0 == c1) { for (int i = 0; i < 16; ++i) indices[i] = 0u; }
+    return packColor(c0, c1, indices);
+}
+
+void main() {
+    const int bw = int(region.format & 0xFFu), bh = int(region.format >> 8 & 0xFFu);
+    const bool srgb = (region.format >> 16 & 1u) != 0u, decodeOnly = (region.format >> 17 & 1u) != 0u;
+    const uint slice = gl_WorkGroupID.z, thread = gl_LocalInvocationIndex;
+    const int originX = int(gl_WorkGroupID.x) * 16, originY = int(gl_WorkGroupID.y) * 16;
+    const int width = int(region.width), height = int(region.height);
+    // ASTC blocks under the tile (texels past the edge are clamped onto it).
+    const int bx0 = min(originX, width - 1) / bw, by0 = min(originY, height - 1) / bh;
+    const int bx1 = min(originX + 15, width - 1) / bw, by1 = min(originY + 15, height - 1) / bh;
+    const int nbx = bx1 - bx0 + 1, nby = by1 - by0 + 1;
+    const uint sliceWords = region.sourceOffset + slice * region.sliceBlocks * 4u;
+    if (int(thread) < nbx * nby) {
+        const int bx = bx0 + int(thread) % nbx, by = by0 + int(thread) / nbx;
+        const uint at = sliceWords + (uint(by) * region.rowBlocks + uint(bx)) * 4u;
+        parseBlock(thread, uvec4(source[at], source[at + 1u], source[at + 2u], source[at + 3u]), srgb, bw, bh);
+    }
+    barrier();
+    const int lx = int(thread & 15u), ly = int(thread >> 4);
+    const int x = min(originX + lx, width - 1), y = min(originY + ly, height - 1);
+    const int bx = x / bw, by = y / bh;
+    const uint slot = uint((by - by0) * nbx + (bx - bx0));
+    const uint texel = decodeTexel(slot, x - bx * bw, y - by * bh, bw, bh);
+    if (decodeOnly) {
+        if (originX + lx < width && originY + ly < height)
+            destination[region.destinationOffset + slice * uint(width * height) + uint(y * width + x)] = texel;
+        return;
+    }
+    sTexels[thread] = texel;
+    barrier();
+    if (thread < 16u) {
+        const uint outX = gl_WorkGroupID.x * 4u + (thread & 3u), outY = gl_WorkGroupID.y * 4u + (thread >> 2);
+        if (outX < region.outBlocksX && outY < region.outBlocksY) {
+            const uint first = (thread >> 2) * 64u + (thread & 3u) * 4u;  // tile texel of the block's top-left
+            const uvec2 alpha = encodeAlpha(first);
+            const uvec2 color = encodeColor(first);
+            const uint at = region.destinationOffset + (slice * region.outBlocksX * region.outBlocksY + outY * region.outBlocksX + outX) * 4u;
+            destination[at] = alpha.x; destination[at + 1u] = alpha.y; destination[at + 2u] = color.x; destination[at + 3u] = color.y;
+        }
+    }
+}

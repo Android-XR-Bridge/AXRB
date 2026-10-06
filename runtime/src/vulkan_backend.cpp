@@ -104,6 +104,7 @@ bool VulkanBackend::initialize(const XrGraphicsBindingVulkanKHR& binding) {
     return true;
 }
 bool VulkanBackend::ensure_buffer(VkDeviceSize bytes) {
+    if (!drain_publication()) return false;
     if (mapped_ && bufferBytes_ >= bytes) return true;
     // All previous readback commands have completed their fence before reuse.
     if (mapped_) vkUnmapMemory(device_, bufferMemory_);
@@ -130,6 +131,7 @@ bool VulkanBackend::ensure_buffer(VkDeviceSize bytes) {
     return true;
 }
 void VulkanBackend::shutdown() {
+    drain_publication();
     if (!device_) return;
     vkQueueWaitIdle(queue_);
     if (mapped_) vkUnmapMemory(device_, bufferMemory_);
@@ -159,12 +161,13 @@ bool VulkanBackend::allocate_image(VkImage& image, VkDeviceMemory& memory, VkFor
         ok(vkBindImageMemory(device_, image, memory, 0), "bind image memory");
 }
 bool VulkanBackend::begin() {
+    if (!drain_publication()) return false;
     if (!ok(vkResetCommandBuffer(cmd_, 0), "reset commands")) return false;
     VkCommandBufferBeginInfo info{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     return ok(vkBeginCommandBuffer(cmd_, &info), "begin commands");
 }
-bool VulkanBackend::finish() {
+bool VulkanBackend::finish(bool defer) {
     VulkanFinishTrace* trace = nullptr;
     if (finish_trace_requested()) {
         static thread_local VulkanFinishTrace diagnostic;
@@ -176,9 +179,13 @@ bool VulkanBackend::finish() {
     const auto prepared = trace ? VulkanFinishTrace::Clock::now() : VulkanFinishTrace::Clock::time_point{};
     if (!ok(vkQueueSubmit(queue_, 1, &submit, fence_), "submit")) return false;
     const auto submitted = trace ? VulkanFinishTrace::Clock::now() : VulkanFinishTrace::Clock::time_point{};
-    const bool completed = ok(vkWaitForFences(device_, 1, &fence_, VK_TRUE, UINT64_MAX), "wait fence");
+    if (defer) return true;
+    const bool completed = wait_copy();
     if (trace) trace->record(entered, prepared, submitted, VulkanFinishTrace::Clock::now());
     return completed;
+}
+bool VulkanBackend::wait_copy() {
+    return ok(vkWaitForFences(device_, 1, &fence_, VK_TRUE, UINT64_MAX), "wait fence");
 }
 void VulkanBackend::barrier(VkImage image, uint32_t layers, VkImageLayout before, VkImageLayout after,
                             VkAccessFlags src, VkAccessFlags dst, VkImageAspectFlags aspect, uint32_t mips) {
@@ -241,6 +248,7 @@ XrResult VulkanBackend::create(VulkanSwapchain& sc, const XrSwapchainCreateInfo&
     return XR_SUCCESS;
 }
 void VulkanBackend::destroy(VulkanSwapchain& sc) {
+    drain_publication();
     if (device_) {
         vkQueueWaitIdle(queue_);
         if (sc.surfaceImage) vkDestroyImage(device_, sc.surfaceImage, nullptr);
@@ -268,7 +276,8 @@ bool VulkanBackend::ensure_scratch(VkFormat format, uint32_t eye, uint32_t width
     return true;
 }
 bool VulkanBackend::export_batch(const std::vector<VulkanExportRequest>& requests,
-                                 std::vector<axrb::protocol::WindowsGpuFrame>& frames) {
+                                 std::vector<axrb::protocol::WindowsGpuFrame>& frames, bool defer) {
+    if (!drain_publication()) return false;
     static axrb::protocol::PerfStats stats("vulkan-batch-export");
     axrb::protocol::PerfScope scope(stats);
     frames.clear();
@@ -332,8 +341,13 @@ bool VulkanBackend::export_batch(const std::vector<VulkanExportRequest>& request
     host.srcQueueFamilyIndex = host.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     host.buffer = buffer_; host.size = VK_WHOLE_SIZE;
     vkCmdPipelineBarrier(cmd_, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &host, 0, nullptr);
-    if (!finish()) { batchFailed_ = true; return false; }
-    for (uint32_t i = 0; i < requests.size(); ++i) {
+    if (!finish(defer)) { batchFailed_ = true; return false; }
+    return defer || complete_batch(frames);
+}
+bool VulkanBackend::complete_batch(std::vector<axrb::protocol::WindowsGpuFrame>& frames) {
+    if (!wait_copy()) { batchFailed_ = true; return false; }
+    frames.clear();
+    for (uint32_t i = 0; i < batchSlots_.size(); ++i) {
         axrb::protocol::WindowsGpuMarker reply{};
         std::memcpy(&reply, static_cast<const uint8_t*>(mapped_) + i * sizeof(reply), sizeof(reply));
         const auto& expected = batchSlots_[i];
@@ -347,6 +361,7 @@ bool VulkanBackend::export_batch(const std::vector<VulkanExportRequest>& request
     return true;
 }
 bool VulkanBackend::release_batch() {
+    if (!drain_publication()) return false;
     if (batchSlots_.empty() && !gpuMarker_.session) return true;
     if (batchInFlight_ || batchFailed_ || !ensure_buffer(sizeof(gpuMarker_)) || !begin()) return false;
     axrb::protocol::WindowsGpuMarker retire{};
@@ -357,7 +372,8 @@ bool VulkanBackend::release_batch() {
     return true;
 }
 bool VulkanBackend::readback(const VulkanSwapchain* const swapchains[2], const uint32_t indices[2],
-                             const XrSwapchainSubImage* const subimages[2], uint32_t width, uint32_t height, std::vector<uint8_t> rgba[2], const bool* verticalFlip) {
+                             const XrSwapchainSubImage* const subimages[2], uint32_t width, uint32_t height, std::vector<uint8_t> rgba[2], const bool* verticalFlip, bool defer) {
+    if (!drain_publication()) return false;
     static axrb::protocol::PerfStats stats("vulkan-frame-copy");
     axrb::protocol::PerfScope scope(stats);
     if ((!batchSlots_.empty() && !release_batch()) || !axrb::protocol::valid_render_extent(width, height)) return false;
@@ -425,8 +441,9 @@ bool VulkanBackend::readback(const VulkanSwapchain* const swapchains[2], const u
     host.srcQueueFamilyIndex = host.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     host.buffer = buffer_; host.size = VK_WHOLE_SIZE;
     vkCmdPipelineBarrier(cmd_, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &host, 0, nullptr);
-    if (!finish()) return false;
+    if (!finish(defer)) return false;
     for (uint32_t eye = 0; eye < (gpuExportEnabled_ && mono ? 1u : 2u); ++eye) scratch[eye]->initialized = true;
+    if (defer) return true;
     if (gpuExportEnabled_) {
         axrb::protocol::WindowsGpuMarker reply{};
         std::memcpy(&reply, mapped_, sizeof(reply));
@@ -438,8 +455,13 @@ bool VulkanBackend::readback(const VulkanSwapchain* const swapchains[2], const u
         gpuExportEnabled_ = false;
         return readback(swapchains, indices, subimages, width, height, rgba, verticalFlip);
     }
+    return complete_readback(width, height, rgba);
+}
+bool VulkanBackend::complete_readback(uint32_t width, uint32_t height, std::vector<uint8_t> rgba[2]) {
+    if (!axrb::protocol::valid_render_extent(width, height) || !wait_copy()) return false;
+    const VkDeviceSize eyeBytes = VkDeviceSize(width) * height * 4;
+    if (!mapped_ || eyeBytes * 2 > bufferBytes_) return false;
     for (uint32_t eye = 0; eye < 2; ++eye) {
-        const auto& sub = *subimages[eye];
         const uint32_t w = width, h = height;
         rgba[eye].resize(static_cast<size_t>(w) * h * 4);
         // AXRI v2 uses the GLES bottom-up row convention; Vulkan rows start at the top.
@@ -447,6 +469,15 @@ bool VulkanBackend::readback(const VulkanSwapchain* const swapchains[2], const u
             std::memcpy(rgba[eye].data() + static_cast<size_t>(y) * w * 4,
                         static_cast<const uint8_t*>(mapped_) + eye * eyeBytes + static_cast<size_t>(h - 1 - y) * w * 4, w * 4);
     }
+    return true;
+}
+bool VulkanBackend::complete_export() {
+    if (!wait_copy()) return false;
+    axrb::protocol::WindowsGpuMarker reply{};
+    std::memcpy(&reply, mapped_, sizeof(reply));
+    if (reply.magic != gpuMarker_.magic || reply.session != gpuMarker_.session ||
+        reply.sequence != gpuMarker_.sequence || reply.status != 1) return false;
+    gpuMarker_ = reply;
     return true;
 }
 }

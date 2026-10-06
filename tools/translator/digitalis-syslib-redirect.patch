@@ -1,0 +1,63 @@
+diff --git a/kernel_api/open_emulation.cc b/kernel_api/open_emulation.cc
+index 633970ce..ba237d55 100644
+--- a/kernel_api/open_emulation.cc
++++ b/kernel_api/open_emulation.cc
+@@ -374,6 +374,46 @@ const char* TryRedirectGuestLinker64(const char* path) {
+   TRACE("openat: redirecting guest linker \"%s\" to %s", path, kGuestLinker64RealPath);
+   return kGuestLinker64RealPath;
+ }
++
++inline constexpr char kHostSystemLib64Dir[] = "/system/lib64/";
++inline constexpr char kHostBionicLib64Dir[] = "/apex/com.android.runtime/lib64/bionic/";
++inline constexpr char kGuestSystemLib64Dir[] = "/system/lib64/arm64/";
++
++// Same problem as the linker above, for system libraries. Meta's XR Audio SDK
++// (android_namespace_loader::LoadNamespace, e.g. in libMetaXRAudioWwise.so)
++// finds libc's non-exported android_get_exported_namespace by reading
++// "/system/lib64/libc.so" from disk: it adds the .symtab distance between that
++// function and android_get_device_api_level to dlsym's address of the latter.
++// On the x86_64 host image the canonical path is the HOST libc, so the distance
++// comes from the wrong ELF and the guest jumps into the middle of an ARM64
++// function (SIGILL on Batman: Arkham Shadow's Wwise audio thread at startup).
++// On a real ARM64 device these paths ARE the ARM64 libraries, so redirect guest
++// opens of /system/lib64/<name>.so and the bionic APEX directory to the guest
++// copy in /system/lib64/arm64/ when one exists. Writes the path into buf.
++bool TryRedirectHostSystemLibrary(const char* path, char* buf, size_t buf_size) {
++  if (path == nullptr) {
++    return false;
++  }
++  const char* name = nullptr;
++  if (strncmp(path, kHostSystemLib64Dir, sizeof(kHostSystemLib64Dir) - 1) == 0) {
++    name = path + sizeof(kHostSystemLib64Dir) - 1;
++  } else if (strncmp(path, kHostBionicLib64Dir, sizeof(kHostBionicLib64Dir) - 1) == 0) {
++    name = path + sizeof(kHostBionicLib64Dir) - 1;
++  } else {
++    return false;
++  }
++  // Only direct children (this also leaves /system/lib64/arm64/... alone).
++  size_t name_len = strlen(name);
++  if (name_len <= 3 || strchr(name, '/') != nullptr || strcmp(name + name_len - 3, ".so") != 0) {
++    return false;
++  }
++  int n = snprintf(buf, buf_size, "%s%s", kGuestSystemLib64Dir, name);
++  if (n < 0 || static_cast<size_t>(n) >= buf_size || access(buf, F_OK) != 0) {
++    return false;
++  }
++  TRACE("openat: redirecting host system library \"%s\" to %s", path, buf);
++  return true;
++}
+ #endif  // NATIVE_BRIDGE_GUEST_ARCH_ARM64
+ // endregion
+ 
+@@ -401,6 +441,11 @@ int OpenatForGuest(int dirfd, const char* path, int guest_flags, mode_t mode) {
+   if (real_path == nullptr) {
+     real_path = TryRedirectGuestLinker64(path);
+   }
++  char guest_library_path[256];
++  if (real_path == nullptr &&
++      TryRedirectHostSystemLibrary(path, guest_library_path, sizeof(guest_library_path))) {
++    real_path = guest_library_path;
++  }
+ #endif
+ 
+ #if defined(NATIVE_BRIDGE_GUEST_ARCH_ARM64)

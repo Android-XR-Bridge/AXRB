@@ -121,7 +121,8 @@ int TcpPoseServer::serve(uint16_t port, uint32_t maxFrames)
 int TcpPoseServer::serve_with_producer(
     uint16_t port,
     uint32_t maxFrames,
-    const std::function<PoseFrame(uint64_t)>& producer)
+    const std::function<PoseFrame(uint64_t)>& producer,
+    bool producerPaces)
 {
     SocketRuntime runtime;
     if (!runtime.ok()) {
@@ -176,7 +177,7 @@ int TcpPoseServer::serve_with_producer(
                 break;
             }
             ++sequence;
-            std::this_thread::sleep_for(std::chrono::microseconds(11111));
+            if (!producerPaces) std::this_thread::sleep_for(std::chrono::microseconds(11111));
         }
 
         if (maxFrames != 0 && sequence >= maxFrames) {

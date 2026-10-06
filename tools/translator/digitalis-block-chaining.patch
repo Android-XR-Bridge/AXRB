@@ -1,0 +1,840 @@
+--- a/assembler/include/berberis/assembler/machine_code.h
++++ b/assembler/include/berberis/assembler/machine_code.h
+@@ -50,6 +50,12 @@
+   // Add recovery point and recovery code to global recovery code map.
+   // TODO(eaeltsin): have recovery map for each region instead!
+   RelocRecoveryPoint,
++  // region digitalis
++  // A chainable direct-dispatch jump (x86_64::Assembler::ChainJmp32): dst is the offset of its rel32,
++  // data the guest pc it dispatches to. Installed as emitted (falling through to the table lookup);
++  // the runtime patches it later, see TranslationCache::ChainSite.
++  RelocChainSite,
++  // endregion
+ };
+ 
+ using RecoveryMap = ForeverMap<uintptr_t, uintptr_t>;
+@@ -99,6 +105,18 @@
+     relocations_.push_back(Relocation{dst, type, pc, data});
+   }
+ 
++  // region digitalis
++  // Calls fn(offset of the rel32, guest target pc) for each chainable jump (RelocChainSite).
++  template <typename Fn>
++  void ForEachChainSite(Fn fn) const {
++    for (const auto& rel : relocations_) {
++      if (rel.type == RelocationType::RelocChainSite) {
++        fn(rel.dst, rel.data);
++      }
++    }
++  }
++  // endregion
++
+   // Install to executable memory.
+   template <typename ExecRegionType>
+   void Install(ExecRegionType* exec, const uint8_t* code, RecoveryMap* recovery_map) {
+--- a/assembler/machine_code.cc
++++ b/assembler/machine_code.cc
+@@ -86,6 +86,11 @@
+         (*recovery_map)[fault_addr] = recovery_addr;
+         break;
+       }
++      // region digitalis
++      case RelocationType::RelocChainSite:
++        // Patched after install, once the target is translated.
++        break;
++      // endregion
+     }
+   }
+ }
+--- a/assembler/include/berberis/assembler/x86_64.h
++++ b/assembler/include/berberis/assembler/x86_64.h
+@@ -252,6 +252,19 @@
+     AddRelocation(pc() - 4, RelocationType::RelocAbsToDisp32, pc(), target);
+   }
+ 
++  // region digitalis
++  // A `jmp rel32` to the next instruction, recorded as a RelocChainSite for guest_target: the runtime
++  // later patches the displacement to jump straight to the target's translated code. The rel32 is
++  // 4-byte aligned (code is installed 64-byte aligned), so each patch is one atomic store and an
++  // executing thread sees either the old or the new jump.
++  void ChainJmp32(uintptr_t guest_target) {
++    Nop((4 - ((pc() + 1) & 3)) & 3);
++    Emit8(0xe9);
++    Emit32(0);
++    AddRelocation(pc() - 4, RelocationType::RelocChainSite, pc(), static_cast<intptr_t>(guest_target));
++  }
++  // endregion
++
+   void Jmp(const void* target) { Jmp(bit_cast<uintptr_t>(target)); }
+ 
+ #endif
+--- a/code_gen_lib/all_to_x86_64/code_gen_lib.cc
++++ b/code_gen_lib/all_to_x86_64/code_gen_lib.cc
+@@ -51,8 +51,18 @@
+   as->Jcc32(x86_64::Assembler::Condition::kEqual, kEntryExitGeneratedCode);
+ }
+ 
++// region digitalis
++bool g_chain_direct_dispatch = true;
++// endregion
++
+ }  // namespace
+ 
++// region digitalis
++void SetDirectDispatchChaining(bool enabled) {
++  g_chain_direct_dispatch = enabled;
++}
++// endregion
++
+ void GenTrampolineAdaptor(MachineCode* mc,
+                           GuestAddr pc,
+                           HostCode marshall,
+@@ -136,6 +146,15 @@
+   }
+ 
+   CHECK_EQ(pc & 0xffff'0000'0000'0000, 0);
++  // region digitalis
++  // Block chaining: once pc is translated, this jump goes straight to its code, skipping the table
++  // load and the indirect jump below (together ~17% of a Unity main thread's time, mostly waiting on
++  // the scattered table entry). Unlinked, it falls through to them. The pending-signals check above
++  // stays in front, so FlushGuestCodeCache still stops chained code at every region exit.
++  if (g_chain_direct_dispatch) {
++    as->ChainJmp32(pc);
++  }
++  // endregion
+   as->Movq(as->rcx,
+            reinterpret_cast<uint64_t>(TranslationCache::GetInstance()->GetHostCodePtr(pc)));
+   as->Movl(as->rcx, {.base = as->rcx});
+--- a/code_gen_lib/include/berberis/code_gen_lib/code_gen_lib.h
++++ b/code_gen_lib/include/berberis/code_gen_lib/code_gen_lib.h
+@@ -44,6 +44,10 @@
+ #elif defined(__x86_64__)
+ void EmitSyscall(x86_64::Assembler* as, GuestAddr pc);
+ void EmitDirectDispatch(x86_64::Assembler* as, GuestAddr pc, bool check_pending_signals);
++// region digitalis
++// Whether direct dispatches get a chainable jump (default on; berberis.chain=0 turns it off).
++void SetDirectDispatchChaining(bool enabled);
++// endregion
+ void EmitIndirectDispatch(x86_64::Assembler* as, x86_64::Assembler::Register target);
+ void EmitExitGeneratedCode(x86_64::Assembler* as, x86_64::Assembler::Register target);
+ void EmitAllocStackFrame(x86_64::Assembler* as, uint32_t frame_size);
+--- a/base/include/berberis/base/exec_region.h
++++ b/base/include/berberis/base/exec_region.h
+@@ -68,6 +68,9 @@
+   [[nodiscard]] const uint8_t* begin() const { return exec_; }
+   [[nodiscard]] const uint8_t* end() const { return exec_ + size_; }
+   [[nodiscard]] size_t size() const { return size_; }
++  // region digitalis
++  [[nodiscard]] uint8_t* writable_begin() const { return write_; }
++  // endregion
+ 
+   void Write(const uint8_t* dst, const void* src, size_t size);
+ 
+--- a/runtime_primitives/include/berberis/runtime_primitives/code_pool.h
++++ b/runtime_primitives/include/berberis/runtime_primitives/code_pool.h
+@@ -40,6 +40,22 @@
+ 
+ namespace berberis {
+ 
++// region digitalis
++// Block chaining (see EmitDirectDispatch). Exec regions with chainable jumps stay registered with
++// their writable alias mapped, so TranslationCache can patch jumps in any of them.
++// Exec regions are MAP_SHARED, so a forked process maps every region that existed at the fork and
++// sees later patches to them. Each region records how many forks preceded it (its generation), and a
++// jump is only linked to code in a region of the same or an older generation: every process that maps
++// the jump then maps the target too. Unlinking (back to the table lookup) is right in every process.
++void RegisterPatchableExecRegion(const uint8_t* exec, size_t size, uint8_t* write);
++// Points the chainable jump whose rel32 is at site to target, or unlinks it for kNullHostCodeAddr.
++// A link that isn't allowed (see above), or out of range, unlinks instead and returns false.
++bool PatchChainSite(HostCodeAddr site, HostCodeAddr target);
++// A fork happened (or is detected): regions from now on are a newer generation.
++void MarkPatchableExecRegionsShared();
++uint32_t PatchableExecRegionsGeneration();
++// endregion
++
+ // Code pool is an arena used to store fragments of generated code.
+ // TODO(b/232598137): Consider freeing allocated regions.
+ template <typename ExecRegionFactory>
+@@ -79,9 +95,15 @@
+     // (inherited copy-on-write) still resolve.
+     pid_t cur_pid = getpid();
+     if (cur_pid != owner_pid_) {
++      MarkPatchableExecRegionsShared();
+       ResetExecRegion();
+       owner_pid_ = cur_pid;
+     }
++    // After a fork, new code goes to a new region (a newer generation), so no jump in a region the
++    // other process maps can be linked to code written after the fork.
++    if (chain_patching_ && generation_ != PatchableExecRegionsGeneration()) {
++      ResetExecRegion();
++    }
+     // endregion
+ 
+     uint32_t size = code->install_size();
+@@ -131,10 +153,20 @@
+ 
+   void ResetExecRegion(uint32_t size = ExecRegionFactory::kExecRegionSize) {
+     detached_size_ += exec_.size();
+-    exec_.Detach();
++    RetireExecRegion();
+     exec_ = ExecRegionFactory::Create(std::max(size, ExecRegionFactory::kExecRegionSize));
+     current_address_ = exec_.begin();
++    RegisterIfPatchable();
++  }
++
++  // region digitalis
++  // For the pool of translated regions: keep every region patchable (see PatchChainSite).
++  void EnableChainPatching() {
++    std::lock_guard<std::mutex> lock(mutex_);
++    chain_patching_ = true;
++    RegisterIfPatchable();
+   }
++  // endregion
+ 
+   // region digitalis
+   // Non-fatal variant: returns false and leaves the pool untouched when the
+@@ -159,9 +191,10 @@
+       return false;
+     }
+     detached_size_ += exec_.size();
+-    exec_.Detach();
++    RetireExecRegion();
+     exec_ = std::move(fresh);
+     current_address_ = exec_.begin();
++    RegisterIfPatchable();
+     return true;
+   }
+   // endregion
+@@ -169,6 +202,23 @@
+   size_t GetTotalSize() const { return detached_size_ + (current_address_ - exec_.begin()); }
+ 
+  private:
++  // region digitalis
++  // A full region's writable alias stays mapped (and registered) when its jumps may be patched.
++  void RetireExecRegion() {
++    if (!chain_patching_) {
++      exec_.Detach();
++    }
++  }
++  void RegisterIfPatchable() {
++    if (chain_patching_ && exec_.begin() != nullptr) {
++      generation_ = PatchableExecRegionsGeneration();
++      RegisterPatchableExecRegion(exec_.begin(), exec_.size(), exec_.writable_begin());
++    }
++  }
++  bool chain_patching_ = false;
++  uint32_t generation_ = 0;
++  // endregion
++
+   ExecRegion exec_;
+   const uint8_t* current_address_;
+   // TODO(b/232598137): have recovery map for each region instead!
+--- a/runtime_primitives/code_pool.cc
++++ b/runtime_primitives/code_pool.cc
+@@ -16,10 +16,17 @@
+ 
+ #include "berberis/runtime_primitives/code_pool.h"
+ 
++#include <pthread.h>
++#include <unistd.h>
++
++#include <atomic>
++#include <climits>
+ #include <cstring>
+ #include <mutex>
++#include <vector>
+ 
+ #include "berberis/base/forever_alloc.h"
++#include "berberis/base/tracing.h"
+ #include "berberis/runtime_primitives/exec_region_anonymous.h"
+ 
+ #if defined(__BIONIC__)
+@@ -40,16 +47,123 @@
+ }
+ 
+ void ResetAllExecRegions() {
++  // region digitalis
++  MarkPatchableExecRegionsShared();
++  // endregion
+   GetDefaultCodePoolInstance()->ResetExecRegion();
+   GetColdCodePoolInstance()->ResetExecRegion();
+   GetFunctionWrapperCodePoolInstance()->ResetExecRegion();
+ }
+ 
+ CodePool<ExecRegionAnonymousFactory>* GetDefaultCodePoolInstance() {
+-  static auto* g_code_pool = NewForever<CodePool<ExecRegionAnonymousFactory>>();
++  // region digitalis
++  static auto* g_code_pool = [] {
++    auto* pool = NewForever<CodePool<ExecRegionAnonymousFactory>>();
++    pool->EnableChainPatching();
++    return pool;
++  }();
++  // endregion
+   return g_code_pool;
+ }
+ 
++// region digitalis
++namespace {
++
++struct PatchableRegion {
++  uintptr_t begin;
++  uintptr_t end;
++  uint8_t* write;
++  uint32_t generation;  // Forks before the region was created.
++};
++
++std::mutex g_patch_mutex;
++pid_t g_patch_pid = 0;
++std::atomic<uint32_t> g_fork_generation{0};
++
++std::vector<PatchableRegion>& PatchableRegions() {
++  static auto* regions = NewForever<std::vector<PatchableRegion>>();
++  return *regions;
++}
++
++void MarkSharedLocked() {
++  uint32_t generation = g_fork_generation.fetch_add(1, std::memory_order_relaxed) + 1;
++  TRACE_AND_ALOGD("berberis: chain: fork, code generation %u", generation);
++}
++
++const PatchableRegion* FindRegionLocked(uintptr_t addr, size_t size) {
++  for (const auto& region : PatchableRegions()) {
++    if (region.begin <= addr && addr + size <= region.end) {
++      return &region;
++    }
++  }
++  return nullptr;
++}
++
++// Every fork, in both processes: what exists now is mapped by both. The mutex is held across the fork
++// so the child never inherits it locked.
++void LockForFork() {
++  g_patch_mutex.lock();
++}
++void MarkSharedAfterFork() {
++  MarkSharedLocked();
++  g_patch_pid = getpid();
++  g_patch_mutex.unlock();
++}
++
++}  // namespace
++
++void RegisterPatchableExecRegion(const uint8_t* exec, size_t size, uint8_t* write) {
++  static const bool kAtForkRegistered =
++      pthread_atfork(LockForFork, MarkSharedAfterFork, MarkSharedAfterFork) == 0;
++  (void)kAtForkRegistered;
++  std::lock_guard<std::mutex> lock(g_patch_mutex);
++  if (g_patch_pid == 0) {
++    g_patch_pid = getpid();
++  }
++  if (write == nullptr) {
++    return;
++  }
++  auto begin = bit_cast<uintptr_t>(exec);
++  PatchableRegions().push_back(
++      {begin, begin + size, write, g_fork_generation.load(std::memory_order_relaxed)});
++}
++
++void MarkPatchableExecRegionsShared() {
++  std::lock_guard<std::mutex> lock(g_patch_mutex);
++  MarkSharedLocked();
++}
++
++uint32_t PatchableExecRegionsGeneration() {
++  return g_fork_generation.load(std::memory_order_relaxed);
++}
++
++bool PatchChainSite(HostCodeAddr site, HostCodeAddr target) {
++  std::lock_guard<std::mutex> lock(g_patch_mutex);
++  // A fork that bypassed both pthread_atfork and the guest clone path.
++  if (pid_t pid = getpid(); pid != g_patch_pid) {
++    MarkSharedLocked();
++    g_patch_pid = pid;
++  }
++  const PatchableRegion* region = site % 4 == 0 ? FindRegionLocked(site, 4) : nullptr;
++  if (region == nullptr) {
++    return false;
++  }
++  int32_t disp = 0;
++  bool linked = false;
++  if (target != kNullHostCodeAddr) {
++    const PatchableRegion* target_region = FindRegionLocked(target, 1);
++    int64_t wide = int64_t{target} - int64_t{site} - 4;
++    if (target_region != nullptr && target_region->generation <= region->generation &&
++        wide >= INT32_MIN && wide <= INT32_MAX) {
++      disp = static_cast<int32_t>(wide);
++      linked = true;
++    }
++  }
++  __atomic_store_n(bit_cast<int32_t*>(region->write + (site - region->begin)), disp, __ATOMIC_RELEASE);
++  return target == kNullHostCodeAddr || linked;
++}
++// endregion
++
+ CodePool<ExecRegionAnonymousFactory>* GetColdCodePoolInstance() {
+   static auto* g_cold_code_pool = NewForever<CodePool<ExecRegionAnonymousFactory>>();
+   return g_cold_code_pool;
+--- a/runtime_primitives/include/berberis/runtime_primitives/translation_cache.h
++++ b/runtime_primitives/include/berberis/runtime_primitives/translation_cache.h
+@@ -20,6 +20,8 @@
+ #include <atomic>
+ #include <cstdint>
+ #include <mutex>
++#include <unordered_map>
++#include <vector>
+ 
+ #include "berberis/base/forever_map.h"
+ #include "berberis/base/forever_set.h"
+@@ -133,13 +135,26 @@
+   // If successful returns the locked entry, otherwise returns nullptr.
+   [[nodiscard]] GuestCodeEntry* LockForGearUpTranslation(GuestAddr pc);
+ 
++  // region digitalis
++  // A chainable direct-dispatch jump in installed code (x86_64::Assembler::ChainJmp32).
++  struct ChainSite {
++    HostCodeAddr site;  // Address of the jump's rel32.
++    GuestAddr target;
++  };
++  // endregion
++
+   // Transitions the entry for the given guest address from Translating to Translated, making it
+   // available to other threads.
++  // region digitalis
++  // Also chains: jumps that dispatch to pc go straight to the new code, and chain_sites (the jumps in
++  // that code) are registered and linked to targets that are translated already.
++  // endregion
+   void SetTranslatedAndUnlock(GuestAddr pc,
+                               GuestCodeEntry* entry,
+                               uint32_t guest_size,
+                               GuestCodeEntry::Kind kind,
+-                              HostCodePiece code);
++                              HostCodePiece code,
++                              const std::vector<ChainSite>* chain_sites = nullptr);
+ 
+   // ATTENTION: interpreter doesn't handle code that is being wrapped!
+   [[nodiscard]] GuestCodeEntry* AddAndLockForWrapping(GuestAddr pc);
+@@ -209,6 +224,14 @@
+ 
+   void InvalidateEntriesBeingTranslatedUnsafe();
+ 
++  // region digitalis
++  // Points every chainable jump to pc at code (kNullHostCodeAddr unlinks them).
++  void PatchChainSitesToUnsafe(GuestAddr pc, HostCodeAddr code);
++  // Chainable jumps by the guest pc they dispatch to (mutex_). Includes jumps in code that is no longer
++  // reachable: patching those is harmless, code memory is never reused.
++  std::unordered_map<GuestAddr, std::vector<HostCodeAddr>> chain_sites_;
++  // endregion
++
+   // ATTENTION: all GuestCodeEntry state transitions must be protected by mutex!
+   mutable std::mutex mutex_;
+ 
+--- a/runtime_primitives/translation_cache.cc
++++ b/runtime_primitives/translation_cache.cc
+@@ -25,6 +25,7 @@
+ #include "berberis/base/config.h"
+ #include "berberis/base/forever_alloc.h"
+ #include "berberis/guest_state/guest_addr.h"
++#include "berberis/runtime_primitives/code_pool.h"  // PatchChainSite
+ #include "berberis/runtime_primitives/host_code.h"
+ #include "berberis/runtime_primitives/runtime_library.h"
+ 
+@@ -97,7 +98,8 @@
+                                               GuestCodeEntry* entry,
+                                               uint32_t guest_size,
+                                               GuestCodeEntry::Kind kind,
+-                                              HostCodePiece code) {
++                                              HostCodePiece code,
++                                              const std::vector<ChainSite>* chain_sites) {
+   CHECK(kind != GuestCodeEntry::Kind::kUnderProcessing);
+   CHECK(kind != GuestCodeEntry::Kind::kGuestWrapped);
+   CHECK(kind != GuestCodeEntry::Kind::kHostWrapped);
+@@ -133,7 +135,37 @@
+   if (max_guest_size_ < guest_size) {
+     max_guest_size_ = guest_size;
+   }
++
++  // region digitalis
++  // Jumps to pc follow it to its new code (after a gear-up too); an interpreted pc unlinks them.
++  auto chainable = [](const GuestCodeEntry& e) {
++    return e.kind == GuestCodeEntry::Kind::kLiteTranslated ||
++           e.kind == GuestCodeEntry::Kind::kHeavyOptimized;
++  };
++  PatchChainSitesToUnsafe(pc, chainable(*entry) ? code.code : kNullHostCodeAddr);
++  if (chain_sites != nullptr && chainable(*entry)) {
++    for (const ChainSite& site : *chain_sites) {
++      chain_sites_[site.target].push_back(site.site);
++      const GuestCodeEntry* target = LookupGuestCodeEntryUnsafe(site.target);
++      if (target != nullptr && chainable(*target)) {
++        PatchChainSite(site.site, target->host_code->load());
++      }
++    }
++  }
++  // endregion
++}
++
++// region digitalis
++void TranslationCache::PatchChainSitesToUnsafe(GuestAddr pc, HostCodeAddr code) {
++  auto it = chain_sites_.find(pc);
++  if (it == chain_sites_.end()) {
++    return;
++  }
++  for (HostCodeAddr site : it->second) {
++    PatchChainSite(site, code);
++  }
+ }
++// endregion
+ 
+ GuestCodeEntry* TranslationCache::AddAndLockForWrapping(GuestAddr pc) {
+   // This should be relatively rare, don't need a fast pass.
+@@ -297,6 +329,11 @@
+ 
+     HostCodeAddr current = entry->host_code->load();
+ 
++    // region digitalis
++    // Chained jumps must not reach code for the invalidated range, including the lite code of an entry
++    // that is gearing up (still linked while it translates).
++    PatchChainSitesToUnsafe(guest_pc, kNullHostCodeAddr);
++    // endregion
+     if (current == kEntryInvalidating) {
+       // Translating but invalidated entry is handled in SetTranslatedAndUnlock.
+     } else if (current == kEntryWrapping) {
+--- a/runtime/arm64/translator.h
++++ b/runtime/arm64/translator.h
+@@ -20,6 +20,7 @@
+ #include <cstdint>
+ #include <cstdlib>
+ #include <tuple>
++#include <vector>
+ 
+ #include "berberis/assembler/machine_code.h"
+ #include "berberis/guest_os_primitives/guest_map_shadow.h"
+@@ -29,6 +30,11 @@
+ 
+ namespace berberis {
+ 
++// region digitalis
++// The chainable jumps of the code the last InstallTranslated on this thread installed.
++std::vector<TranslationCache::ChainSite>& LastInstalledChainSites();
++// endregion
++
+ HostCodePiece InstallTranslated(MachineCode* machine_code,
+                                 GuestAddr pc,
+                                 size_t size,
+--- a/runtime/arm64/translator.cc
++++ b/runtime/arm64/translator.cc
+@@ -46,11 +46,27 @@
+ 
+ }  // namespace
+ 
++// region digitalis
++std::vector<TranslationCache::ChainSite>& LastInstalledChainSites() {
++  static thread_local std::vector<TranslationCache::ChainSite> sites;
++  return sites;
++}
++// endregion
++
+ HostCodePiece InstallTranslated(MachineCode* machine_code,
+                                 GuestAddr pc,
+                                 size_t size,
+                                 const char* prefix) {
+   HostCodeAddr host_code = GetDefaultCodePoolInstance()->Add(machine_code);
++  // region digitalis
++  auto& sites = LastInstalledChainSites();
++  sites.clear();
++  if (host_code != kNullHostCodeAddr) {
++    machine_code->ForEachChainSite([&](uint32_t offset, intptr_t target) {
++      sites.push_back({host_code + offset, static_cast<GuestAddr>(target)});
++    });
++  }
++  // endregion
+   ProfilerLogGeneratedCode(AsHostCode(host_code), machine_code->install_size(), pc, size, prefix);
+   return {host_code, machine_code->install_size()};
+ }
+--- a/runtime/arm64/translator_x86_64.cc
++++ b/runtime/arm64/translator_x86_64.cc
+@@ -112,6 +112,11 @@
+ 
+ }  // namespace
+ 
++// region digitalis
++// From code_gen_lib (EmitDirectDispatch); this library does not get its headers.
++void SetDirectDispatchChaining(bool enabled);
++// endregion
++
+ void InitTranslatorArch() {
+   // Install Berberis's host SIGSEGV/SIGBUS handler. This used to live in
+   // runtime/berberis.cc inside `#if defined(NATIVE_BRIDGE_GUEST_ARCH_ARM64)`,
+@@ -121,6 +126,12 @@
+   // claimed for arm64 guest processes.
+   ClaimHostFaultSignals();
+   UpdateTranslationMode();
++  // region digitalis
++  // Block chaining of direct dispatches (EmitDirectDispatch); berberis.chain=0 turns it off.
++  static ConfigStr chain_config("BERBERIS_CHAIN", "berberis.chain");
++  const char* chain = chain_config.get();
++  SetDirectDispatchChaining(!(chain && chain[0] == '0'));
++  // endregion
+ }
+ 
+ // Exported for testing only.
+@@ -464,7 +475,10 @@
+     size = first_insn_size;
+     kind = kInterpreted;
+   }
+-  cache->SetTranslatedAndUnlock(pc, entry, size, kind, host_code_piece);
++  // region digitalis
++  cache->SetTranslatedAndUnlock(
++      pc, entry, size, kind, host_code_piece, success ? &LastInstalledChainSites() : nullptr);
++  // endregion
+ 
+   // profiling
+   if (success) {
+--- a/guest_os_primitives/guest_thread_clone.cc
++++ b/guest_os_primitives/guest_thread_clone.cc
+@@ -28,6 +28,7 @@
+ #include "berberis/guest_os_primitives/scoped_pending_signals.h"
+ #include "berberis/guest_state/guest_addr.h"
+ #include "berberis/guest_state/guest_state_opaque.h"
++#include "berberis/runtime_primitives/code_pool.h"  // MarkPatchableExecRegionsShared
+ #include "berberis/runtime/execute_guest.h"
+ #include "berberis/runtime_primitives/runtime_library.h"
+ 
+@@ -131,6 +132,11 @@
+     // ATTENTION: Do not set new tls for the host - tls might be incompatible.
+     // TODO(b/280551726): Consider forcing new host tls to 0.
+     long pid = CloneSyscall(flags & ~CLONE_SETTLS, 0, parent_tid, 0, child_tid);
++    // region digitalis
++    if (pid > 0) {
++      MarkPatchableExecRegionsShared();  // The child maps them too.
++    }
++    // endregion
+     if (pid == 0) {
+       // Child, reset thread table.
+       ResetCurrentGuestThreadAfterFork(thread);
+--- a/runtime/arm64/execute_guest_test.cc
++++ b/runtime/arm64/execute_guest_test.cc
+@@ -19,6 +19,9 @@
+ #include "berberis/runtime/execute_guest.h"
+ 
+ #include <cstdint>
++#include <cstring>
++
++#include "berberis/base/bit_util.h"
+ 
+ #include "berberis/guest_os_primitives/guest_map_shadow.h"
+ #include "berberis/guest_os_primitives/guest_thread_manager.h"
+@@ -59,6 +62,70 @@
+   GuestMapShadow::GetInstance()->ClearExecutable(ToGuestAddr(&code[0]), sizeof(code));
+ }
+ 
++// region digitalis
++// A loop through chained regions (block chaining, see EmitDirectDispatch): the loop region's exit to
++// itself is linked to its own code and re-linked when it gears up (~1000 runs); the count must come
++// out exact.
++TEST(Arm64ExecuteGuest, ChainedLoop) {
++  static const uint32_t code[] = {
++      0xd2800000,  // movz x0, #0
++      0x91000400,  // loop: add x0, x0, #1
++      0xf13e801f,  // cmp x0, #4000
++      0x54ffffc1,  // b.ne loop
++      0x14000001,  // b .+4  (to stop_pc)
++  };
++
++  InitBerberis();
++
++  GuestMapShadow::GetInstance()->SetExecutable(ToGuestAddr(&code[0]), sizeof(code));
++
++  GuestThread* thread = GetCurrentGuestThread();
++  auto& cpu_state = thread->state()->cpu;
++  cpu_state.insn_addr = ToGuestAddr(&code[0]);
++  cpu_state.x[0] = 7;
++  GuestAddr stop_pc = ToGuestAddr(&code[0]) + sizeof(code);
++  auto cache = TranslationCache::GetInstance();
++  cache->SetStop(stop_pc);
++  ExecuteGuest(thread->state());
++  cache->TestingClearStop(stop_pc);
++  EXPECT_EQ(cpu_state.x[0], 4000u);
++
++  // The entry region's jump into the loop is linked to the loop's current code, which by now has
++  // geared up (it ran ~4000 times), so the link followed it from its lite code.
++  auto links_to = [&](GuestAddr from_pc, HostCodeAddr target) {
++    GuestCodeEntry* from = cache->LookupGuestCodeEntryUnsafeForTesting(from_pc);
++    if (!from) {
++      return false;
++    }
++    HostCodeAddr from_code = cache->GetHostCodePtr(from_pc)->load();
++    for (uint32_t i = 3; i + 5 <= from->host_size; i += 4) {
++      const auto* bytes = bit_cast<const uint8_t*>(uintptr_t{from_code + i});
++      int32_t disp;
++      memcpy(&disp, bytes + 1, 4);
++      if (bytes[0] == 0xe9 && int64_t{from_code} + i + 5 + disp == int64_t{target}) {
++        return true;
++      }
++    }
++    return false;
++  };
++  GuestAddr loop_pc = ToGuestAddr(&code[1]);
++  GuestCodeEntry* loop = cache->LookupGuestCodeEntryUnsafeForTesting(loop_pc);
++  ASSERT_TRUE(loop);
++  EXPECT_EQ(loop->kind, GuestCodeEntry::Kind::kHeavyOptimized);
++  EXPECT_TRUE(links_to(ToGuestAddr(&code[0]), cache->GetHostCodePtr(loop_pc)->load()));
++
++  // Run it again over the now fully linked code.
++  cpu_state.insn_addr = ToGuestAddr(&code[0]);
++  cache->SetStop(stop_pc);
++  ExecuteGuest(thread->state());
++  cache->TestingClearStop(stop_pc);
++  EXPECT_EQ(cpu_state.x[0], 4000u);
++
++  cache->InvalidateGuestRange(ToGuestAddr(&code[0]), stop_pc);
++  GuestMapShadow::GetInstance()->ClearExecutable(ToGuestAddr(&code[0]), sizeof(code));
++}
++// endregion
++
+ }  // namespace
+ 
+ }  // namespace berberis
+--- a/runtime/arm64/translator_x86_64_test.cc
++++ b/runtime/arm64/translator_x86_64_test.cc
+@@ -20,8 +20,15 @@
+ #include <cstdint>
+ #include <tuple>
+ 
++#include <vector>
++
++#include "berberis/assembler/machine_code.h"
++#include "berberis/assembler/x86_64.h"
++#include "berberis/base/bit_util.h"
+ #include "berberis/guest_state/guest_addr.h"
+ #include "berberis/lite_translator/lite_translate_region.h"
++#include "berberis/runtime_primitives/code_pool.h"
++#include "berberis/runtime_primitives/runtime_library.h"
+ #include "berberis/runtime_primitives/host_code.h"
+ #include "berberis/runtime_primitives/translation_cache.h"
+ #include "berberis/test_utils/scoped_guest_exec_region.h"
+@@ -154,6 +161,125 @@
+   EXPECT_EQ(kind, GuestCodeEntry::Kind::kHeavyOptimized);
+ }
+ 
++// region digitalis chain-sites
++// Block chaining (EmitDirectDispatch, TranslationCache::ChainSite): a chainable jump is linked once its
++// target is translated, follows the target to its new code on gear-up, and is unlinked when the target
++// is invalidated or ends up interpreted.
++TEST(Arm64ChainSites, LinkRelinkUnlink) {
++  constexpr GuestAddr kFrom = 0x10'0000;
++  constexpr GuestAddr kTo = 0x20'0000;
++  MachineCode jump;
++  x86_64::Assembler as(&jump);
++  as.ChainJmp32(kTo);
++  as.Finalize();
++  HostCodeAddr jump_code = GetDefaultCodePoolInstance()->Add(&jump);
++  std::vector<TranslationCache::ChainSite> sites;
++  jump.ForEachChainSite([&](uint32_t offset, intptr_t target) {
++    sites.push_back({jump_code + offset, static_cast<GuestAddr>(target)});
++  });
++  ASSERT_EQ(sites.size(), 1u);
++  EXPECT_EQ(sites[0].site % 4, 0u);
++  EXPECT_EQ(sites[0].target, kTo);
++  auto rel32 = [&] { return *bit_cast<const int32_t*>(uintptr_t{sites[0].site}); };
++  auto to = [&](HostCodeAddr code) {
++    return static_cast<int32_t>(int64_t{code} - int64_t{sites[0].site} - 4);
++  };
++
++  TranslationCache tc;
++  GuestCodeEntry* from = tc.AddAndLockForTranslation(kFrom, 0);
++  ASSERT_TRUE(from);
++  tc.SetTranslatedAndUnlock(kFrom,
++                            from,
++                            4,
++                            GuestCodeEntry::Kind::kLiteTranslated,
++                            {jump_code, jump.install_size()},
++                            &sites);
++  EXPECT_EQ(rel32(), 0);  // Target not translated: falls through to the table lookup.
++
++  MachineCode lite_code, heavy_code;
++  lite_code.AddU8(0xc3);
++  heavy_code.AddU8(0xc3);
++  HostCodeAddr lite = GetDefaultCodePoolInstance()->Add(&lite_code);
++  HostCodeAddr heavy = GetDefaultCodePoolInstance()->Add(&heavy_code);
++
++  GuestCodeEntry* target = tc.AddAndLockForTranslation(kTo, 0);
++  ASSERT_TRUE(target);
++  tc.SetTranslatedAndUnlock(kTo, target, 4, GuestCodeEntry::Kind::kLiteTranslated, {lite, 1});
++  EXPECT_EQ(rel32(), to(lite));
++
++  target = tc.LockForGearUpTranslation(kTo);
++  ASSERT_TRUE(target);
++  EXPECT_EQ(rel32(), to(lite));  // The lite code stays linked while the target gears up.
++  tc.SetTranslatedAndUnlock(kTo, target, 4, GuestCodeEntry::Kind::kHeavyOptimized, {heavy, 1});
++  EXPECT_EQ(rel32(), to(heavy));
++
++  tc.InvalidateGuestRange(kTo, kTo + 4);
++  EXPECT_EQ(rel32(), 0);
++
++  target = tc.AddAndLockForTranslation(kTo, 0);
++  ASSERT_TRUE(target);
++  tc.SetTranslatedAndUnlock(kTo, target, 4, GuestCodeEntry::Kind::kInterpreted, {kEntryInterpret, 0});
++  EXPECT_EQ(rel32(), 0);
++
++  // Invalidating while the target gears up unlinks its still-linked lite code.
++  tc.InvalidateGuestRange(kTo, kTo + 4);
++  target = tc.AddAndLockForTranslation(kTo, 0);
++  ASSERT_TRUE(target);
++  tc.SetTranslatedAndUnlock(kTo, target, 4, GuestCodeEntry::Kind::kLiteTranslated, {lite, 1});
++  EXPECT_EQ(rel32(), to(lite));
++  target = tc.LockForGearUpTranslation(kTo);
++  ASSERT_TRUE(target);
++  tc.InvalidateGuestRange(kTo, kTo + 4);
++  EXPECT_EQ(rel32(), 0);
++  tc.SetTranslatedAndUnlock(kTo, target, 4, GuestCodeEntry::Kind::kHeavyOptimized, {heavy, 1});
++  EXPECT_EQ(rel32(), 0);  // That translation was invalidated; it is dropped, not linked.
++}
++
++// After a fork, jumps only link to code at least as old as themselves (every process that maps the jump
++// maps that code); unlinking always works.
++TEST(Arm64ChainSites, LinksNeverReachNewerRegionsAfterFork) {
++  auto chain_jump = [](GuestAddr target, MachineCode* code) {
++    x86_64::Assembler as(code);
++    as.ChainJmp32(target);
++    as.Finalize();
++    HostCodeAddr installed = GetDefaultCodePoolInstance()->Add(code);
++    HostCodeAddr site = kNullHostCodeAddr;
++    code->ForEachChainSite([&](uint32_t offset, intptr_t) { site = installed + offset; });
++    return site;
++  };
++  auto rel32 = [](HostCodeAddr site) { return *bit_cast<const int32_t*>(uintptr_t{site}); };
++  auto ret = [] {
++    MachineCode code;
++    code.AddU8(0xc3);
++    return GetDefaultCodePoolInstance()->Add(&code);
++  };
++
++  MachineCode old_jump;
++  HostCodeAddr old_site = chain_jump(0x30'0000, &old_jump);
++  ASSERT_NE(old_site, kNullHostCodeAddr);
++  HostCodeAddr old_target = ret();
++  ASSERT_TRUE(PatchChainSite(old_site, old_target));
++  EXPECT_EQ(rel32(old_site), static_cast<int32_t>(int64_t{old_target} - int64_t{old_site} - 4));
++
++  MarkPatchableExecRegionsShared();  // A fork: CodePool::Add moves to a new region by itself.
++  HostCodeAddr new_target = ret();
++  MachineCode new_jump;
++  HostCodeAddr new_site = chain_jump(0x40'0000, &new_jump);
++
++  // Old jump -> new code: refused, and left unlinked.
++  EXPECT_FALSE(PatchChainSite(old_site, new_target));
++  EXPECT_EQ(rel32(old_site), 0);
++  // Old jump -> old code, and new jump -> old or new code: fine.
++  EXPECT_TRUE(PatchChainSite(old_site, old_target));
++  EXPECT_NE(rel32(old_site), 0);
++  EXPECT_TRUE(PatchChainSite(new_site, old_target));
++  EXPECT_TRUE(PatchChainSite(new_site, new_target));
++  // Unlinking always works.
++  EXPECT_TRUE(PatchChainSite(old_site, kNullHostCodeAddr));
++  EXPECT_EQ(rel32(old_site), 0);
++}
++// endregion
++
+ }  // namespace
+ 
+ }  // namespace berberis

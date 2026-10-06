@@ -306,7 +306,7 @@ bool OpenXrSession::update_projection_layers(XrTime displayTime, XrDuration disp
     if (result != XR_SUCCESS) return false;
 
     // Never hold the receive/publication lock while waiting for the receiver.
-    // This opt-in experiment budgets against both predicted display lead and
+    // Budget against both predicted display lead and
     // the current frame period, reserving time for upload/submission. These
     // are best-effort waits, not a hard deadline guarantee on Windows.
     // Missing time conversion, invalid prediction or late frames skip the wait.
@@ -315,7 +315,8 @@ bool OpenXrSession::update_projection_layers(XrTime displayTime, XrDuration disp
         const int64_t lead = displayTime - hostNow;
         static axrb::protocol::PerfStats leadStats("host-display-lead");
         leadStats.record(static_cast<double>(lead) / 1000000.0);
-        const auto budget = fresh_wait_budget_ns(freshFrameWaitUs_, lead, displayPeriod);
+        const auto requestedUs = fixedFreshFrameWait_ ? freshFrameWaitUs_ : pickupBudget_.microseconds();
+        const auto budget = fresh_wait_budget_ns(requestedUs, lead, displayPeriod);
         if (budget > 0 && imageFrame_ && submittedGameFrames_.initialized) {
             if (imageFrame_->needs_newer(submittedGameFrames_.lastSequence)) {
                 static axrb::protocol::PerfStats freshWaitStats("host-fresh-image-wait");

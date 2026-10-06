@@ -10,13 +10,17 @@ param(
     [ValidateSet('Default', 'Tsc', 'TscCorrected')][string]$GuestClock = 'Default',
     # Who emulates the local APIC. The hypervisor avoids an exit to QEMU for
     # every APIC access, timer and IPI (docs/cpu_pressure.md, Finding 5); it
-    # needs the clock helper, so Auto selects it with TscCorrected. The helper
-    # keeps QEMU's APIC where the host's WHPX cannot emulate it.
+    # needs the clock helper. Auto keeps QEMU for boot compatibility;
+    # hypervisor modes are opt-in because accepted WHPX setup can still hang.
     [ValidateSet('Auto', 'Qemu', 'Hypervisor', 'HypervisorX2Apic')][string]$LocalApic = 'Auto',
     # Graphics command transport. Address-space graphics passes the guest's
     # command stream through shared memory instead of one pipe exit per write
     # (docs/cpu_pressure.md, Finding 7). Written to the AVD configuration.
     [ValidateSet('Asg', 'Pipe')][string]$GraphicsTransport = 'Asg',
+    [ValidateSet('dsound', 'winaudio', 'sdl')][string]$AudioBackend = 'dsound',
+    [ValidateRange(10, 200)][int]$AudioLatencyMs = 20,
+    [ValidateRange(30, 340)][int]$AudioBufferMs = 40,
+    [switch]$AllHostCores,
     [switch]$PollIdle,
     [string]$RuntimeApk,
     [string]$AppApk,
@@ -34,7 +38,7 @@ $ErrorActionPreference = 'Stop'
 if ($PollIdle -and ($Avd -ne 'axrb-digitalis-test' -or $GuestClock -ne 'TscCorrected')) {
     throw 'PollIdle is restricted to the isolated Digitalis test AVD with corrected TSC.'
 }
-if ($LocalApic -eq 'Auto') { $LocalApic = $(if ($GuestClock -eq 'TscCorrected') { 'Hypervisor' } else { 'Qemu' }) }
+if ($LocalApic -eq 'Auto') { $LocalApic = 'Qemu' }
 if ($LocalApic -ne 'Qemu' -and $GuestClock -ne 'TscCorrected') {
     throw 'The hypervisor local APIC needs -GuestClock TscCorrected.'
 }
@@ -496,6 +500,7 @@ switch ($Action) {
         # -no-metrics answers the metrics question up front: the emulator warns
         # that it will otherwise become a blocking prompt nobody can answer here.
         $arguments = @('-avd', $Avd, '-ports', "$Port,$adbPort", '-gpu', 'host', '-accel', 'on', '-no-boot-anim', '-no-metrics', '-memory', "$MemoryMB")
+        $arguments += @('-audio', $AudioBackend)
         if ($PSBoundParameters.ContainsKey('CpuCores')) { $arguments += @('-cores', "$CpuCores") }
         if (!$ShowWindow) { $arguments += '-no-window' }
         # Always, not once: the emulator serves /system from a scratch overlay
@@ -529,6 +534,8 @@ switch ($Action) {
             $arguments += @('-show-kernel', '-qemu', '-append', ('"' + $tscOptions + '"'))
         }
         $oldLayerPath = $env:VK_LAYER_PATH
+        $oldAudioLatency = $env:QEMU_DSOUND_LATENCY_MILLIS
+        $oldAudioBuffer = $env:QEMU_DSOUND_BUFSIZE_OUT
         $oldLayers = $env:VK_INSTANCE_LAYERS
         $oldPath = $env:PATH
         $oldLauncherDir = $env:ANDROID_EMULATOR_LAUNCHER_DIR
@@ -561,6 +568,10 @@ switch ($Action) {
         }
         try {
             # The emulator supports case-insensitive Vulkan device-name matching.
+            if ($AudioBackend -eq 'dsound') {
+                $env:QEMU_DSOUND_LATENCY_MILLIS = "$AudioLatencyMs"
+                $env:QEMU_DSOUND_BUFSIZE_OUT = "$($AudioBufferMs * 192)"
+            }
             # Pin the sole supported adapter on mixed Intel/discrete systems;
             # its automatic Vulkan score can otherwise favor the Intel driver.
             try {
@@ -576,23 +587,36 @@ switch ($Action) {
                 $env:ANDROID_EMULATOR_LAUNCHER_DIR = Join-Path $Sdk 'emulator'
                 $env:PATH = "$Sdk\emulator;$Sdk\emulator\lib64;$oldPath"
             }
-            # Qemu leaves the clock helper's own settings alone, so a caller's
-            # AXRB_WHPX_HV_APIC still applies.
-            if ($LocalApic -ne 'Qemu') { $env:AXRB_WHPX_HV_APIC = '1' }
-            if ($LocalApic -eq 'HypervisorX2Apic') { $env:AXRB_WHPX_HV_X2APIC = '1' }
+            # The selected mode wins over inherited diagnostic overrides.
+            # Both variables are restored in finally after the child starts.
+            $env:AXRB_WHPX_HV_APIC = $(if ($LocalApic -eq 'Qemu') { '0' } else { '1' })
+            $env:AXRB_WHPX_HV_X2APIC = $(if ($LocalApic -eq 'HypervisorX2Apic') { '1' } else { '0' })
             if ($GpuSharing) {
                 $layerPath = (Resolve-Path $AxrbGpuDirectory).Path
                 if (!(Test-Path "$layerPath\axrb_gpu_layer.json")) { throw 'Build host/gpu first.' }
                 $env:VK_LAYER_PATH = $layerPath
                 $env:VK_INSTANCE_LAYERS = 'VK_LAYER_AXRB_gpu_share'
             }
-            $process = Start-Process $launchExe -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardOutput "$logs\emulator.stdout.log" -RedirectStandardError "$logs\emulator.stderr.log"
+            # The emulator and its QEMU child inherit this mask. Restore the
+            # launching process immediately so AXRB itself retains its affinity.
+            $launchProcess = [Diagnostics.Process]::GetCurrentProcess()
+            $originalAffinity = $launchProcess.ProcessorAffinity
+            try {
+                if (!$AllHostCores) {
+                    . "$PSScriptRoot/p_core_affinity.ps1"
+                    $performanceMask = (Get-AxrbPerformanceCoreMask) -band $originalAffinity.ToInt64()
+                    if ($performanceMask) { $launchProcess.ProcessorAffinity = [IntPtr]$performanceMask }
+                }
+                $process = Start-Process $launchExe -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardOutput "$logs\emulator.stdout.log" -RedirectStandardError "$logs\emulator.stderr.log"
+            } finally { $launchProcess.ProcessorAffinity = $originalAffinity }
             if ($null -eq $process) { throw "Could not start $launchExe." }
             # Caching the handle while the process is alive is what keeps
             # ExitCode readable later; without it the property reads back $null.
             $null = $process.Handle
         } finally {
             $env:VK_LAYER_PATH = $oldLayerPath
+            $env:QEMU_DSOUND_LATENCY_MILLIS = $oldAudioLatency
+            $env:QEMU_DSOUND_BUFSIZE_OUT = $oldAudioBuffer
             $env:VK_INSTANCE_LAYERS = $oldLayers
             $env:PATH = $oldPath
             $env:ANDROID_EMULATOR_LAUNCHER_DIR = $oldLauncherDir
@@ -704,7 +728,7 @@ switch ($Action) {
         Run $adb @('-s', $serial, 'reverse', 'tcp:38490', 'tcp:38490') | Out-Null
         Run $adb @('-s', $serial, 'reverse', 'tcp:38491', 'tcp:38491') | Out-Null
         Run $adb @('-s', $serial, 'shell', 'setprop', 'debug.axrb.gpu_share', $(if ($GpuSharing) { '1' } else { '0' })) | Out-Null
-        Write-Output "Ready: $serial. Images use adb reverse :38491; native pose stream uses 10.0.2.2:38490."
+        Write-Output "Ready: $serial. Images and poses use the direct emulator host at 10.0.2.2."
     }
     Verify { Verify-Gpu; Verify-Abi }
     Status {

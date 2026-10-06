@@ -92,8 +92,8 @@ test('Windows game launch actually executes PowerShell and reports its exit', { 
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await fs.mkdir(path.join(root, 'scripts/run'), { recursive: true });
   await fs.writeFile(path.join(root, 'scripts/run/run_windows_game.ps1'), `
-param($Avd, $Port, $Sdk, $MemoryMB, $CpuCores, $Package, $Activity, $GameName, [switch]$FpsHud, $FpsHudEventName)
-Write-Output "EXECUTED:$Package CORES:$CpuCores"
+param($Avd, $Port, $Sdk, $MemoryMB, $CpuCores, $TextureMode, $Package, $Activity, $GameName, [switch]$FpsHud, $FpsHudEventName)
+Write-Output "EXECUTED:$Package CORES:$CpuCores TEXTURE:$TextureMode"
 exit 7
 `);
   const runtime = new Runtime(root, { avd:'test',port:5580,sdk:root,memoryMB:8192,cpuCores:6 });
@@ -104,7 +104,14 @@ exit 7
   assert.equal(result.code, 7); // -File propagates the script's own exit code.
   assert.match(result.output, /EXECUTED:com.example.game/);
   assert.match(result.output, /CORES:6/);
+  assert.match(result.output, /TEXTURE:gpu/);
   assert.equal(runtime.game, null);
+  runtime.settings.textureMode = 'bc7';
+  const quality = await new Promise(resolve => {
+    runtime.launch({ id:'local:com.example.game',package:'com.example.game',activity:'com.example.game/.Main',name:'Test' }, (code, output) => resolve({code,output}));
+  });
+  assert.equal(quality.code, 7);
+  assert.match(quality.output, /TEXTURE:bc7/);
 });
 
 test('projection precomposition follows matched profiles or the global override', { skip: process.platform !== 'win32', timeout: 20000 }, async t => {
