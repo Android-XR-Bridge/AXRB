@@ -8,6 +8,8 @@
 #include <vector>
 #include <map>
 #include "windows_gpu_frame.h"
+#include "frame_publisher.h"
+#include <memory>
 
 struct XrGraphicsBindingVulkanKHR {
     XrStructureType type; const void* next;
@@ -55,7 +57,20 @@ public:
     const axrb::protocol::WindowsGpuMarker& gpu_marker() const { return gpuMarker_; }
     bool release_batch();
     bool gpu_export_enabled() const { return gpuExportEnabled_; }
-    bool export_batch(const std::vector<VulkanExportRequest>& requests, std::vector<axrb::protocol::WindowsGpuFrame>& frames);
+    bool export_batch(const std::vector<VulkanExportRequest>& requests, std::vector<axrb::protocol::WindowsGpuFrame>& frames, bool defer = false);
+    bool complete_batch(std::vector<axrb::protocol::WindowsGpuFrame>& frames);
+    bool complete_export();
+    bool complete_readback(uint32_t width, uint32_t height, std::vector<uint8_t> rgba[2]);
+    bool publish(std::function<bool()> work) {
+        if (!publisher_) publisher_ = std::make_unique<FramePublisher>();
+        return publisher_->submit(std::move(work));
+    }
+    bool drain_publication() {
+        if (!publisher_ || publisher_->drain()) return true;
+        gpuExportEnabled_ = false;
+        batchFailed_ = true;
+        return false;
+    }
     void acknowledge_batch(bool success) { if (success) batchInFlight_ = false; else batchFailed_ = true; }
     void disable_gpu_export() { gpuExportEnabled_ = false; }
     uint64_t scratch_allocation_count() const { return scratchAllocations_; }
@@ -69,7 +84,7 @@ public:
     bool import_surface(VulkanSwapchain& sc, AHardwareBuffer* buffer, uint32_t width, uint32_t height);
     bool copy_surface(VulkanSwapchain& sc, uint32_t width, uint32_t height);
     bool readback(const VulkanSwapchain* const swapchains[2], const uint32_t indices[2],
-                  const XrSwapchainSubImage* const subimages[2], uint32_t width, uint32_t height, std::vector<uint8_t> rgba[2], const bool* verticalFlip = nullptr);
+                  const XrSwapchainSubImage* const subimages[2], uint32_t width, uint32_t height, std::vector<uint8_t> rgba[2], const bool* verticalFlip = nullptr, bool defer = false);
 private:
     bool ensure_buffer(VkDeviceSize bytes);
     bool ensure_scratch(VkFormat format, uint32_t eye, uint32_t width, uint32_t height);
@@ -79,7 +94,9 @@ private:
     bool allocate_image(VkImage& image, VkDeviceMemory& memory, VkFormat format,
                         uint32_t width, uint32_t height, uint32_t layers, VkImageUsageFlags usage, uint32_t mips = 1);
     bool begin();
-    bool finish();
+    bool finish(bool defer = false);
+    bool wait_copy();
+    std::unique_ptr<FramePublisher> publisher_;
     void barrier(VkImage image, uint32_t layers, VkImageLayout before, VkImageLayout after,
                  VkAccessFlags src, VkAccessFlags dst, VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT, uint32_t mips = 1);
     bool gpuExportEnabled_ = false;

@@ -11,6 +11,7 @@ import { AiHelp } from './ai-help';
 import { Settings } from './settings';
 import { Downloads } from './downloads';
 import { GameDetails } from './game-details';
+import { GameExport } from './game-export';
 import { Quest } from './quest';
 import { Toasts } from './toasts';
 import { DebugPanel } from './diagnostics';
@@ -25,6 +26,7 @@ function App() {
   const [results, setResults] = useState([]);
   const [searched, setSearched] = useState(false);
   const [selected, setSelected] = useState(null);
+  const [exportOpen, setExportOpen] = useState(false);
   const [pending, setPending] = useState(new Set());
   const pendingRef = useRef(new Set());
   const [notice, setNotice] = useState(null);
@@ -68,7 +70,7 @@ function App() {
       {!state ? <Empty><Button variant="ghost" onClick={() => run('state', async () => setState(await call('state')))}>Load library</Button></Empty> : <>
         {page === 'library' && <><div className="mb-7 flex items-center gap-3"><div className="relative w-64"><Search className="pointer-events-none absolute top-2.5 left-3 size-4 text-muted-foreground" /><Input id="library-search" type="search" placeholder="Search library" aria-label="Search library" className="pl-9" value={libraryQuery} onChange={e => setLibraryQuery(e.target.value)} /></div>
           <Select value={filter} onValueChange={setFilter}><SelectTrigger aria-label="Filter library" className="w-36"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All games</SelectItem><SelectItem value="installed">Installed</SelectItem><SelectItem value="downloaded">Downloaded</SelectItem></SelectContent></Select>
-          <div className="flex-1" /><IconButton label="Refresh library" disabled={pending.has('sync')} onClick={refresh}><RefreshCw className={pending.has('sync') ? 'animate-spin' : ''} /></IconButton><Button variant="outline" disabled={state.busy || pending.has('import')} onClick={() => run('import', () => call('import'))}><Plus />Import APK</Button><Button variant="outline" disabled={state.busy || Boolean(state.running) || pending.has('import-zip')} onClick={() => run('import-zip', async () => { if (await call('importZip')) setPage('downloads'); })}>Install ZIP</Button>
+          <div className="flex-1" /><IconButton label="Refresh library" disabled={pending.has('sync')} onClick={refresh}><RefreshCw className={pending.has('sync') ? 'animate-spin' : ''} /></IconButton><Button variant="outline" disabled={state.busy || pending.has('import')} onClick={() => run('import', () => call('import'))}><Plus />Import APK</Button><Button variant="outline" disabled={state.busy || Boolean(state.running) || pending.has('import-zip')} onClick={() => run('import-zip', async () => { if (await call('importZip')) setPage('downloads'); })}>Install ZIP</Button><Button variant="outline" disabled={state.busy} onClick={() => setExportOpen(true)}>Export games</Button>
         </div>{games.length ? <GameGrid games={games} onOpen={setSelected} /> : <Empty>{state.games.length ? 'No matching games' : 'No games yet'}</Empty>}</>}
         {page === 'store' && <><form id="store-search" onSubmit={search} className="mb-7 flex items-center gap-3"><div className="relative w-full max-w-md"><Search className="pointer-events-none absolute top-2.5 left-3 size-4 text-muted-foreground" /><Input id="store-query" type="search" aria-label="Search Quest store" placeholder="Search Quest games" className="pl-9" value={query} onChange={e => setQuery(e.target.value)} required minLength={2} /></div><Button disabled={pending.has('search')} type="submit">{pending.has('search') ? <Loader2 className="animate-spin" aria-label="Searching" /> : 'Search'}</Button><div className="flex-1" /><IconButton label="Open Meta store" onClick={() => run('store', () => call('openStore'))}><ExternalLink /></IconButton></form>{results.length ? <GameGrid games={results} onOpen={setSelected} store /> : searched && !pending.has('search') ? <Empty>No games found</Empty> : null}</>}
         {page === 'quest' && <Quest state={state} run={run} pending={pending} setPage={setPage} />}
@@ -77,6 +79,7 @@ function App() {
         {page === 'settings' && <Settings state={state} run={run} pending={pending} notify={notify} />}
       </>}
     </main>
+    {exportOpen && state && <GameExport games={state.games} busy={state.busy} onClose={() => setExportOpen(false)} run={run} pending={pending} setPage={setPage} />}
     <Toasts jobs={state?.jobs} notice={notice} dismissNotice={() => setNotice(null)} />
     {game && state && <GameDetails key={game.id} game={game} state={state} local={state.games.some(g => g.id === game.id)} onClose={() => setSelected(null)} run={run} pending={pending} setPage={setPage} notify={notify} />}
   </>;

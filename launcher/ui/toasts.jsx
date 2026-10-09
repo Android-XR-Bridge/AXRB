@@ -16,7 +16,7 @@ export function Toasts({ jobs, notice, dismissNotice }) {
     if (!jobs) return;
     const changes = [];
     for (const job of jobs) {
-      if (!['apk', 'zip', 'quest', 'uninstall'].includes(job.kind)) continue;
+      if (!['apk', 'zip', 'quest', 'uninstall', 'export'].includes(job.kind)) continue;
       const previous = seen.current.get(job.id), active = activeStatuses.includes(job.status);
       seen.current.set(job.id, job.status);
       if (!initialized.current && !active) continue;

@@ -16,8 +16,10 @@ output = root / 'out/android/vulkan'
 output.mkdir(parents=True, exist_ok=True)
 for name in ('vulkan_descriptor_template_smoke', 'vulkan_descriptor_layer_smoke'):
     binary = output / name
+    texture_objects = [str(root / 'runtime/vulkan/texture/bc7e' / item)
+                       for item in ('bc7e.o', 'bc7e_sse4.o', 'bc7e_avx2.o')] if name.endswith('layer_smoke') else []
     subprocess.run([str(compiler), '-std=c++17', '-O2', '-static-libstdc++',
-                    str(root / 'tests/native' / (name + '.cpp')), '-llog', '-o', str(binary)], check=True, timeout=120)
+                    str(root / 'tests/native' / (name + '.cpp')), *texture_objects, '-llog', '-o', str(binary)], check=True, timeout=120)
     remote = '/data/local/tmp/' + name
     subprocess.run(adb + ['push', str(binary), remote], check=True, timeout=30)
     subprocess.run(adb + ['shell', 'chmod 755 ' + remote + ' && ' + remote], check=True, timeout=60)

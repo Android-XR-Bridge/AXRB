@@ -1,0 +1,28 @@
+--- a/lite_translator/arm64_to_x86_64/lite_translator_simd_fp_misc.inc
++++ b/lite_translator/arm64_to_x86_64/lite_translator_simd_fp_misc.inc
+@@ -1272,8 +1272,10 @@
+   }
+ 
+   void SimdLoadStoreImm(const Decoder::SimdLoadStoreImmArgs& args, Register base) {
+-    // apply TBI mask before using base as memory operand.
+-    base = ApplyTbi(base);
++    // This helper only reads base. Avoid a register copy when TBI is disabled.
++    if (IsConfigFlagSet(kTopByteIgnore)) {
++      base = ApplyTbi(base);
++    }
+     // Handle 128-bit SIMD load/store with immediate offset (STR/LDR Q-register).
+     if (args.size == Decoder::SimdLoadStoreSize::k128bit) {
+       SimdRegister xmm = AllocTempSimdReg();
+@@ -1376,8 +1378,10 @@
+   }
+ 
+   void SimdLoadStorePair(const Decoder::SimdLoadStorePairArgs& args, Register addr) {
+-    // apply TBI mask before using addr as memory operand.
+-    addr = ApplyTbi(addr);
++    // This helper only reads addr. Avoid a register copy when TBI is disabled.
++    if (IsConfigFlagSet(kTopByteIgnore)) {
++      addr = ApplyTbi(addr);
++    }
+     // Handle 128-bit pair store/load (STP/LDP q-register).
+     if (args.size == Decoder::SimdLoadStoreSize::k128bit) {
+       SimdRegister xmm1 = AllocTempSimdReg();

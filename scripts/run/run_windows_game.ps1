@@ -19,6 +19,8 @@ param(
     [ValidateSet('Auto', 'Default', 'Tsc', 'TscCorrected')][string]$GuestClock = 'Auto',
     [ValidateSet('Auto', 'Qemu', 'Hypervisor', 'HypervisorX2Apic')][string]$LocalApic = 'Auto',
     [ValidateSet('Auto', 'Off')][string]$UnrealMemoryPolicy = 'Auto',
+    [ValidateSet('auto', 'digitalis', 'google')][string]$Translator = 'auto',
+    [ValidateSet('gpu', 'bc7')][string]$TextureMode = 'gpu',
     [ValidateSet(128, 1024)][int]$StorageReadAheadKB = 1024,
     [switch]$GpuSharing,
     [switch]$FpsHud,
@@ -177,6 +179,9 @@ try {
             throw 'Restart Android to apply the selected vCPU count.'
         }
     }
+    $translatorPolicy = & python "$PSScriptRoot\..\emulator\translator.py" --sdk $Sdk --serial $serial --use $Translator
+    if ($LASTEXITCODE -ne 0) { throw 'Translator preparation failed. The game was not started.' }
+    Write-Output "ARM translator: $translatorPolicy"
     foreach ($apk in @($RuntimeApk, $AppApk)) {
         if ([string]::IsNullOrWhiteSpace($apk)) { continue }
         $apkPath = (Resolve-Path -LiteralPath $apk).Path
@@ -192,7 +197,7 @@ try {
     Write-Output "Unreal memory policy: $policyJson"
     # Compatibility must be supplied by AXRB/Android, never by rewriting installed
     # application libraries. Keep the guest-wide mapping policy independent.
-    $runtimePolicy = & python "$PSScriptRoot\..\emulator\android_runtime_policy.py" --sdk $Sdk --serial $serial --package $Package --storage-read-ahead-kib $StorageReadAheadKB
+    $runtimePolicy = & python "$PSScriptRoot\..\emulator\android_runtime_policy.py" --sdk $Sdk --serial $serial --package $Package --storage-read-ahead-kib $StorageReadAheadKB --texture-mode $TextureMode
     if ($LASTEXITCODE -ne 0) { throw 'Android runtime policy failed. The game was not started.' }
     Write-Output "Android runtime policy: $runtimePolicy"
     # The audio adapter is allowed to fail without stopping the launch; say so

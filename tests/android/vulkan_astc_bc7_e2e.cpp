@@ -172,6 +172,7 @@ int main(int argc, char** argv) {
     VkCommandBuffer cmd;
     CHECK(vkAllocateCommandBuffers(device, &cai, &cmd));
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     CHECK(vkBeginCommandBuffer(cmd, &begin));
     VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     barrier.image = image;

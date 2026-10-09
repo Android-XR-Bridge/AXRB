@@ -283,9 +283,10 @@ int OpenXrHost::run(int argc, char** argv)
 
         std::thread poseThread([poseSource, imageFrame, port, frames] {
             axrb::protocol::TcpPoseServer poseServer;
-            poseServer.serve_with_producer(port, frames, [&](uint64_t sequence) {
-                return poseSource->latest_frame(sequence);
-            });
+            uint64_t generation = 0;
+            poseServer.serve_with_producer(port, frames, [&](uint64_t) {
+                return poseSource->wait_for_pose(generation);
+            }, true);
         });
         poseThread.detach();
 
@@ -295,7 +296,7 @@ int OpenXrHost::run(int argc, char** argv)
             // OpenXR paces an active frame loop. An extra Windows sleep can
             // consume a timer tick and lower the compositor submission rate.
             if (!poseSource->drives_frame_loop()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                std::this_thread::sleep_for(std::chrono::milliseconds(11));
             }
         }
         return 0;

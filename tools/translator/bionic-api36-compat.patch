@@ -1,0 +1,477 @@
+diff --git a/libc/bionic/__libc_init_main_thread.cpp b/libc/bionic/__libc_init_main_thread.cpp
+index 2824340..0d557f1 100644
+--- a/libc/bionic/__libc_init_main_thread.cpp
++++ b/libc/bionic/__libc_init_main_thread.cpp
+@@ -82,7 +82,6 @@ extern "C" void __libc_init_main_thread_early(const KernelArgumentBlock& args,
+   main_thread.tid = __getpid();
+   main_thread.set_cached_pid(main_thread.tid);
+   main_thread.stack_top = reinterpret_cast<uintptr_t>(args.argv);
+-  main_thread.stack_bottom = 0;
+ }
+ 
+ // This code is used both by each new pthread and the code that initializes the main thread.
+@@ -157,14 +156,12 @@ extern "C" void __libc_init_main_thread_final() {
+   const StaticTlsLayout& layout = __libc_shared_globals()->static_tls_layout;
+   auto new_tcb = reinterpret_cast<bionic_tcb*>(mapping.static_tls + layout.offset_bionic_tcb());
+   auto new_tls = reinterpret_cast<bionic_tls*>(mapping.static_tls + layout.offset_bionic_tls());
+-  auto new_lb = reinterpret_cast<libgen_buffers*>(mapping.libgen_buffers);
+ 
+   __init_static_tls(mapping.static_tls);
+   new_tcb->copy_from_bootstrap(temp_tcb);
+   new_tls->copy_from_bootstrap(temp_tls);
+   __init_tcb(new_tcb, &main_thread);
+   __init_bionic_tls_ptrs(new_tcb, new_tls);
+-  __init_libgen_buffers_ptr(new_tls, new_lb);
+ 
+   main_thread.mmap_base = mapping.mmap_base;
+   main_thread.mmap_size = mapping.mmap_size;
+diff --git a/libc/bionic/android_unsafe_frame_pointer_chase.cpp b/libc/bionic/android_unsafe_frame_pointer_chase.cpp
+index 44ca0b3..7d5cd6c 100644
+--- a/libc/bionic/android_unsafe_frame_pointer_chase.cpp
++++ b/libc/bionic/android_unsafe_frame_pointer_chase.cpp
+@@ -38,11 +38,6 @@ extern "C" __LIBC_HIDDEN__ uintptr_t __get_thread_stack_top() {
+   return __get_thread()->stack_top;
+ }
+ 
+-__BIONIC_WEAK_FOR_NATIVE_BRIDGE
+-extern "C" __LIBC_HIDDEN__ uintptr_t __get_thread_stack_bottom() {
+-  return __get_thread()->stack_bottom;
+-}
+-
+ /*
+  * Implement fast stack unwinding for stack frames with frame pointers. Stores at most num_entries
+  * return addresses to buffer buf. Returns the number of available return addresses, which may be
+@@ -67,22 +62,12 @@ __attribute__((no_sanitize("address", "hwaddress"))) size_t android_unsafe_frame
+     uintptr_t next_frame, return_addr;
+   };
+ 
+-  static uintptr_t main_thread_bottom = UINTPTR_MAX;
++  auto begin = reinterpret_cast<uintptr_t>(__builtin_frame_address(0));
++  auto end = __get_thread_stack_top();
+ 
+-  auto bottom = __get_thread_stack_bottom();
+-  if (bottom == 0) {
+-    bottom = main_thread_bottom;
+-  }
+-  auto fp = reinterpret_cast<uintptr_t>(__builtin_frame_address(0));
+-  auto top = __get_thread_stack_top();
+-
+-  if (fp < bottom || fp > top) {
+-    stack_t ss;
+-    if (sigaltstack(nullptr, &ss) == 0 && (ss.ss_flags & SS_ONSTACK)) {
+-      top = reinterpret_cast<uintptr_t>(ss.ss_sp) + ss.ss_size;
+-    } else if (__get_thread_stack_bottom() == 0) {
+-      main_thread_bottom = MIN(main_thread_bottom, fp);
+-    }
++  stack_t ss;
++  if (sigaltstack(nullptr, &ss) == 0 && (ss.ss_flags & SS_ONSTACK)) {
++    end = reinterpret_cast<uintptr_t>(ss.ss_sp) + ss.ss_size;
+   }
+ 
+   size_t num_frames = 0;
+@@ -92,9 +77,9 @@ __attribute__((no_sanitize("address", "hwaddress"))) size_t android_unsafe_frame
+     // See https://reviews.llvm.org/D87579. We did at least manage to get this
+     // documented in the RISC-V psABI though:
+     // https://github.com/riscv-non-isa/riscv-elf-psabi-doc/blob/master/riscv-cc.adoc#frame-pointer-convention
+-    auto* frame = reinterpret_cast<frame_record*>(fp - 16);
++    auto* frame = reinterpret_cast<frame_record*>(begin - 16);
+ #else
+-    auto* frame = reinterpret_cast<frame_record*>(fp);
++    auto* frame = reinterpret_cast<frame_record*>(begin);
+ #endif
+     if (num_frames < num_entries) {
+       uintptr_t addr = __bionic_clear_pac_bits(frame->return_addr);
+@@ -104,11 +89,11 @@ __attribute__((no_sanitize("address", "hwaddress"))) size_t android_unsafe_frame
+       buf[num_frames] = addr;
+     }
+     ++num_frames;
+-    if (frame->next_frame < fp + sizeof(frame_record) || frame->next_frame >= top ||
++    if (frame->next_frame < begin + sizeof(frame_record) || frame->next_frame >= end ||
+         frame->next_frame % sizeof(void*) != 0) {
+       break;
+     }
+-    fp = frame->next_frame;
++    begin = frame->next_frame;
+   }
+ 
+   return num_frames;
+diff --git a/libc/bionic/bionic_systrace.cpp b/libc/bionic/bionic_systrace.cpp
+index ff22293..227cb84 100644
+--- a/libc/bionic/bionic_systrace.cpp
++++ b/libc/bionic/bionic_systrace.cpp
+@@ -37,25 +37,31 @@ static uint64_t g_tags;
+ static int g_trace_marker_fd = -1;
+ 
+ static bool should_trace() {
+-  LockGuard guard(g_lock);
++  g_lock.lock();
+   if (g_debug_atrace_tags_enableflags.DidChange()) {
+     g_tags = strtoull(g_debug_atrace_tags_enableflags.Get(), nullptr, 0);
+   }
+-  return g_tags & ATRACE_TAG_BIONIC;
++  g_lock.unlock();
++  return ((g_tags & ATRACE_TAG_BIONIC) != 0);
+ }
+ 
+ static int get_trace_marker_fd() {
+-  LockGuard guard(g_lock);
++  g_lock.lock();
+   if (g_trace_marker_fd == -1) {
+     g_trace_marker_fd = open("/sys/kernel/tracing/trace_marker", O_CLOEXEC | O_WRONLY);
+     if (g_trace_marker_fd == -1) {
+       g_trace_marker_fd = open("/sys/kernel/debug/tracing/trace_marker", O_CLOEXEC | O_WRONLY);
+     }
+   }
++  g_lock.unlock();
+   return g_trace_marker_fd;
+ }
+ 
+ static void trace_begin_internal(const char* message) {
++  if (!should_trace()) {
++    return;
++  }
++
+   int trace_marker_fd = get_trace_marker_fd();
+   if (trace_marker_fd == -1) {
+     return;
+@@ -77,16 +83,21 @@ void bionic_trace_begin(const char* message) {
+   // bionic_trace_begin(). Prevent infinite recursion and non-recursive mutex
+   // deadlock by using a flag in the thread local storage.
+   bionic_tls& tls = __get_bionic_tls();
+-  if (!tls.bionic_systrace_enabled || !should_trace()) return;
+-
+-  tls.bionic_systrace_enabled = false;
++  if (tls.bionic_systrace_disabled) {
++    return;
++  }
++  tls.bionic_systrace_disabled = true;
+ 
+   trace_begin_internal(message);
+ 
+-  tls.bionic_systrace_enabled = true;
++  tls.bionic_systrace_disabled = false;
+ }
+ 
+ static void trace_end_internal() {
++  if (!should_trace()) {
++    return;
++  }
++
+   int trace_marker_fd = get_trace_marker_fd();
+   if (trace_marker_fd == -1) {
+     return;
+@@ -114,25 +125,18 @@ void bionic_trace_end() {
+   // bionic_trace_begin(). Prevent infinite recursion and non-recursive mutex
+   // deadlock by using a flag in the thread local storage.
+   bionic_tls& tls = __get_bionic_tls();
+-  if (!tls.bionic_systrace_enabled || !should_trace()) return;
+-
+-  tls.bionic_systrace_enabled = false;
++  if (tls.bionic_systrace_disabled) {
++    return;
++  }
++  tls.bionic_systrace_disabled = true;
+ 
+   trace_end_internal();
+ 
+-  tls.bionic_systrace_enabled = true;
++  tls.bionic_systrace_disabled = false;
+ }
+ 
+ ScopedTrace::ScopedTrace(const char* message) : called_end_(false) {
+-  // Do not call should_trace if tracing is disabled, the call can crash if
+-  // done during initialization.
+-  bionic_tls& tls = __get_bionic_tls();
+-  should_trace_ = tls.bionic_systrace_enabled && should_trace();
+-  if (!should_trace_) return;
+-
+-  tls.bionic_systrace_enabled = false;
+-  trace_begin_internal(message);
+-  tls.bionic_systrace_enabled = true;
++  bionic_trace_begin(message);
+ }
+ 
+ ScopedTrace::~ScopedTrace() {
+@@ -140,11 +144,8 @@ ScopedTrace::~ScopedTrace() {
+ }
+ 
+ void ScopedTrace::End() {
+-  if (!should_trace_ || called_end_) return;
+-
+-  bionic_tls& tls = __get_bionic_tls();
+-  tls.bionic_systrace_enabled = false;
+-  trace_end_internal();
+-  tls.bionic_systrace_enabled = true;
+-  called_end_ = true;
++  if (!called_end_) {
++    bionic_trace_end();
++    called_end_ = true;
++  }
+ }
+diff --git a/libc/bionic/libc_init_dynamic.cpp b/libc/bionic/libc_init_dynamic.cpp
+index 2032b65..43196cc 100644
+--- a/libc/bionic/libc_init_dynamic.cpp
++++ b/libc/bionic/libc_init_dynamic.cpp
+@@ -121,8 +121,6 @@ static void __libc_preinit_impl() {
+ 
+   netdClientInit();
+ 
+-  // Wait until everything is initialized before enabled systracing.
+-  __get_bionic_tls().bionic_systrace_enabled = true;
+ }
+ 
+ // We flag the __libc_preinit function as a constructor to ensure that
+diff --git a/libc/bionic/libc_init_static.cpp b/libc/bionic/libc_init_static.cpp
+index 330e999..108d73b 100644
+--- a/libc/bionic/libc_init_static.cpp
++++ b/libc/bionic/libc_init_static.cpp
+@@ -202,8 +202,6 @@ __attribute__((no_sanitize("memtag"))) __noreturn static void __real_libc_init(
+   __libc_init_mte_late();
+ #endif
+ 
+-  // Wait until everything is initialized before enabled systracing.
+-  __get_bionic_tls().bionic_systrace_enabled = true;
+ 
+   exit(slingshot(args.argc, args.argv, args.envp));
+ }
+diff --git a/libc/bionic/libgen.cpp b/libc/bionic/libgen.cpp
+index f02e68a..b952822 100644
+--- a/libc/bionic/libgen.cpp
++++ b/libc/bionic/libgen.cpp
+@@ -158,13 +158,13 @@ __LIBC32_LEGACY_PUBLIC__ int dirname_r(const char* path, char* buffer, size_t bu
+ }
+ 
+ char* basename(const char* path) {
+-  char* buf = (__get_bionic_tls().libgen_buffers_ptr)->basename_buf;
+-  int rc = __basename_r(path, buf, sizeof((__get_bionic_tls().libgen_buffers_ptr)->basename_buf));
++  char* buf = __get_bionic_tls().basename_buf;
++  int rc = __basename_r(path, buf, sizeof(__get_bionic_tls().basename_buf));
+   return (rc < 0) ? nullptr : buf;
+ }
+ 
+ char* dirname(const char* path) {
+-  char* buf = (__get_bionic_tls().libgen_buffers_ptr)->dirname_buf;
+-  int rc = __dirname_r(path, buf, sizeof((__get_bionic_tls().libgen_buffers_ptr)->dirname_buf));
++  char* buf = __get_bionic_tls().dirname_buf;
++  int rc = __dirname_r(path, buf, sizeof(__get_bionic_tls().dirname_buf));
+   return (rc < 0) ? nullptr : buf;
+ }
+diff --git a/libc/bionic/pthread_create.cpp b/libc/bionic/pthread_create.cpp
+index f6d7fa8..31f6854 100644
+--- a/libc/bionic/pthread_create.cpp
++++ b/libc/bionic/pthread_create.cpp
+@@ -70,30 +70,22 @@ void __init_bionic_tls_ptrs(bionic_tcb* tcb, bionic_tls* tls) {
+   tcb->tls_slot(TLS_SLOT_BIONIC_TLS) = tls;
+ }
+ 
+-void __init_libgen_buffers_ptr(bionic_tls* tls, libgen_buffers* lb) {
+-  tls->libgen_buffers_ptr = lb;
+-}
+-
+-static inline size_t get_temp_bionic_tls_size() {
+-  return __builtin_align_up(sizeof(bionic_tls) + sizeof(libgen_buffers), page_size());
+-}
+-
+ // Allocate a temporary bionic_tls that the dynamic linker's main thread can
+ // use while it's loading the initial set of ELF modules.
+ bionic_tls* __allocate_temp_bionic_tls() {
+-  void* allocation = mmap(nullptr, get_temp_bionic_tls_size(), PROT_READ | PROT_WRITE,
+-                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++  size_t allocation_size = __builtin_align_up(sizeof(bionic_tls), page_size());
++  void* allocation = mmap(nullptr, allocation_size,
++                          PROT_READ | PROT_WRITE,
++                          MAP_PRIVATE | MAP_ANONYMOUS,
++                          -1, 0);
+   if (allocation == MAP_FAILED) {
+     async_safe_fatal("failed to allocate bionic_tls: %m");
+   }
+-  bionic_tls* tls = static_cast<bionic_tls*>(allocation);
+-  tls->libgen_buffers_ptr =
+-      reinterpret_cast<libgen_buffers*>(static_cast<char*>(allocation) + sizeof(bionic_tls));
+-  return tls;
++  return static_cast<bionic_tls*>(allocation);
+ }
+ 
+ void __free_temp_bionic_tls(bionic_tls* tls) {
+-  munmap(tls, get_temp_bionic_tls_size());
++  munmap(tls, __builtin_align_up(sizeof(bionic_tls), page_size()));
+ }
+ 
+ static void __init_alternate_signal_stack(pthread_internal_t* thread) {
+@@ -224,14 +216,11 @@ int __init_thread(pthread_internal_t* thread) {
+ ThreadMapping __allocate_thread_mapping(size_t stack_size, size_t stack_guard_size) {
+   const StaticTlsLayout& layout = __libc_shared_globals()->static_tls_layout;
+ 
+-  // Allocate in order: stack guard, stack, static TLS, libgen buffers, guard page.
++  // Allocate in order: stack guard, stack, static TLS, guard page.
+   size_t mmap_size;
+   if (__builtin_add_overflow(stack_size, stack_guard_size, &mmap_size)) return {};
+   if (__builtin_add_overflow(mmap_size, layout.size(), &mmap_size)) return {};
+   if (__builtin_add_overflow(mmap_size, PTHREAD_GUARD_SIZE, &mmap_size)) return {};
+-  // Add space for the dedicated libgen buffers page(s).
+-  size_t libgen_buffers_padded_size = __builtin_align_up(sizeof(libgen_buffers), page_size());
+-  if (__builtin_add_overflow(mmap_size, libgen_buffers_padded_size, &mmap_size)) return {};
+ 
+   // Align the result to a page size.
+   const size_t unaligned_size = mmap_size;
+@@ -266,21 +255,12 @@ ThreadMapping __allocate_thread_mapping(size_t stack_size, size_t stack_guard_si
+     return {};
+   }
+ 
+-  // Layout from the end of the mmap-ed region (before the top PTHREAD_GUARD_SIZE):
+-  //
+-  // [ PTHREAD_GUARD_SIZE ]
+-  // [ libgen_buffers_padded_size (for dedicated page(s) for libgen buffers) ]
+-  // [ layout.size() (for static TLS) ]
+-  // [ stack_size ]
+-  // [ stack_guard_size ]
+-
+   ThreadMapping result = {};
+   result.mmap_base = space;
+   result.mmap_size = mmap_size;
+   result.mmap_base_unguarded = space + stack_guard_size;
+   result.mmap_size_unguarded = mmap_size - stack_guard_size - PTHREAD_GUARD_SIZE;
+-  result.libgen_buffers = space + mmap_size - PTHREAD_GUARD_SIZE - libgen_buffers_padded_size;
+-  result.static_tls = result.libgen_buffers - layout.size();
++  result.static_tls = space + mmap_size - PTHREAD_GUARD_SIZE - layout.size();
+   result.stack_base = space;
+   result.stack_top = result.static_tls;
+   return result;
+@@ -329,7 +309,6 @@ static int __allocate_thread(pthread_attr_t* attr, bionic_tcb** tcbp, void** chi
+   const StaticTlsLayout& layout = __libc_shared_globals()->static_tls_layout;
+   auto tcb = reinterpret_cast<bionic_tcb*>(mapping.static_tls + layout.offset_bionic_tcb());
+   auto tls = reinterpret_cast<bionic_tls*>(mapping.static_tls + layout.offset_bionic_tls());
+-  auto lb = reinterpret_cast<libgen_buffers*>(mapping.libgen_buffers);
+ 
+   // Initialize TLS memory.
+   __init_static_tls(mapping.static_tls);
+@@ -337,7 +316,6 @@ static int __allocate_thread(pthread_attr_t* attr, bionic_tcb** tcbp, void** chi
+   __init_tcb_dtv(tcb);
+   __init_tcb_stack_guard(tcb);
+   __init_bionic_tls_ptrs(tcb, tls);
+-  __init_libgen_buffers_ptr(tls, lb);
+ 
+   attr->stack_size = stack_top - static_cast<char*>(attr->stack_base);
+   thread->attr = *attr;
+@@ -346,7 +324,6 @@ static int __allocate_thread(pthread_attr_t* attr, bionic_tcb** tcbp, void** chi
+   thread->mmap_base_unguarded = mapping.mmap_base_unguarded;
+   thread->mmap_size_unguarded = mapping.mmap_size_unguarded;
+   thread->stack_top = reinterpret_cast<uintptr_t>(stack_top);
+-  thread->stack_bottom = reinterpret_cast<uintptr_t>(attr->stack_base);
+ 
+   *tcbp = tcb;
+   *child_stack = stack_top;
+diff --git a/libc/bionic/pthread_internal.h b/libc/bionic/pthread_internal.h
+index b3133a9..ae9a791 100644
+--- a/libc/bionic/pthread_internal.h
++++ b/libc/bionic/pthread_internal.h
+@@ -146,11 +146,9 @@ class pthread_internal_t {
+   //    code to handle retries.
+   void* shadow_call_stack_guard_region;
+ 
+-  // Pointers to the top and bottom of the stack. This lets android_unsafe_frame_pointer_chase
+-  // determine the top and bottom of the stack quickly, which would otherwise require special logic
+-  // for the main thread.
++  // A pointer to the top of the stack. This lets android_unsafe_frame_pointer_chase determine the
++  // top of the stack quickly, which would otherwise require special logic for the main thread.
+   uintptr_t stack_top;
+-  uintptr_t stack_bottom;
+ 
+   // Whether the thread is in the process of terminating (has blocked signals), or has already
+   // terminated. This is used by android_run_on_all_threads() to avoid sending a signal to a thread
+@@ -197,14 +195,12 @@ struct ThreadMapping {
+   char* static_tls;
+   char* stack_base;
+   char* stack_top;
+-  char* libgen_buffers;
+ };
+ 
+ __LIBC_HIDDEN__ void __init_tcb(bionic_tcb* tcb, pthread_internal_t* thread);
+ __LIBC_HIDDEN__ void __init_tcb_stack_guard(bionic_tcb* tcb);
+ __LIBC_HIDDEN__ void __init_tcb_dtv(bionic_tcb* tcb);
+ __LIBC_HIDDEN__ void __init_bionic_tls_ptrs(bionic_tcb* tcb, bionic_tls* tls);
+-__LIBC_HIDDEN__ void __init_libgen_buffers_ptr(bionic_tls* tls, libgen_buffers* lb);
+ __LIBC_HIDDEN__ bionic_tls* __allocate_temp_bionic_tls();
+ __LIBC_HIDDEN__ void __free_temp_bionic_tls(bionic_tls* tls);
+ __LIBC_HIDDEN__ void __init_additional_stacks(pthread_internal_t*);
+diff --git a/libc/private/bionic_systrace.h b/libc/private/bionic_systrace.h
+index 6c11697..dbe1739 100644
+--- a/libc/private/bionic_systrace.h
++++ b/libc/private/bionic_systrace.h
+@@ -16,8 +16,6 @@
+ 
+ #pragma once
+ 
+-#include <sys/cdefs.h>
+-
+ #include "platform/bionic/macros.h"
+ 
+ // Tracing class for bionic. To begin a trace at a specified point:
+@@ -30,9 +28,7 @@ class __LIBC_HIDDEN__ ScopedTrace {
+   ~ScopedTrace();
+ 
+   void End();
+-
+  private:
+-  bool should_trace_;
+   bool called_end_;
+   BIONIC_DISALLOW_COPY_AND_ASSIGN(ScopedTrace);
+ };
+diff --git a/libc/private/bionic_tls.h b/libc/private/bionic_tls.h
+index b87d257..53fe3d5 100644
+--- a/libc/private/bionic_tls.h
++++ b/libc/private/bionic_tls.h
+@@ -28,11 +28,10 @@
+ 
+ #pragma once
+ 
+-#include <sys/cdefs.h>
+-
+ #include <locale.h>
+ #include <mntent.h>
+ #include <stdio.h>
++#include <sys/cdefs.h>
+ #include <sys/param.h>
+ 
+ #include <platform/bionic/tls.h>
+@@ -107,27 +106,15 @@ class pthread_key_data_t {
+   void* data;
+ };
+ 
+-// Defines the memory layout for the TLS buffers used by basename() and
+-// dirname() in libgen.h.
+-//
+-// This struct is separated out from bionic TLS to ensure that the libgen
+-// buffers, when mapped, occupy their own set of memory pages distinct
+-// from the primary bionic_tls structure. This helps improve memory usage
+-// if libgen functions are not heavily used, especially on 16KB page size
+-// systems.
+-struct libgen_buffers {
+-  char basename_buf[MAXPATHLEN];
+-  char dirname_buf[MAXPATHLEN];
+-};
+-
+-// This struct is allocated as static TLS memory (i.e. at a fixed offset
+-// from the thread pointer).
++// ~3 pages. This struct is allocated as static TLS memory (i.e. at a fixed
++// offset from the thread pointer).
+ struct bionic_tls {
+   pthread_key_data_t key_data[BIONIC_PTHREAD_KEY_COUNT];
+ 
+   locale_t locale;
+ 
+-  libgen_buffers* libgen_buffers_ptr;
++  char basename_buf[MAXPATHLEN];
++  char dirname_buf[MAXPATHLEN];
+ 
+   mntent mntent_buf;
+   char mntent_strings[BUFSIZ];
+@@ -142,7 +129,7 @@ struct bionic_tls {
+   passwd_state_t passwd;
+ 
+   char fdtrack_disabled;
+-  char bionic_systrace_enabled;
++  char bionic_systrace_disabled;
+   char padding[2];
+ 
+   // Initialize the main thread's final object using its bootstrap object.

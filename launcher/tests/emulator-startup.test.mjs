@@ -6,6 +6,41 @@ import { run } from '../core/runtime.mjs';
 const script = fileURLToPath(new URL('../../scripts/emulator/windows_android_emulator.ps1', import.meta.url)).replaceAll("'", "''");
 const windows = { skip: process.platform !== 'win32', timeout: 15000 };
 
+test('APIC auto stays on QEMU and explicit modes override inherited flags', windows, async () => {
+  const result = await probe(`
+$auto = $ast.Find({ param($node)
+    $node -is [System.Management.Automation.Language.IfStatementAst] -and
+    $node.Clauses[0].Item1.Extent.Text -eq "$" + "LocalApic -eq 'Auto'"
+}, $true)
+$assignments = $ast.FindAll({ param($node)
+    $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+    $node.Left.Extent.Text -in @('$env:AXRB_WHPX_HV_APIC', '$env:AXRB_WHPX_HV_X2APIC') -and
+    $node.Right.Extent.Text.Contains('$LocalApic')
+}, $true)
+if (!$auto -or $assignments.Count -ne 2) { throw 'Missing APIC selection block' }
+$rows = @()
+foreach ($clock in @('Default', 'Tsc', 'TscCorrected')) {
+    foreach ($mode in @('Auto', 'Qemu', 'Hypervisor', 'HypervisorX2Apic')) {
+        $GuestClock = $clock
+        $LocalApic = $mode
+        $env:AXRB_WHPX_HV_APIC = '1'
+        $env:AXRB_WHPX_HV_X2APIC = '1'
+        . ([scriptblock]::Create($auto.Extent.Text))
+        foreach ($statement in $assignments) { . ([scriptblock]::Create($statement.Extent.Text)) }
+        $rows += @{ mode = $LocalApic; hv = $env:AXRB_WHPX_HV_APIC; x2 = $env:AXRB_WHPX_HV_X2APIC }
+    }
+}
+Write-Output ('RESULT:' + (ConvertTo-Json -InputObject $rows -Compress))
+`);
+  const modes = [
+    { mode: 'Qemu', hv: '0', x2: '0' },
+    { mode: 'Qemu', hv: '0', x2: '0' },
+    { mode: 'Hypervisor', hv: '1', x2: '0' },
+    { mode: 'HypervisorX2Apic', hv: '1', x2: '1' },
+  ];
+  assert.deepEqual(result, [...modes, ...modes, ...modes]);
+});
+
 // Execute the production functions/diagnostic block without starting an emulator.
 // Only the external ADB boundary and retry delay are replaced.
 async function probe(body) {
