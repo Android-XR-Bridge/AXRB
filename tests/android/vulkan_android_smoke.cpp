@@ -34,7 +34,10 @@ static bool batch_test(axrb::runtime::VulkanBackend& backend, const axrb::runtim
             if ((iteration+i)%3 == 0) { r.subimages[1] = left; r.verticalFlip[1] = r.verticalFlip[0]; }
         }
         std::vector<WindowsGpuFrame> exports;
-        if (!backend.export_batch(requests, exports)) { close(socket); return false; }
+        const bool deferred = (iteration % 2) != 0;
+        if (!backend.export_batch(requests, exports, deferred)) { close(socket); return false; }
+        if (deferred && (!backend.publish([&] { return backend.complete_batch(exports); }) ||
+                         !backend.drain_publication())) { close(socket); return false; }
         for (uint32_t i = 0; i < count; ++i)
             if ((exports[i].formats[1] == 0) != requests[i].mono()) { close(socket); return false; }
         std::vector<WindowsGpuFrame> denied;
@@ -212,7 +215,9 @@ int main(int argc, char** argv) {
             for (size_t p = 0; p < result[1].size(); p += 4)
                 REQUIRE(result[1][p] == 0 && result[1][p+1] == 255 && result[1][p+2] == 0 && result[1][p+3] == 255);
             const bool flips[] = {true, false};
-            REQUIRE(backend.readback(chains, indices, subimages, outWidth, outHeight, result, flips));
+            REQUIRE(backend.readback(chains, indices, subimages, outWidth, outHeight, result, flips, true));
+            REQUIRE(backend.publish([&] { return backend.complete_readback(outWidth, outHeight, result); }));
+            REQUIRE(backend.drain_publication());
             REQUIRE(result[0][0] == 255 && result[0][2] == 0);
             REQUIRE(result[0][(outHeight-1)*outWidth*4] == 0 && result[0][(outHeight-1)*outWidth*4+2] == 255);
             REQUIRE(result[1][0] == 0 && result[1][1] == 255);

@@ -18,6 +18,7 @@
 #include <numeric>
 #include <vector>
 #include "astc_decoder.h"
+#include "etc2_to_bc.h"
 #include "bc7e/bc7e_ispc.h"
 
 namespace axrb::texture {
@@ -52,7 +53,7 @@ struct Bc7Output {
 
 // Transcodes texel rows [first, last) of the region. first is a multiple of
 // band_rows(blockHeight); last is too, or the region height.
-inline void astc_to_bc7(const AstcRegion& in, const Bc7Output& out, int first, int last) {
+inline void astc_to_bc7(const AstcRegion& in, const Bc7Output& out, int first, int last, bool bc3 = false) {
     const int bw = in.blockWidth, bh = in.blockHeight;
     const int columns = (in.width + 3) / 4 * 4;          // texels, padded to whole BC7 blocks
     const int rows = (last - first + 3) / 4 * 4;
@@ -83,7 +84,10 @@ inline void astc_to_bc7(const AstcRegion& in, const Bc7Output& out, int first, i
         for (int x = 0; x < columns; x += 4)
             for (int i = 0; i < 4; ++i) std::memcpy(&pixels[size_t(x / 4) * 16 + i * 4], &strip[size_t(y + i) * columns + x], 16);
         uint8_t* target = out.blocks + size_t((first + y) / 4) * out.rowBytes;
-        ispc::bc7e_compress_blocks(uint32_t(columns / 4), reinterpret_cast<uint64_t*>(target), pixels.data(), settings);
+        if (bc3) {
+            for (int x = 0; x < columns / 4; ++x)
+                encode_bc3(reinterpret_cast<const uint8_t (*)[4]>(pixels.data() + x * 16), target + x * 16);
+        } else ispc::bc7e_compress_blocks(uint32_t(columns / 4), reinterpret_cast<uint64_t*>(target), pixels.data(), settings);
     }
 }
 

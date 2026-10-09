@@ -1,0 +1,63 @@
+--- a/heavy_optimizer/arm64/frontend.h
++++ b/heavy_optimizer/arm64/frontend.h
+@@ -706,25 +706,12 @@
+         raw);
+   }
+ 
+-  // ARM64 TBI (Top Byte Ignore): clear the top 8 bits of an address register
+-  // before using it as a host x86 memory operand. ARM64 ignores the top byte of
+-  // pointers in load/store; x86 does not, so we mask it ourselves. Returns a
+-  // fresh register holding (base & 0x00FF'FFFF'FFFF'FFFF). Mirrors
+-  // lite_translator.h::ApplyTbi (movq; shlq 8; shrq 8).
+-  // region digitalis: masking only with ro.berberis.flags=top-byte-ignore (see
+-  // lite_translator's ApplyTbi); still a copy, since callers may modify it.
+-  // Without masking the copy is still a temp (callers keep it live across the
+-  // blocks of their retry loops) but filled by a real GP move, not a PseudoCopy:
+-  // the shifts used to pin the register class, and a bare PseudoCopy leaves the
+-  // uses with no common class (lifetime.h reg_class_ CHECK).
++  // ARM64 TBI: heavy-tier memory addresses must clear their top byte.
++  // Removing the shifts broke register lifetime analysis for LDADD and crashed
++  // North Star while compiling the atomic helper in libc. Keep this path
++  // correct for tagged pointers and optimize it only with an allocator-safe
++  // lowering backed by a multi-instruction regression test.
+   [[nodiscard]] Register ApplyTbi(Register base) {
+-    if (!IsConfigFlagSet(kTopByteIgnore)) {
+-      Register tbi = AllocTempReg();
+-      if (success()) {
+-        builder_.Gen<x86_64::MovqRegReg>(tbi, base);
+-      }
+-      return tbi;
+-    }
+     Register tbi = Copy(base);
+     tbi = std::get<0>(Gen<x86_64::ShlqRegImm, kNoSSA>(tbi, int8_t{8}));
+     tbi = std::get<0>(Gen<x86_64::ShrqRegImm, kNoSSA>(tbi, int8_t{8}));
+--- a/lite_translator/arm64_to_x86_64/lite_translator_integer_ctrl.inc
++++ b/lite_translator/arm64_to_x86_64/lite_translator_integer_ctrl.inc
+@@ -502,8 +502,11 @@
+ 
+   Register Load(Decoder::LoadStoreSize size, bool is_signed, bool is_64bit_target,
+                 Register base, int32_t offset) {
+-    // apply TBI mask before using base as memory operand.
+-    base = ApplyTbi(base);
++    // This helper only reads base. Without TBI masking, use it directly and
++    // avoid one register copy for every ordinary integer load or store.
++    if (IsConfigFlagSet(kTopByteIgnore)) {
++      base = ApplyTbi(base);
++    }
+     AssemblerBase::Label* recovery_label = as_.MakeLabel();
+     as_.SetRecoveryPoint(recovery_label);
+ 
+@@ -551,8 +554,11 @@
+   }
+ 
+   void Store(Decoder::LoadStoreSize size, Register base, int32_t offset, Register data) {
+-    // apply TBI mask before using base as memory operand.
+-    base = ApplyTbi(base);
++    // This helper only reads base. Without TBI masking, use it directly and
++    // avoid one register copy for every ordinary integer load or store.
++    if (IsConfigFlagSet(kTopByteIgnore)) {
++      base = ApplyTbi(base);
++    }
+     AssemblerBase::Label* recovery_label = as_.MakeLabel();
+     as_.SetRecoveryPoint(recovery_label);
+ 

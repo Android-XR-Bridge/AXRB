@@ -14,16 +14,18 @@ bool OpenXrSession::acquire_panel_swapchain(const HostImageSnapshot &frame) {
         height = (std::max)(height, part.header.height);
         slices += part.projection.view_count == 2 ? 2u : 1u;
     }
-    if (!panelSwapchain_ || width > panelWidth_ || height > panelHeight_ || slices != panelLayers_) {
+    if (!panelSwapchain_ || width > panelWidth_ || height > panelHeight_ || slices > panelLayers_) {
         if (panelSwapchain_) {
             if (destroySwapchain_(panelSwapchain_) != XR_SUCCESS)
                 return false;
             panelSwapchain_ = XR_NULL_HANDLE;
             panelImages_.clear();
         }
-        panelWidth_ = width;
-        panelHeight_ = height;
-        panelLayers_ = slices;
+        // Refract: reserve in 256-pixel steps and never shrink during a session.
+        // Animated panels otherwise repeatedly stall the compositor on allocation.
+        panelWidth_ = (std::max)(panelWidth_, (width + 255u) & ~255u);
+        panelHeight_ = (std::max)(panelHeight_, (height + 255u) & ~255u);
+        panelLayers_ = (std::max)(panelLayers_, slices);
         XrSwapchainCreateInfo info{XR_TYPE_SWAPCHAIN_CREATE_INFO};
         info.format = projectionFormat_;
         info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT |

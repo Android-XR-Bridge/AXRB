@@ -25,6 +25,7 @@
 #include <charconv>
 #include <chrono>
 #include <condition_variable>
+#include "adaptive_pickup_budget.h"
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -360,6 +361,7 @@ public:
     axrb::protocol::PoseFrame make_frame(uint64_t sequence);
 
     axrb::protocol::PoseFrame latest_frame(uint64_t sequence);
+    axrb::protocol::PoseFrame wait_for_pose(uint64_t& generation);
 
     // Receive on the image thread, independently of the OpenXR compositor clock.
     // The same lock protects cross-device cache ownership and its render poses.
@@ -479,6 +481,8 @@ private:
     bool reportedSyncFailure_ = false;
     axrb::protocol::PoseFrame latest_{};
     std::mutex frameMutex_;
+    std::condition_variable poseUpdated_;
+    uint64_t poseGeneration_ = 0;
 
     PFN_xrDestroyInstance destroyInstance_ = nullptr;
     PFN_xrGetSystem getSystem_ = nullptr;
@@ -583,6 +587,8 @@ private:
     PFN_xrConvertWin32PerformanceCounterToTimeKHR convertPerformanceCounterTime_ = nullptr;
     XrTime windows_xr_time();
     uint32_t freshFrameWaitUs_ = 0;
+    bool fixedFreshFrameWait_ = false;
+    AdaptivePickupBudget pickupBudget_;
     std::array<XrView, 2> overflowViews_{};
     bool should_precompose(const GpuFrameBatch& frame) const;
     bool compose_overflow(ID3D11Texture2D*, const HostImageSnapshot&, const XrPosef* worldFromView);

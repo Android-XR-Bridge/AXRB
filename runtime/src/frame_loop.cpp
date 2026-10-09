@@ -127,6 +127,44 @@ XrResult XRAPI_CALL xrWaitFrame_impl(
         return XR_ERROR_VALIDATION_FAILURE;
     }
 
+    static XrTime previousPrediction = 0;
+    if (!g_nextFrameStart) previousPrediction = 0;
+#if defined(__ANDROID__)
+    // Refract: begin on a fresh host pose instead of letting two independent
+    // clocks drift through each other. Bound the wait and retain timer pacing
+    // for disconnected hosts. AXRB's frame/pose wire formats remain unchanged.
+    static const bool frameSync = [] {
+        char value[PROP_VALUE_MAX]{};
+        __system_property_get("debug.axrb.frame_sync", value);
+        return std::strcmp(value, "0") != 0;
+    }();
+    if (frameSync) {
+        static uint64_t lastSequence = UINT64_MAX;
+        static XrTime lastNewPose = 0;
+        if (!g_nextFrameStart) { lastSequence = UINT64_MAX; lastNewPose = 0; }
+        auto frame = pose_client().latest_pose_frame();
+        const XrTime framePeriod = axrb::protocol::display_period_or_default(frame);
+        XrTime now = monotonic_time_ns();
+        if (frame.sequence == lastSequence && now - lastNewPose < 100'000'000) {
+            const XrTime deadline = now + framePeriod * 3 / 2;
+            while (frame.sequence == lastSequence && now < deadline) {
+                std::this_thread::sleep_for(std::chrono::microseconds(250));
+                frame = pose_client().latest_pose_frame();
+                now = monotonic_time_ns();
+            }
+        }
+        if (frame.monotonic_time_ns && frame.sequence != lastSequence) {
+            lastSequence = frame.sequence;
+            lastNewPose = now;
+            g_nextFrameStart = now + framePeriod;
+            previousPrediction = std::max(previousPrediction + 1, g_nextFrameStart);
+            frameState->predictedDisplayTime = previousPrediction;
+            frameState->predictedDisplayPeriod = framePeriod;
+            frameState->shouldRender = 1;
+            return XR_SUCCESS;
+        }
+    }
+#endif
     // Pace at the active host display period. Default resets after one late
     // period. Optional recovery tolerates at most two additional late periods,
     // still resetting after long stalls instead of accumulating unbounded debt.
@@ -163,10 +201,9 @@ XrResult XRAPI_CALL xrWaitFrame_impl(
     const bool resetAfter = pacing_reset_due(now, g_nextFrameStart, period, catchupPeriods);
     if (resetAfter) { g_nextFrameStart = now; }
     g_nextFrameStart += period;
-    static XrTime previousPrediction = 0;
     if (oldDeadline == 0) previousPrediction = 0;
     XrTime prediction = pacing_predicted_display(g_nextFrameStart, now, period, catchupPeriods);
-    if (catchupPeriods) prediction = std::max(prediction, previousPrediction + 1);
+    prediction = std::max(prediction, previousPrediction + 1);
     previousPrediction = prediction;
     frameState->predictedDisplayTime = prediction;
     frameState->predictedDisplayPeriod = period;

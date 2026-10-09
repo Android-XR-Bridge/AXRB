@@ -1,6 +1,6 @@
 {
   "name": "axrb-launcher",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "private": true,
   "description": "Quest library and native Windows AXRB launcher",
   "license": "GPL-3.0-or-later",
@@ -37,7 +37,8 @@
     "react-dom": "^19.3.0",
     "remark-gfm": "4.0.1",
     "tailwind-merge": "^3.7.0",
-    "yauzl": "^3.4.0"
+    "yauzl": "^3.4.0",
+    "yazl": "3.3.1"
   },
   "productName": "AXRB",
   "author": "AXRB contributors",

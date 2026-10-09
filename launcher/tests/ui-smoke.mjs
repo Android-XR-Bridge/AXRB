@@ -60,6 +60,23 @@ export async function uiSmoke(window, directory, snapshot, errors) {
   await check(`Boolean(document.querySelector('#library-search'))`, 'Library did not load');
   await diagnosticsSmoke(window);
   await check(`Array.from(document.querySelectorAll('button')).some(b => b.textContent === 'Install ZIP')`, 'ZIP install action missing');
+  wc.send('axrb:changed', { ...snapshot(), busy: false, games: [
+    { id: 'local:com.export.one', name: 'Export fixture one', apk: 'fixture-one.apk' },
+    { id: 'local:com.export.two', name: 'Export fixture two', apk: 'fixture-two.apk' },
+    { id: 'local:com.export.remote', name: 'Not downloaded' }
+  ] });
+  await tick();
+  await js(`Array.from(document.querySelectorAll('button')).find(b => b.textContent === 'Export games').click()`);
+  await check(`document.querySelectorAll('[role="dialog"] input[type="checkbox"]').length === 2`, 'Export must list only games with local APKs');
+  await check(`Array.from(document.querySelectorAll('[role="dialog"] button')).find(b => b.textContent.startsWith('Export '))?.disabled`, 'Empty export selection must be disabled');
+  await js(`Array.from(document.querySelectorAll('[role="dialog"] button')).find(b => b.textContent === 'Select all').click()`);
+  await check(`Array.from(document.querySelectorAll('[role="dialog"] button')).some(b => b.textContent === 'Export 2 games' && !b.disabled)`, 'Multi-game selection did not enable export');
+  await capture('export-games');
+  await js(`Array.from(document.querySelectorAll('[role="dialog"] button')).find(b => b.textContent === 'Clear selection').click()`);
+  await check(`!document.querySelector('[role="dialog"] input:checked')`, 'Export clear selection failed');
+  await escape();
+  wc.send('axrb:changed', snapshot());
+  await tick();
   if (await js(`Boolean(document.querySelector('h1, footer'))`)) throw new Error('Unexpected decorative heading/footer');
   await click('[data-nav="quest"]');
   await check(`Boolean(document.querySelector('[data-quest]'))`, 'Quest view did not render');

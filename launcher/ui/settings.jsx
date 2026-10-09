@@ -9,6 +9,17 @@ export function Settings({ state, run, pending, notify }) {
   const [dirty, setDirty] = useState(false);
   const [report, setReport] = useState(null);
   const [scan, setScan] = useState(null);
+  const [debloatProgress, setDebloatProgress] = useState(null);
+  const [debloatResult, setDebloatResult] = useState(null);
+  useEffect(() => window.axrb.onDebloatProgress(setDebloatProgress), []);
+  const debloat = restore => run('debloat', async () => {
+    setDebloatProgress(null); setDebloatResult(null);
+    const result = await call('debloat', restore);
+    if (result) {
+      setDebloatResult(result);
+      notify(`${result.completed - result.failures.length} Android apps ${restore ? 'restored' : 'removed'}${result.failures.length ? `; ${result.failures.length} failed` : ''}`);
+    }
+  });
   const [storage, setStorage] = useState(state.settings.storageGB ?? 32);
   const [storageInfo, setStorageInfo] = useState(null);
   const [storageError, setStorageError] = useState('');
@@ -70,6 +81,20 @@ export function Settings({ state, run, pending, notify }) {
           </div>
         </div>
         {/* Escaped so the class stays valid under the stricter v-mode regex engine some Chromium builds use for pattern validation; an unescaped trailing hyphen used to pass unnoticed. */}
+        <div className="space-y-2 rounded-md border p-3">
+          <div className="flex items-center justify-between gap-3">
+            <span>Debloat Android</span>
+            <div className="flex gap-2">
+              <Button type="button" variant="outline" disabled={state.busy || Boolean(state.running) || pending.has('debloat')} onClick={() => debloat(false)}>Remove optional apps</Button>
+              <Button type="button" variant="outline" disabled={state.busy || Boolean(state.running) || pending.has('debloat')} onClick={() => debloat(true)}>Restore</Button>
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">Removes optional apps and Google Play services from Android. Games requiring Google services may need Restore. Keeps app data; does not shrink the system image.</p>
+          {pending.has('debloat') && <div role="status" className="text-xs break-all">
+            {debloatProgress ? <><progress className="w-full" max={debloatProgress.total || 1} value={debloatProgress.completed} />{debloatProgress.completed}/{debloatProgress.total} {debloatProgress.package}</> : 'Preparing Android…'}
+          </div>}
+          {debloatResult?.failures.length > 0 && <div role="alert" className="text-xs text-destructive">{debloatResult.failures.map(f => <p key={f.package}>{f.package}: {f.error}</p>)}</div>}
+        </div>
         {!state.settings.managedDirectory && <>{field('sdk', 'Android SDK', { required: true })}{field('avd', 'Virtual device', { required: true, pattern: '[a-zA-Z0-9_\\-]+' })}</>}
         <div className="grid grid-cols-2 gap-4">{field('port', 'Port', { type: 'number', min: 5554, max: 5682, step: 2, required: true })}{field('memoryMB', 'Memory (MB)', { type: 'number', min: 2048, max: 16384, step: 1024, required: true })}</div>
         <div className="space-y-2">
@@ -139,6 +164,15 @@ export function Settings({ state, run, pending, notify }) {
       <input id="precompose-projection-layers" type="checkbox" role="switch" checked={draft.precomposeProjectionLayers === true}
         className="size-4 shrink-0 accent-primary" aria-describedby="precompose-projection-layers-help"
         onChange={e => edit('precomposeProjectionLayers', e.target.checked)} />
+    </div>
+    <div className="space-y-2">
+      <label htmlFor="texture-mode">Texture conversion</label>
+      <select id="texture-mode" className="w-full rounded-md border bg-background px-3 py-2" value={draft.textureMode ?? 'gpu'}
+        aria-describedby="texture-mode-help" onChange={e => edit('textureMode', e.target.value)}>
+        <option value="gpu">Performance (GPU / BC3)</option>
+        <option value="bc7">Higher quality (BC7)</option>
+      </select>
+      <p id="texture-mode-help" className="text-xs text-muted-foreground">Performance is the default. BC7 preserves more texture detail. Applies on the next game launch.</p>
     </div>
     <label className="flex items-center justify-between gap-4" htmlFor="fps-hud">
       <span>Show FPS in headset <span className="text-xs text-muted-foreground">(debug)</span></span>

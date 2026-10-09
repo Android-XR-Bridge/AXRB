@@ -12,7 +12,8 @@ import { prepareBridge } from './core/quest-bridge.mjs';
 import { Setup, identifyArchives, avdDirectory, parseStorageGB, planStorageChange, withStorageGB } from './core/setup.mjs';
 import { loadLibraryArtwork } from './core/artwork.mjs';
 import { Quest } from './core/quest.mjs';
-import { findOriginalApk, importGameZip } from './core/game-files.mjs';
+import { findOriginalApk, importGameArchive } from './core/game-files.mjs';
+import { exportGamesZip, gameExportFilename } from './core/game-export.mjs';
 import { collectDiagnostics, describeSessionEnd, parseSessionRecord, redact, uploadDiagnostics } from './core/diagnostics.mjs';
 import { LiveDiagnostics } from './core/live-diagnostics.mjs';
 import { EmulatorWatchdog } from './core/watchdog.mjs';
@@ -29,6 +30,7 @@ import { DiagnosticHarness } from './core/ai-tools.mjs';
 import electronUpdater from 'electron-updater';
 import { LauncherUpdates } from './core/updates.mjs';
 import { measureDirectoryBytes, parseAndroidDataUsage } from './core/storage-info.mjs';
+import { Debloat } from './core/debloat.mjs';
 
 // Keep the packaged app in Electron GUI mode even when launched from a shell
 // that uses ELECTRON_RUN_AS_NODE for other tooling.
@@ -309,19 +311,26 @@ async function importTransfer(kind, input) {
       const imported = kind === 'quest'
         ? await new Quest(runtime.settings).pullGame(input.serial, input.package, state.data.settings.downloadDir, inspect, options)
         : kind === 'apk' ? { ...await inspect(input.file), apk: (await carryPortableFiles(portable, state.data.settings.downloadDir, [input.file], controller.signal))[0], downloaded: true }
-        : await importGameZip(input.file, state.data.settings.downloadDir, inspect, options);
+        : await importGameArchive(input.file, state.data.settings.downloadDir, inspect, options);
       controller.signal.throwIfAborted();
-      const existing = state.data.games.find(g => g.package === imported.package);
-      const game = state.put({ ...imported, id: existing?.id || imported.id, source: existing?.source || imported.source,
+      const imports = Array.isArray(imported) ? imported : [imported];
+      // Validate the whole archive before persisting or installing any game.
+      const games = imports.map(imported => {
+        const existing = state.data.games.find(g => g.package === imported.package);
+        return state.put({ ...imported, id: existing?.id || imported.id, source: existing?.source || imported.source,
         importedFrom: kind, installed: existing?.installed || false });
-      job.gameId = game.id; job.name = game.name; job.completed = job.total;
+      });
+      job.gameId = games[0].id; job.name = games.length > 1 ? `${games.length} games` : games[0].name; job.completed = job.total;
       await persist();
       if (kind === 'zip') {
         Object.assign(job, { status: 'installing', stage: 'Starting Android', completed: 0, total: 0, progressUnit: 'bytes' }); changed();
         // A cancelled extraction never reaches installation. After this point the
         // job remains an install, so its APK/asset transaction is not interrupted.
-        await runtime.install(game, (stage, progress) => { Object.assign(job, { stage, completed: 0, total: 0, progressUnit: 'bytes' }, progress); changed(); });
-        game.installed = true;
+        for (const [index, game] of games.entries()) {
+          await runtime.install(game, (stage, progress) => { Object.assign(job, { stage: `${index + 1}/${games.length} ${game.name}: ${stage}`, completed: 0, total: 0, progressUnit: 'bytes' }, progress); changed(); });
+          game.installed = true;
+          await persist();
+        }
       }
       job.status = 'complete'; job.stage = kind === 'zip' ? 'Installed' : 'Ready to install';
     } catch (error) { job.status = controller.signal.aborted ? 'cancelled' : 'failed'; job.error = message(error); }
@@ -337,7 +346,7 @@ metaSession = new MetaSession(state.directory, { portable: Boolean(portable), sa
 const pendingRuntime = await state.pendingRuntime();
 const components = JSON.parse(await fs.readFile(path.join(directory, 'core/components.json'), 'utf8'));
 state.data.settings = { sdk: path.join(process.env.LOCALAPPDATA || '', 'Android/Sdk'), avd: 'axrb-games-api34', port: 5580,
-  memoryMB: 8192, cpuCores: 4, downloadDir: path.join(portable || app.getPath('downloads'), portable ? 'downloads' : 'AXRB'), ovrportCli: '',
+  memoryMB: 8192, cpuCores: 4, textureMode: 'gpu', downloadDir: path.join(portable || app.getPath('downloads'), portable ? 'downloads' : 'AXRB'), ovrportCli: '',
   precomposeProjectionLayers: false,
   guestClock: 'Auto', ...state.data.settings };
 migrateClockPolicy(state.data.settings);
@@ -436,7 +445,7 @@ handler('builds', id => store().builds(appId(id)).then(items => items.map(b => (
 handler('download', (id, binaryId) => downloadGame(appId(id), binaryId));
 handler('dlc', id => store().dlc(appId(id)).then(items => items.map(({ files, ...item }) => ({ ...item, fileCount: files.length, bytes: files.reduce((n, f) => n + f.size, 0) }))));
 handler('downloadDlc', (id, dlcId) => downloadGame(appId(id), null, appId(dlcId)));
-handler('cancel', id => { if (['queued', 'downloading', 'importing'].includes(state.data.jobs.find(j => j.id === id)?.status)) controllers.get(id)?.abort(); });
+handler('cancel', id => { if (['queued', 'downloading', 'importing', 'exporting'].includes(state.data.jobs.find(j => j.id === id)?.status)) controllers.get(id)?.abort(); });
 handler('retry', id => { const job = state.data.jobs.find(j => j.id === id); if (!job || !['failed', 'interrupted', 'cancelled'].includes(job.status)) throw new Error('This task cannot be retried.'); return downloadGame(job.gameId, job.binaryId, job.dlcId); });
 handler('import', async () => {
   if (busy) throw new Error('Wait for the current task to finish.');
@@ -454,6 +463,33 @@ handler('importZip', async () => {
   if (busy) throw new Error('Wait for the current task to finish.');
   const result = await dialog.showOpenDialog(window, { title: 'Install game ZIP', filters: [{ name: 'Game ZIP', extensions: ['zip'] }], properties: ['openFile'] });
   if (!result.canceled) return importTransfer('zip', { file: result.filePaths[0] });
+});
+handler('exportGames', async ids => {
+  if (busy || controllers.size) throw new Error('Wait for current transfers and installations to finish.');
+  if (!Array.isArray(ids) || !ids.length || ids.length > 1000 || ids.some(id => typeof id !== 'string') || new Set(ids).size !== ids.length) throw new Error('Select between 1 and 1000 games.');
+  const games = ids.map(getGame);
+  busy = true; changed();
+  let job, controller;
+  try {
+    const result = await dialog.showSaveDialog(window, { title: `Export ${games.length} game${games.length === 1 ? '' : 's'}`, defaultPath: path.join(app.getPath('downloads'), games.length === 1 ? gameExportFilename(games[0].name) : 'AXRB-games.zip'), filters: [{ name: 'Game ZIP', extensions: ['zip'] }] });
+    if (result.canceled || !result.filePath) { busy = false; changed(); return; }
+    job = { id: randomUUID(), kind: 'export', name: games.length === 1 ? games[0].name : `${games.length} games`, status: 'exporting', stage: 'Checking game files', completed: 0, total: 0 };
+    controller = new AbortController(); controllers.set(job.id, controller);
+    state.data.jobs.unshift(job); await persist();
+    void (async () => {
+      let last = 0;
+      const notify = () => { if (Date.now() - last > 150) { last = Date.now(); changed(); } };
+      try {
+        await exportGamesZip(games, result.filePath, (file, options) => runtime.inspect(file, options), {
+          signal: controller.signal, update: stage => { job.stage = stage; notify(); },
+          progress: (completed, total) => { Object.assign(job, { completed, total }); notify(); }
+        });
+        job.status = 'complete'; job.stage = `Saved to ${result.filePath}`;
+      } catch (error) { job.status = controller.signal.aborted ? 'cancelled' : 'failed'; job.error = message(error); }
+      finally { controllers.delete(job.id); busy = false; await persist(); }
+    })().catch(error => console.error(message(error)));
+    return job.id;
+  } catch (error) { if (job) controllers.delete(job.id); busy = false; changed(); throw error; }
 });
 handler('importAssets', id => exclusive(async () => {
   const game = getGame(id);
@@ -634,6 +670,26 @@ handler('stop', () => runtime.stop());
 // around play, install and uninstall. Reuses the same exclusive() gate those
 // share, since a manual boot or shutdown is exactly as disruptive to them.
 handler('startAndroid', () => exclusive(() => runtime.ensure()));
+handler('debloat', (restore = false) => exclusive(async () => {
+  if (typeof restore !== 'boolean') throw new Error('Invalid debloat operation.');
+  if (setup && setup.status.phase !== 'ready') throw new Error('Complete runtime setup first.');
+  if (runtime.child) throw new Error('Close the game before changing Android apps.');
+  await runtime.ensure();
+  const debloat = new Debloat(runtime, avdDirectory(runtime.settings), update => {
+    if (window && !window.isDestroyed()) window.webContents.send('axrb:debloat-progress', update);
+  });
+  const preview = await debloat.preview();
+  const names = restore ? preview.restore : preview.removable;
+  if (!names.length) return { completed: 0, total: 0, failures: [], restore };
+  const answer = await dialog.showMessageBox(window, {
+    type: 'question', title: restore ? 'Restore Android apps' : 'Debloat Android',
+    message: `${restore ? 'Restore' : 'Remove'} ${names.length} optional Android apps?`,
+    detail: (restore ? '' : 'Removes apps for the emulator user, including Google Play services. Apps requiring Google services may stop working. App data is retained for restoration; the base system image will not shrink.\n\n') + names.join('\n'),
+    buttons: ['Cancel', restore ? 'Restore' : 'Remove'], defaultId: 0, cancelId: 0,
+  });
+  if (answer.response !== 1) return null;
+  return debloat.apply(restore);
+}));
 handler('stopAndroid', () => exclusive(async () => {
   if (runtime.child) throw new Error('Close the running game before stopping Android.');
   if (!await runtime.online()) return;
@@ -645,7 +701,7 @@ handler('fpsHud', async enabled => {
   await persist();
 });
 handler('settings', async values => {
-  const allowed = ['sdk', 'avd', 'port', 'memoryMB', 'cpuCores', 'downloadDir', 'ovrportCli', 'diagnosticsEndpoint', 'precomposeProjectionLayers'];
+  const allowed = ['sdk', 'avd', 'port', 'memoryMB', 'cpuCores', 'textureMode', 'downloadDir', 'ovrportCli', 'diagnosticsEndpoint', 'precomposeProjectionLayers'];
   if (!values || typeof values !== 'object') throw new Error('Invalid settings.');
   if (busy || controllers.size || runtime.child) throw new Error('Finish current tasks before changing runtime settings.');
   const settings = { ...state.data.settings };
@@ -658,6 +714,7 @@ handler('settings', async values => {
   // mismatch and refuse to launch. Never offer a number it will not honour.
   if (!Number.isInteger(settings.cpuCores) || settings.cpuCores < 2 || settings.cpuCores > 6) throw new Error('Choose between 2 and 6 vCPUs.');
   if (typeof settings.precomposeProjectionLayers !== 'boolean') throw new Error('Choose whether to precompose projection layers.');
+  if (!['gpu', 'bc7'].includes(settings.textureMode)) throw new Error('Choose a supported texture conversion mode.');
   for (const key of ['sdk', 'downloadDir']) if (typeof settings[key] !== 'string' || !path.isAbsolute(settings[key])) throw new Error('Select absolute Windows paths.');
   portableOutput(portable, settings.downloadDir);
   if (settings.ovrportCli) portableOutput(portable, settings.ovrportCli);
@@ -904,6 +961,8 @@ if (smoke) {
   await aiChatSmoke(window, aiDiagnostics, chatgpt, path.join(root, 'out/launcher/smoke'));
   const { libraryActionsSmoke } = await import('./tests/library-actions-smoke.mjs');
   await libraryActionsSmoke(window, { state, runtime, dialog, persist, publicState, ovrport });
+  const { gameExportSmoke } = await import('./tests/game-export-smoke.mjs');
+  await gameExportSmoke(window, { state, runtime, dialog, persist });
   app.quit();
 } else { if (!setup || setup.status.phase === 'ready') syncInstalled().catch(() => {}); refreshArtwork().catch(() => {}); }
 app.on('window-all-closed', () => { for (const controller of controllers.values()) controller.abort(); setup?.cancel(); if (setup?.task) setup.task.finally(() => app.quit()); else app.quit(); });

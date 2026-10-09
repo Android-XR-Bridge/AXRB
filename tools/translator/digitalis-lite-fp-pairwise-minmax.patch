@@ -1,0 +1,420 @@
+diff --git a/interpreter/arm64/interpreter-main.cc b/interpreter/arm64/interpreter-main.cc
+index fda68bdd..aa9d897f 100644
+--- a/interpreter/arm64/interpreter-main.cc
++++ b/interpreter/arm64/interpreter-main.cc
+@@ -43,14 +43,16 @@ void InterpretInsn(ThreadState* state) {
+   interpreter.FinalizeInsn(insn_len);
+ }
+ 
+-void InterpretBatch(ThreadState* state, int max_insns, TranslationCache* cache) {
++int InterpretBatch(ThreadState* state, int max_insns, TranslationCache* cache,
++                   bool stop_at_untranslated) {
+   // Create interpreter/decoder ONCE and reuse across instructions.
+   // This eliminates per-instruction construction overhead (~60% of cost).
+   Interpreter interpreter(state);
+   SemanticsPlayer sem_player(&interpreter);
+   Decoder decoder(&sem_player);
+ 
+-  for (int i = 0; i < max_insns; i++) {
++  int executed = 0;
++  for (; executed < max_insns; executed++) {
+     GuestAddr pc = state->cpu.insn_addr;
+     if (pc == 0 || ArePendingSignalsPresent(*state)) break;
+ 
+@@ -61,6 +63,7 @@ void InterpretBatch(ThreadState* state, int max_insns, TranslationCache* cache)
+     // If a memory fault occurred, HandleHostSignal queued it as pending.
+     // Break so ExecuteGuest can deliver the signal to the guest handler.
+     if (interpreter.HasException()) {
++      executed++;
+       break;
+     }
+ 
+@@ -69,13 +72,18 @@ void InterpretBatch(ThreadState* state, int max_insns, TranslationCache* cache)
+     // the interpreter to run over JIT'd code at consecutive PCs, executing
+     // up to 500 instructions at interpreter speed when JIT'd code was available.
+     GuestAddr new_pc = state->cpu.insn_addr;
+-    if (new_pc == 0) break;
++    if (new_pc == 0) {
++      executed++;
++      break;
++    }
+     auto code = cache->GetHostCodePtr(new_pc)->load();
+-    if (code != kEntryInterpret && code != kEntryNotTranslated &&
+-        code != kEntryTranslating) {
++    if (code != kEntryInterpret && code != kEntryTranslating &&
++        (code != kEntryNotTranslated || stop_at_untranslated)) {
++      executed++;
+       break;
+     }
+   }
++  return executed;
+ }
+ 
+ }  // namespace berberis
+diff --git a/interpreter/include/berberis/interpreter/arm64/interpreter.h b/interpreter/include/berberis/interpreter/arm64/interpreter.h
+index 9e527890..8cc13526 100644
+--- a/interpreter/include/berberis/interpreter/arm64/interpreter.h
++++ b/interpreter/include/berberis/interpreter/arm64/interpreter.h
+@@ -27,7 +27,11 @@ void InitInterpreter();
+ void InterpretInsn(ThreadState* state);
+ // Batch interpreter — reuses Interpreter/Decoder objects across instructions
+ // to eliminate per-instruction construction overhead (~3x faster).
+-void InterpretBatch(ThreadState* state, int max_insns, TranslationCache* cache);
++// Returns the number of instructions executed. With stop_at_untranslated it also
++// stops at code that was never translated, so the dispatcher translates it instead
++// of the interpreter running over it on every visit.
++int InterpretBatch(ThreadState* state, int max_insns, TranslationCache* cache,
++                   bool stop_at_untranslated = false);
+ 
+ }  // namespace berberis
+ 
+diff --git a/lite_translator/arm64_to_x86_64/lite_translate_region_exec_tests.cc b/lite_translator/arm64_to_x86_64/lite_translate_region_exec_tests.cc
+index 0303a6f9..6c5ff27a 100644
+--- a/lite_translator/arm64_to_x86_64/lite_translate_region_exec_tests.cc
++++ b/lite_translator/arm64_to_x86_64/lite_translate_region_exec_tests.cc
+@@ -12792,6 +12792,75 @@ TEST_F(Arm64LiteTranslateRegionTest, FminpVec4S) {
+   EXPECT_FLOAT_EQ(r[3], 6.0f);
+ }
+ 
++// FMAXP / FMINP / FMAXNMP / FMINNMP (vector, .2S/.4S/.2D) on the JIT path must
++// match the interpreter bit for bit (any NaN counts as equal to any NaN), including
++// NaN, +-0 and infinity lanes and garbage in the upper halves .2S ignores.
++TEST_F(Arm64LiteTranslateRegionTest, FpPairwiseMinMaxVecJitMatchesInterpreter) {
++  const uint32_t kOps[] = {0x2E20F400u, 0x2EA0F400u, 0x2E20C400u, 0x2EA0C400u};  // max, min, maxnm, minnm
++  const uint32_t kShapes[] = {0x00000000u, 0x40000000u, 0x40400000u};             // .2S, .4S, .2D
++  const float nan_f = std::numeric_limits<float>::quiet_NaN();
++  const float inf_f = std::numeric_limits<float>::infinity();
++  const double nan_d = std::numeric_limits<double>::quiet_NaN();
++  const double inf_d = std::numeric_limits<double>::infinity();
++  const float kFloats[][8] = {
++      {1.0f, 4.0f, 2.0f, 3.0f, 8.0f, 5.0f, 6.0f, 7.0f},
++      {-0.0f, 0.0f, 0.0f, -0.0f, nan_f, 1.0f, 2.0f, nan_f},
++      {nan_f, nan_f, -1.0f, -2.0f, inf_f, -inf_f, 3.0f, -0.0f},
++      {-5.0f, -5.0f, 1e-40f, -1e-40f, 7.0f, nan_f, -inf_f, 0.0f},
++  };
++  const double kDoubles[][4] = {
++      {1.0, -2.0, 5.0, 4.0},
++      {-0.0, 0.0, nan_d, 1.0},
++      {nan_d, nan_d, inf_d, -inf_d},
++      {0.0, -0.0, -3.0, nan_d},
++  };
++  for (uint32_t op : kOps) {
++    for (uint32_t shape : kShapes) {
++      const bool is_double = (shape & 0x00400000u) != 0;
++      const uint32_t insn = op | shape | (2u << 16) | (1u << 5) | 0u;  // v0, v1, v2
++      for (size_t c = 0; c < 4; c++) {
++        auto load_inputs = [&] {
++          if (is_double) {
++            StoreVec2D(state_.cpu, 1, kDoubles[c][0], kDoubles[c][1]);
++            StoreVec2D(state_.cpu, 2, kDoubles[c][2], kDoubles[c][3]);
++          } else {
++            StoreVec4S(state_.cpu, 1, kFloats[c][0], kFloats[c][1], kFloats[c][2], kFloats[c][3]);
++            StoreVec4S(state_.cpu, 2, kFloats[c][4], kFloats[c][5], kFloats[c][6], kFloats[c][7]);
++          }
++          state_.cpu.v[0] = ~__uint128_t{0};
++        };
++        const uint32_t code[] = {insn};
++        load_inputs();
++        state_.cpu.insn_addr = ToGuestAddr(code);
++        InterpretInsn(&state_);
++        const __uint128_t expected = state_.cpu.v[0];
++        load_inputs();
++        ASSERT_TRUE(RunN(code, 1, ToGuestAddr(code) + 4)) << std::hex << insn;
++        const __uint128_t actual = state_.cpu.v[0];
++        const int lanes = is_double ? 2 : 4;
++        for (int lane = 0; lane < lanes; lane++) {
++          const uint8_t* e = reinterpret_cast<const uint8_t*>(&expected) + lane * (16 / lanes);
++          const uint8_t* a = reinterpret_cast<const uint8_t*>(&actual) + lane * (16 / lanes);
++          bool both_nan;
++          if (is_double) {
++            double ev, av;
++            std::memcpy(&ev, e, 8);
++            std::memcpy(&av, a, 8);
++            both_nan = std::isnan(ev) && std::isnan(av);
++          } else {
++            float ev, av;
++            std::memcpy(&ev, e, 4);
++            std::memcpy(&av, a, 4);
++            both_nan = std::isnan(ev) && std::isnan(av);
++          }
++          EXPECT_TRUE(both_nan || std::memcmp(e, a, 16 / lanes) == 0)
++              << "insn " << std::hex << insn << " case " << c << " lane " << lane;
++        }
++      }
++    }
++  }
++}
++
+ // FMAXNMP .4S: NaN-suppressing — max-number of a (NaN, finite) pair is the
+ // finite value.
+ TEST_F(Arm64LiteTranslateRegionTest, FmaxnmpVec4SNaN) {
+diff --git a/lite_translator/arm64_to_x86_64/lite_translator_simd_three_same.inc b/lite_translator/arm64_to_x86_64/lite_translator_simd_three_same.inc
+index ac1d1777..48edb263 100644
+--- a/lite_translator/arm64_to_x86_64/lite_translator_simd_three_same.inc
++++ b/lite_translator/arm64_to_x86_64/lite_translator_simd_three_same.inc
+@@ -1776,8 +1776,17 @@
+       case Decoder::AdvSimdThreeSameOpcode::kFmaxV:
+       case Decoder::AdvSimdThreeSameOpcode::kFminV:
+       case Decoder::AdvSimdThreeSameOpcode::kFmaxnmV:
+-      case Decoder::AdvSimdThreeSameOpcode::kFminnmV: {
+-        // FP vector FMAX / FMIN / FMAXNM / FMINNM.
++      case Decoder::AdvSimdThreeSameOpcode::kFminnmV:
++      case Decoder::AdvSimdThreeSameOpcode::kFmaxpV:
++      case Decoder::AdvSimdThreeSameOpcode::kFminpV:
++      case Decoder::AdvSimdThreeSameOpcode::kFmaxnmpV:
++      case Decoder::AdvSimdThreeSameOpcode::kFminnmpV: {
++        // FP vector FMAX / FMIN / FMAXNM / FMINNM, and their pairwise forms
++        // FMAXP / FMINP / FMAXNMP / FMINNMP (FP32/FP64 only; FP16 pairwise
++        // stays in the interpreter). A pairwise op's result lane k reduces
++        // (cat[2k], cat[2k+1]) of cat = Vn:Vm, so it is the element-wise op
++        // applied to cat's even and odd elements; they are gathered first and
++        // then take the element-wise lowering below unchanged.
+         //
+         // ARM and x86 disagree on NaN handling for MAX/MIN:
+         //   - ARM FMAX/FMIN  (IEEE 754-2008): if either input is NaN, result is NaN.
+@@ -1806,9 +1815,21 @@
+         // differ from a canonical FP16 qNaN (0x7E00), but are still valid
+         // NaNs per ARM ARM default-NaN propagation rules.
+         const bool is_max = (args.opcode == Decoder::AdvSimdThreeSameOpcode::kFmaxV ||
+-                             args.opcode == Decoder::AdvSimdThreeSameOpcode::kFmaxnmV);
++                             args.opcode == Decoder::AdvSimdThreeSameOpcode::kFmaxnmV ||
++                             args.opcode == Decoder::AdvSimdThreeSameOpcode::kFmaxpV ||
++                             args.opcode == Decoder::AdvSimdThreeSameOpcode::kFmaxnmpV);
+         const bool is_nm  = (args.opcode == Decoder::AdvSimdThreeSameOpcode::kFmaxnmV ||
+-                             args.opcode == Decoder::AdvSimdThreeSameOpcode::kFminnmV);
++                             args.opcode == Decoder::AdvSimdThreeSameOpcode::kFminnmV ||
++                             args.opcode == Decoder::AdvSimdThreeSameOpcode::kFmaxnmpV ||
++                             args.opcode == Decoder::AdvSimdThreeSameOpcode::kFminnmpV);
++        const bool is_pairwise = (args.opcode == Decoder::AdvSimdThreeSameOpcode::kFmaxpV ||
++                                  args.opcode == Decoder::AdvSimdThreeSameOpcode::kFminpV ||
++                                  args.opcode == Decoder::AdvSimdThreeSameOpcode::kFmaxnmpV ||
++                                  args.opcode == Decoder::AdvSimdThreeSameOpcode::kFminnmpV);
++        if (is_pairwise && args.is_fp16) {
++          Undefined();
++          return;
++        }
+         if (!args.is_fp16) {
+           // FP32 (.2S/.4S, args.size=0) and FP64 (.2D, args.size=1).  The
+           // decoder filters sz=1 && !Q (the reserved .1D shape) to Undefined,
+@@ -1821,6 +1842,30 @@
+           if (!success()) { return; }
+           LoadVReg(xn, args.rn);
+           LoadVReg(xm, args.rm);
++          if (is_pairwise) {
++            // xn = cat's even elements, xm = its odd elements.
++            SimdRegister odds = AllocTempSimdReg();
++            if (!success()) { return; }
++            if (is_double) {
++              // .2D: evens [n0, m0], odds [n1, m1].
++              as_.Movdqa(odds, xn);
++              as_.Punpckhqdq(odds, xm);
++              as_.Punpcklqdq(xn, xm);
++            } else {
++              if (!args.q) {
++                // .2S reads only the low halves: cat = [n0, n1, m0, m1].
++                as_.Punpcklqdq(xn, xm);
++                as_.Movdqa(xm, xn);
++              }
++              // SHUFPS 0xDD / 0x88 pick elements 1,3 / 0,2 of each source
++              // (same as UZP2 / UZP1). For .2S lanes 0-1 are the result and
++              // the upper half is zeroed below.
++              as_.Movdqa(odds, xn);
++              as_.Shufps(odds, xm, static_cast<int8_t>(0xDD));
++              as_.Shufps(xn, xm, static_cast<int8_t>(0x88));
++            }
++            as_.Movdqa(xm, odds);
++          }
+           // ARM FMAX/FMAXNM are computed as -FMIN(-a,-b). x86 MAXPS/MINPS return
+           // the SECOND source on a +-0 tie (OR-of-signs), which is correct only
+           // for FMIN (most-negative). Negating inputs+output makes FMAX reuse the
+diff --git a/runtime/arm64/translator_x86_64.cc b/runtime/arm64/translator_x86_64.cc
+index 0bc3e62d..50d30afa 100644
+--- a/runtime/arm64/translator_x86_64.cc
++++ b/runtime/arm64/translator_x86_64.cc
+@@ -16,15 +16,23 @@
+ 
+ #include "translator.h"
+ 
++#include <time.h>
++
++#include <algorithm>
++#include <atomic>
+ #include <cstdint>
+ #include <cstdlib>
+ #include <cstring>
++#include <mutex>
+ #include <tuple>
+ 
++#include <android/log.h>
++
+ #include "berberis/assembler/machine_code.h"
+ #include "berberis/base/checks.h"
+ #include "berberis/base/config.h"
+ #include "berberis/base/config_globals.h"
++#include "berberis/base/maps_snapshot.h"
+ #include "berberis/base/tracing.h"
+ #include "berberis/guest_os_primitives/guest_map_shadow.h"
+ #include "berberis/guest_os_primitives/guest_signal.h"
+@@ -209,6 +217,141 @@ size_t GetGearUpMinInsns() {
+   return value;
+ }
+ 
++// Invocation count after which a lite-translated region gears up to the heavy
++// optimizer (config::kGearSwitchThreshold by default). Tunable via
++// BERBERIS_GEAR_SWITCH_THRESHOLD / berberis.gear_switch_threshold for measurement
++// sweeps; only thresholds at or below the default take effect immediately in
++// TranslationCache::TriggerGearShift, which still uses the constant.
++uint32_t GetGearSwitchThreshold() {
++  static const uint32_t value = []() -> uint32_t {
++    static ConfigStr config("BERBERIS_GEAR_SWITCH_THRESHOLD", "berberis.gear_switch_threshold");
++    const char* str = config.get();
++    if (str) {
++      char* end = nullptr;
++      unsigned long parsed = strtoul(str, &end, 10);
++      if (end != str && (*end == '\0' || *end == '\n')) {
++        return static_cast<uint32_t>(parsed);
++      }
++    }
++    return config::kGearSwitchThreshold;
++  }();
++  return value;
++}
++
++bool ConfigFlag(const char* env, const char* prop) {
++  ConfigStr config(env, prop);
++  const char* value = config.get();
++  return value && value[0] == '1';
++}
++
++// berberis.interp_stop_untranslated=1: the interpreter hands never-translated code back to
++// the dispatcher (which translates it) instead of running over it. Read once per process.
++bool InterpStopUntranslated() {
++  static const bool value =
++      ConfigFlag("BERBERIS_INTERP_STOP_UNTRANSLATED", "berberis.interp_stop_untranslated");
++  return value;
++}
++
++// berberis.interp_stats=1: measurement only. Counts interpreter entries by entry pc and the
++// instructions each runs; every 2 s logs the rates and hottest entries (tag berberis_interp).
++namespace interp_stats {
++
++constexpr size_t kTableSize = 1 << 16;
++constexpr int kMaxProbes = 32;
++struct Slot {
++  std::atomic<uint64_t> pc;
++  std::atomic<uint64_t> calls;
++  std::atomic<uint64_t> insns;
++};
++Slot g_slots[kTableSize];
++std::atomic<uint64_t> g_calls;
++std::atomic<uint64_t> g_insns;
++uint64_t g_last_calls;
++uint64_t g_last_insns;
++std::atomic<int64_t> g_last_dump_ns;
++std::mutex g_dump_mutex;
++
++bool Enabled() {
++  static const bool value = ConfigFlag("BERBERIS_INTERP_STATS", "berberis.interp_stats");
++  return value;
++}
++
++int64_t NowNs() {
++  timespec ts;
++  clock_gettime(CLOCK_MONOTONIC_COARSE, &ts);
++  return ts.tv_sec * 1'000'000'000LL + ts.tv_nsec;
++}
++
++void Dump(int64_t now, int64_t last) {
++  double seconds = (now - last) / 1e9;
++  uint64_t calls = g_calls.load(std::memory_order_relaxed);
++  uint64_t insns = g_insns.load(std::memory_order_relaxed);
++  __android_log_print(ANDROID_LOG_INFO, "berberis_interp",
++                      "over %.2fs: entries/s=%.0f insns/s=%.0f insns/entry=%.1f", seconds,
++                      (calls - g_last_calls) / seconds, (insns - g_last_insns) / seconds,
++                      calls == g_last_calls ? 0.0
++                                            : double(insns - g_last_insns) / (calls - g_last_calls));
++  g_last_calls = calls;
++  g_last_insns = insns;
++  struct Hot {
++    uint64_t pc, calls, insns;
++  };
++  static Hot hot[kTableSize];
++  size_t used = 0;
++  for (Slot& slot : g_slots) {
++    uint64_t slot_insns = slot.insns.exchange(0, std::memory_order_relaxed);
++    uint64_t slot_calls = slot.calls.exchange(0, std::memory_order_relaxed);
++    if (slot_insns) {
++      hot[used++] = {slot.pc.load(std::memory_order_relaxed), slot_calls, slot_insns};
++    }
++  }
++  size_t shown = std::min<size_t>(used, 40);
++  std::partial_sort(hot, hot + shown, hot + used,
++                    [](const Hot& a, const Hot& b) { return a.insns > b.insns; });
++  for (size_t i = 0; i < shown; i++) {
++    auto record = MapsSnapshot::GetInstance()->GetMappedObjectRecordOrUpdateAndRetry(hot[i].pc);
++    const char* path = record ? record->pathname.c_str() : "?";
++    const char* base = strrchr(path, '/');
++    uint32_t word = *ToHostAddr<const uint32_t>(hot[i].pc);
++    __android_log_print(ANDROID_LOG_INFO, "berberis_interp",
++                        "hot insns/s=%.0f entries/s=%.0f %s+0x%llx insn=%08x", hot[i].insns / seconds,
++                        hot[i].calls / seconds, base ? base + 1 : path,
++                        static_cast<unsigned long long>(record ? hot[i].pc - record->start : hot[i].pc),
++                        word);
++  }
++}
++
++void Record(GuestAddr pc, int insns) {
++  size_t index = (pc * 0x9E3779B97F4A7C15ULL) >> 48;
++  for (int probe = 0; probe < kMaxProbes; probe++) {
++    Slot& slot = g_slots[(index + probe) & (kTableSize - 1)];
++    uint64_t current = slot.pc.load(std::memory_order_relaxed);
++    if (current == 0 && slot.pc.compare_exchange_strong(current, pc, std::memory_order_relaxed)) {
++      current = pc;
++    }
++    if (current == pc) {
++      slot.calls.fetch_add(1, std::memory_order_relaxed);
++      slot.insns.fetch_add(insns, std::memory_order_relaxed);
++      break;
++    }
++  }
++  g_insns.fetch_add(insns, std::memory_order_relaxed);
++  if ((g_calls.fetch_add(1, std::memory_order_relaxed) & 0x3ff) == 0) {
++    int64_t now = NowNs();
++    int64_t last = g_last_dump_ns.load(std::memory_order_relaxed);
++    if (last == 0) {
++      g_last_dump_ns.store(now, std::memory_order_relaxed);
++    } else if (now - last >= 2'000'000'000LL && g_dump_mutex.try_lock()) {
++      if (g_last_dump_ns.compare_exchange_strong(last, now, std::memory_order_relaxed)) {
++        Dump(now, last);
++      }
++      g_dump_mutex.unlock();
++    }
++  }
++}
++
++}  // namespace interp_stats
++
+ // Optimizing (second-gear) translation install. The heavy optimizer translates
+ // the region; if it bails on an instruction it does not yet handle, this returns
+ // {false, ...} and the caller re-lite-translates the whole region.
+@@ -311,6 +454,7 @@ void TranslateRegion(GuestAddr pc) {
+     if (g_translation_mode == TranslationMode::kTwoGear) {
+       params.enable_self_profiling = true;
+       params.counter_location = &entry->invocation_counter;
++      params.counter_threshold = GetGearSwitchThreshold();
+     }
+     std::tie(success, host_code_piece, size, kind) = TryLiteTranslateAndInstallRegion(pc, params);
+   }
+@@ -368,7 +512,11 @@ extern "C" __attribute__((used, __visibility__("hidden"))) void berberis_HandleI
+                     (unsigned long)state->cpu.x[1],
+                     (unsigned long)state->cpu.x[2]);
+   }
+-  InterpretBatch(state, 500, TranslationCache::GetInstance());
++  GuestAddr entry_pc = state->cpu.insn_addr;
++  int executed = InterpretBatch(state, 500, TranslationCache::GetInstance(), InterpStopUntranslated());
++  if (interp_stats::Enabled()) {
++    interp_stats::Record(entry_pc, executed);
++  }
+   // post-SVC diagnostics
+   if (should_log && state->cpu.x[0] != pre_x0) {
+     TRACE_AND_ALOGD("berberis: post-interp x0=0x%lx (was 0x%lx) pc=0x%lx",

@@ -122,6 +122,10 @@ they are not embedded in the installer. Their archives retain their notices.
 
 The launcher uses jose 6.2.12 (MIT, copyright 2018 Filip Skokan) for OpenID Connect token validation. Its license is included in licenses/jose.txt. https://github.com/panva/jose
 
+Game ZIP export uses yazl 3.3.1 (MIT, copyright 2014 Josh Wolfe).
+Its license and dependency licenses are included under licenses/npm.
+https://github.com/thejoshwolfe/yazl
+
 The AI chat interface uses @assistant-ui/react 0.15.22 and
 @assistant-ui/react-markdown 0.14.17 (MIT, copyright 2025 AgentbaseAI Inc.),
 with remark-gfm for GitHub-flavored Markdown. Upstream:

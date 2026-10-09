@@ -311,7 +311,7 @@ export class Runtime {
     if (sessionId !== undefined && !/^[a-f0-9]{8}$/.test(sessionId)) throw new Error('Invalid session identifier.');
     this.fpsHudEvent = `Local\\AXRB.FpsHud.${randomUUID().replaceAll('-', '')}`;
     const args = bridge ? [] : powershellArgs(path.join(this.root, 'scripts/run/run_windows_game.ps1'), { Avd: this.settings.avd, Port: this.settings.port,
-      Sdk: this.settings.sdk, MemoryMB: this.settings.memoryMB, CpuCores: this.settings.cpuCores ?? 4, Package: game.package, Activity: game.activity, GameName: game.name, FpsHud: this.settings.fpsHud === true, FpsHudEventName: this.fpsHudEvent,
+      Sdk: this.settings.sdk, MemoryMB: this.settings.memoryMB, CpuCores: this.settings.cpuCores ?? 4, TextureMode: this.settings.textureMode ?? 'gpu', Package: game.package, Activity: game.activity, GameName: game.name, FpsHud: this.settings.fpsHud === true, FpsHudEventName: this.fpsHudEvent,
       // Recovery inside the game script must use the same CPU policy as ensure().
       GuestClock: this.settings.guestClock || 'Auto',
       ...(this.settings.localApic ? { LocalApic: this.settings.localApic } : {}),
