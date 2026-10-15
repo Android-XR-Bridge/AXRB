@@ -113,6 +113,7 @@ export class DiagnosticHarness {
       } finally { await handle.close(); }
     };
     const adb = async (args, signal, timeout = 12000) => {
+      if (pinned.emulatorEnabled === false) throw new Error('The Android Emulator backend is disabled in this build.');
       if (pinned.backend === 'quest-bridge') throw new Error('This is a Quest Bridge session. Emulator ADB tools do not describe its physical Quest. Use host/session logs.');
       if (!pinned.sdk || !Number.isInteger(Number(pinned.port)) || Number(pinned.port) < 5554 || Number(pinned.port) > 5682) throw new Error('AXRB emulator is not configured.');
       return this.execute(path.join(pinned.sdk, 'platform-tools/adb.exe'), ['-P', '5038', '-s', `emulator-${pinned.port}`, ...args], { timeout, signal, requireCompleteOutput:true });

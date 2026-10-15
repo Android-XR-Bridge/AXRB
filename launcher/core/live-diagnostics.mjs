@@ -337,6 +337,7 @@ export class LiveDiagnostics {
       }
       this.flushSuppressed();
       await this.tailFiles(config.dataHome);
+      if (config.emulatorEnabled === false) { this.setAndroid('disabled', 'Emulator capture is disabled in this build.', ''); return; }
       if (!this.stream && !this.connectTask && Date.now() >= this.nextConnect) {
         this.connectTask = this.connect(config, this.generation).finally(() => { this.connectTask = null; });
       }
@@ -359,8 +360,8 @@ export class LiveDiagnostics {
   }
   async tailFiles(dataHome) {
     if (!dataHome) return;
-    for (const [label, file] of diagnosticSources(dataHome).filter(([label]) => /\.(?:log|err)$/.test(label))) {
-      const source = label.startsWith('host.') ? 'host' : 'emulator';
+    for (const [label, file] of diagnosticSources(dataHome).filter(([label]) => /\.(?:log|err|out)$/.test(label))) {
+      const source = label.startsWith('direct.') ? 'android' : label.startsWith('host.') ? 'host' : 'emulator';
       let handle;
       try {
         handle = await fs.open(file, 'r');

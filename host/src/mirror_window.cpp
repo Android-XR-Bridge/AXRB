@@ -40,8 +40,12 @@ bool MirrorWindow::open(ID3D11Device* device, const std::string& gameName) {
     if (!length) return false;
     std::wstring wide(length, 0);
     MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, title.data(), static_cast<int>(title.size()), wide.data(), length);
-    window_ = CreateWindowExW(0, wc.lpszClassName, wide.c_str(), WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
-        CW_USEDEFAULT, CW_USEDEFAULT, 680, 720, nullptr, nullptr, wc.hInstance, this);
+    constexpr DWORD style = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
+    RECT initial{0, 0, 960, 540};
+    AdjustWindowRectEx(&initial, style, FALSE, 0);
+    window_ = CreateWindowExW(0, wc.lpszClassName, wide.c_str(), style,
+        CW_USEDEFAULT, CW_USEDEFAULT, initial.right-initial.left, initial.bottom-initial.top,
+        nullptr, nullptr, wc.hInstance, this);
     if (!window_) return false;
     surface_ = CreateWindowExW(0, L"STATIC", nullptr, WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
         0, 0, 1, 1, window_, nullptr, wc.hInstance, nullptr);
@@ -118,12 +122,21 @@ void MirrorWindow::present(ID3D11DeviceContext* context, ID3D11Texture2D* source
                           UINT width, UINT height, DXGI_FORMAT format, uint64_t sequence) {
     if (sequence == sequence_ && !dirty_) return;
     if (closed_ || failed_ || !window_ || IsIconic(window_)) return;
+    if (!width || !height) return;
+    // A VR eye image is usually almost square. Crop the desktop mirror only;
+    // stretching it to widescreen would distort the scene and controller poses.
+    // Keep the complete square startup logo until an actual game frame arrives.
+    const UINT units = (std::min)(width / 16, height / 9);
+    const bool wide = sequence != UINT64_MAX && units != 0;
+    const UINT previewWidth = wide ? units * 16 : width;
+    const UINT previewHeight = wide ? units * 9 : height;
+    const UINT left = (width-previewWidth)/2, top = (height-previewHeight)/2;
     if (format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) format = DXGI_FORMAT_R8G8B8A8_UNORM;
     if (format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB) format = DXGI_FORMAT_B8G8R8A8_UNORM;
-    if (!swapchain_ || width != width_ || height != height_ || format != format_) {
+    if (!swapchain_ || previewWidth != width_ || previewHeight != height_ || format != format_) {
         swapchain_.Reset();
         DXGI_SWAP_CHAIN_DESC1 desc{};
-        desc.Width = width; desc.Height = height; desc.Format = format;
+        desc.Width = previewWidth; desc.Height = previewHeight; desc.Format = format;
         desc.SampleDesc.Count = 1; desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
         desc.BufferCount = 2; desc.Scaling = DXGI_SCALING_STRETCH;
         desc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
@@ -131,11 +144,11 @@ void MirrorWindow::present(ID3D11DeviceContext* context, ID3D11Texture2D* source
         if (FAILED(result)) {
             std::fprintf(stderr, "AXRB Mirror: swapchain failed 0x%lx\n", result); failed_ = true; return;
         }
-        width_ = width; height_ = height; format_ = format; layout();
+        width_ = previewWidth; height_ = previewHeight; format_ = format; layout();
     }
     Microsoft::WRL::ComPtr<ID3D11Texture2D> backBuffer;
     if (FAILED(swapchain_->GetBuffer(0, IID_PPV_ARGS(&backBuffer)))) return;
-    D3D11_BOX box{0, 0, 0, width, height, 1};
+    D3D11_BOX box{left, top, 0, left+previewWidth, top+previewHeight, 1};
     context->CopySubresourceRegion(backBuffer.Get(), 0, 0, 0, 0, source, 0, &box);
     HRESULT result = swapchain_->Present(0, DXGI_PRESENT_DO_NOT_WAIT);
     if (SUCCEEDED(result)) { sequence_ = sequence; dirty_ = false; }

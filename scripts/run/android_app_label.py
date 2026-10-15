@@ -1,6 +1,6 @@
 """Read an installed app's default display label from its base APK.
 
-Uses SDK adb/aapt2, removes the temporary APK, and emits ASCII JSON so Windows
+Uses SDK adb and the bundled APK reader, removes the temporary APK, and emits ASCII JSON so Windows
 PowerShell can preserve Unicode labels independently of its console encoding.
 """
 import argparse
@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
+from android_tools import find_aapt2
 
 
 def application_label(badging, package):
@@ -25,13 +26,7 @@ def installed_label(sdk, serial, package):
     if not re.fullmatch(r"[a-zA-Z0-9_.]+", package):
         raise ValueError("Invalid package name")
     adb = sdk / "platform-tools/adb.exe"
-    versions = []
-    for directory in (sdk / "build-tools").iterdir():
-        if re.fullmatch(r"\d+\.\d+\.\d+", directory.name) and (directory / "aapt2.exe").is_file():
-            versions.append((tuple(map(int, directory.name.split('.'))), directory / "aapt2.exe"))
-    if not versions:
-        raise RuntimeError("Android SDK build-tools with aapt2 are required")
-    aapt = max(versions)[1]
+    aapt = find_aapt2(sdk)
     def run(args, timeout=30):
         return subprocess.run(list(map(str, args)), check=True, capture_output=True,
                               encoding="utf-8", errors="replace", timeout=timeout,

@@ -19,6 +19,8 @@ try {
         }
         & "$AxrbRoot/runtime/apk/build_apk.ps1" -Abi arm64-v8a
         if (!$?) { throw 'Runtime APK build failed' }
+        & "$AxrbRoot/scripts/build/build_direct.ps1"
+        if (!$?) { throw 'Direct mode build failed' }
         Run python @('scripts/build/runtime_adapters.py')
     }
     Push-Location launcher
@@ -28,15 +30,15 @@ try {
         Run npm.cmd @('run', 'build')
         Run node @('prepare-release.mjs')
         # win-unpacked is shared across modes; the direct-launch EXE keeps its profile outside the app.
-        $staleMarker = Join-Path $AxrbRoot 'out/releases/win-unpacked/AXRB.portable'
+        $staleMarker = Join-Path $AxrbRoot 'out/releases/win-unpacked/AXRB-Emulatorless.portable'
         if (Test-Path -LiteralPath $staleMarker) { Remove-Item -LiteralPath $staleMarker -Force }
         if ($Portable) {
             # A portable build is the unpacked app plus a marker that keeps its data beside AXRB.exe.
             Run npm.cmd @('exec', '--', 'electron-builder', '--win', 'dir', '--x64', '--publish', 'never')
             $package = Get-Content -LiteralPath 'package.json' -Raw | ConvertFrom-Json
             $unpacked = Join-Path $AxrbRoot 'out/releases/win-unpacked'
-            $archive = Join-Path $AxrbRoot "out/releases/AXRB-Portable-$($package.version).zip"
-            Set-Content -LiteralPath (Join-Path $unpacked 'AXRB.portable') -Value 'Settings, downloads and the Android runtime are stored in this folder.' -Encoding ascii
+            $archive = Join-Path $AxrbRoot "out/releases/AXRB-Emulatorless-Portable-$($package.version).zip"
+            Set-Content -LiteralPath (Join-Path $unpacked 'AXRB-Emulatorless.portable') -Value 'Settings, downloads and the Android runtime are stored in this folder.' -Encoding ascii
             if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force }
             Add-Type -AssemblyName System.IO.Compression.FileSystem
             [IO.Compression.ZipFile]::CreateFromDirectory($unpacked, $archive, [IO.Compression.CompressionLevel]::Optimal, $false)

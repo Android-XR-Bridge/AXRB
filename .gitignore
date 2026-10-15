@@ -42,6 +42,8 @@ axrb-windows-bridge.*.log
 *.pdb
 *.ilk
 *.obj
+# Prebuilt ISPC objects (scripts/build/build_bc7e.py)
+!runtime/vulkan/texture/bc7e/win64/*.obj
 *.VC.db
 *.VC.VC.opendb
 

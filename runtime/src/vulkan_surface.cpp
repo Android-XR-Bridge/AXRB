@@ -2,6 +2,7 @@
 #include "perf_stats.h"
 #if defined(__ANDROID__)
 #include <android/log.h>
+#include <cstring>
 namespace axrb::runtime {
 bool VulkanBackend::import_surface(VulkanSwapchain &sc, AHardwareBuffer *buffer, uint32_t width,
                                    uint32_t height) {
@@ -44,9 +45,44 @@ bool VulkanBackend::import_surface(VulkanSwapchain &sc, AHardwareBuffer *buffer,
            vkAllocateMemory(device_, &memory, nullptr, &sc.surfaceMemory) == VK_SUCCESS &&
            vkBindImageMemory(device_, sc.surfaceImage, sc.surfaceMemory, 0) == VK_SUCCESS;
 }
+bool VulkanBackend::create_surface_upload(VulkanSwapchain &sc, uint32_t width, uint32_t height) {
+    const VkDeviceSize bytes = static_cast<VkDeviceSize>(width) * height * 4;
+    VkBufferCreateInfo buffer{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    buffer.size = bytes;
+    buffer.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    if (vkCreateBuffer(device_, &buffer, nullptr, &sc.surfaceBuffer) != VK_SUCCESS)
+        return false;
+    VkMemoryRequirements req{};
+    vkGetBufferMemoryRequirements(device_, sc.surfaceBuffer, &req);
+    VkMemoryAllocateInfo memory{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    memory.allocationSize = req.size;
+    memory.memoryTypeIndex =
+        memory_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (memory.memoryTypeIndex == UINT32_MAX ||
+        vkAllocateMemory(device_, &memory, nullptr, &sc.surfaceBufferMemory) != VK_SUCCESS ||
+        vkBindBufferMemory(device_, sc.surfaceBuffer, sc.surfaceBufferMemory, 0) != VK_SUCCESS ||
+        vkMapMemory(device_, sc.surfaceBufferMemory, 0, bytes, 0, &sc.surfaceMapped) != VK_SUCCESS)
+        return false;
+    std::memset(sc.surfaceMapped, 0, static_cast<size_t>(bytes));
+    return true;
+}
 bool VulkanBackend::copy_surface(VulkanSwapchain &sc, uint32_t width, uint32_t height) {
     static axrb::protocol::PerfStats stats("surface-vulkan-copy");
     axrb::protocol::PerfScope scope(stats);
+    if (sc.surfaceBuffer) {
+        if (!begin())
+            return false;
+        barrier(sc.images[0], 1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+        VkBufferImageCopy region{};
+        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.imageExtent = {width, height, 1};
+        vkCmdCopyBufferToImage(cmd_, sc.surfaceBuffer, sc.images[0], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        barrier(sc.images[0], 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_ACCESS_TRANSFER_WRITE_BIT,
+                VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+        return finish();
+    }
     if (!sc.surfaceImage || !begin())
         return false;
     VkImageMemoryBarrier acquire{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};

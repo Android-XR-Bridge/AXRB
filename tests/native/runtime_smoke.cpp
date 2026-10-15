@@ -431,6 +431,17 @@ int main()
     auto& inputFrame = axrb_input_fixture();
     inputFrame.hands[0].active = 1; inputFrame.hands[0].source = 2;
     inputFrame.hands[0].joints[0] = {15, {1, 2, 3}, 0.02f};
+    // Legacy Quest clients must not switch to hand tracking when the host
+    // synthesizes a skeleton from held controllers. Optical tracking still works.
+    if (locateHand(hand, &handLocate, &locations) != XR_SUCCESS || locations.isActive || source.isActive || joints[0].locationFlags) return EXIT_FAILURE;
+    inputFrame.hands[0].source = 1;
+    if (locateHand(hand, &handLocate, &locations) != XR_SUCCESS || !locations.isActive || !joints[0].locationFlags) return EXIT_FAILURE;
+    inputFrame.hands[0].source = 2;
+    XrHandTrackingDataSourceEXT controllerSource = XR_HAND_TRACKING_DATA_SOURCE_CONTROLLER_EXT;
+    XrHandTrackingDataSourceInfoEXT controllerInfo{XR_TYPE_HAND_TRACKING_DATA_SOURCE_INFO_EXT};
+    controllerInfo.requestedDataSourceCount = 1; controllerInfo.requestedDataSources = &controllerSource;
+    handInfo.next = &controllerInfo;
+    if (destroyHand(hand) != XR_SUCCESS || createHand(session, &handInfo, &hand) != XR_SUCCESS) return EXIT_FAILURE;
     auto offsetInfo = spaceCreateInfo;
     offsetInfo.poseInReferenceSpace.position = {0.25f, 0.5f, 0.75f};
     XrSpace offsetSpace{};

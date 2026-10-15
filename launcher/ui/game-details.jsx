@@ -20,6 +20,9 @@ export function GameDetails({ game, state, local, onClose, run, pending, setPage
   const busy = state.busy || pending.has(`game-${game.id}`);
   const activeJob = state.jobs.find(j => j.gameId === game.id && activeStatuses.includes(j.status));
   const running = state.running === game.id;
+  // Without the emulator's setup, direct mode is the only way to play.
+  const directOnly = Boolean(state.setup?.directOnly || state.build?.emulatorEnabled === false);
+  const installed = game.installed && !directOnly;
   const operate = fn => run(`game-${game.id}`, fn);
   const download = () => operate(async () => { await call('download', game.id, build || undefined); onClose(); setPage('downloads'); });
   const install = () => operate(async () => { await call('install', game.id); notify('Installed'); });
@@ -58,7 +61,7 @@ export function GameDetails({ game, state, local, onClose, run, pending, setPage
   return <Dialog open onOpenChange={open => { if (!open) onClose(); }}>
     <DialogContent id="details" aria-describedby={undefined} onCloseAutoFocus={event => { event.preventDefault(); if (returnFocus.current?.isConnected) returnFocus.current.focus(); }} className="max-h-[85vh] gap-0 overflow-y-auto p-0 sm:max-w-[520px]">
       <div className="px-6 pt-6 pr-14"><DialogTitle className="leading-snug">{game.name}</DialogTitle>{game.version && <div className="mt-1 text-xs text-muted-foreground">{game.version}</div>}</div>
-      {game.installed && <p className="mx-6 mt-3 text-xs text-muted-foreground">Play checks the version installed in Android.{game.apk && ' Patching checks the local APK separately.'}</p>}
+      {installed && <p className="mx-6 mt-3 text-xs text-muted-foreground">Play checks the version installed in Android.{game.apk && ' Patching checks the local APK separately.'}</p>}
       {game.apk && game.compatibility?.status !== 'none' && game.compatibility && <div data-compatibility={game.compatibility.status} className="mx-6 mt-4 rounded-md border p-3 text-xs">
         {game.compatibility.status === 'matched' && <div className="mb-1 font-medium">APK compatibility profile: {game.compatibility.label}</div>}
         <p className="text-muted-foreground">{game.compatibility.summary}</p>
@@ -77,22 +80,28 @@ export function GameDetails({ game, state, local, onClose, run, pending, setPage
           </> : <>
           {activeJob ? <Button variant="secondary" onClick={() => { onClose(); setPage('downloads'); }}><Loader2 className="animate-spin" />{{ downloading: 'Downloading', installing: 'Installing', importing: 'Importing', uninstalling: 'Uninstalling' }[activeJob.status] || 'Queued'}</Button>
             : running ? <Button disabled={busy} onClick={() => operate(async () => { await call('stop'); notify('Closing game'); })}>Stop</Button>
-            : game.installed ? <Button className="min-w-24" disabled={busy || Boolean(state.running)} onClick={() => operate(async () => { const result = await call('play', game.id); if (result?.profileLabel) notify(`Using ${result.profileLabel} compatibility profile`); else if (result?.compatibilityNotice) notify(result.compatibilityNotice); onClose(); })}>Play</Button>
+            : installed ? <Button className="min-w-24" disabled={busy || Boolean(state.running)} onClick={() => operate(async () => { const result = await call('play', game.id); if (result?.profileLabel) notify(`Using ${result.profileLabel} compatibility profile`); else if (result?.compatibilityNotice) notify(result.compatibilityNotice); onClose(); })}>Play</Button>
+            : game.apk && directOnly ? null
             : game.apk ? <Button disabled={busy} onClick={install}>Install</Button>
             : !local ? <Button disabled={busy} onClick={() => operate(() => call('add', game.id))}><Plus />Add to library</Button>
             : game.source !== 'meta' ? <Button disabled={busy} onClick={() => run('import', () => call('import'))}>Import APK</Button>
             : !state.signedIn ? <Button disabled={pending.has('account')} onClick={() => run('account', () => call('login'))}>Connect Meta</Button>
             : <Button disabled={busy} onClick={download}><Download />Download</Button>}
+          {!activeJob && !running && game.apk && <Button variant={directOnly ? 'default' : 'outline'} data-direct-play disabled={busy || Boolean(state.running) || !(game.patched || game.compatibility?.directUnpatched)}
+            title={game.patched ? 'Runs the patched APK on Windows without the Android emulator. Saves are kept separately from the emulator.'
+              : game.compatibility?.directUnpatched ? 'Runs the store APK on Windows with its compatibility profile. Saves are kept separately from the emulator.'
+              : 'Patch with ovrport first: direct mode runs the patched APK.'}
+            onClick={() => operate(async () => { await call('play', game.id, 'direct'); notify('Started in direct mode'); onClose(); })}>Play in direct mode</Button>}
           <div className="flex-1" />
           {game.source === 'meta' && <IconButton label="View on Meta" onClick={() => operate(() => call('openStore', game.id))}><ExternalLink /></IconButton>}
           {local && <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" aria-label="Game actions" title="Game actions"><MoreHorizontal /></Button></DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               {game.apk && <DropdownMenuItem disabled={busy || Boolean(state.running) || Boolean(activeJob)} onSelect={() => operate(async () => { await call('play', game.id, 'quest-bridge'); notify('Quest Bridge experiment: separate saves; Android-only features do not apply'); onClose(); })}>Test with Quest Bridge (experimental)</DropdownMenuItem>}
               {game.source === 'meta' && <><DropdownMenuItem disabled={busy || !state.signedIn} onSelect={() => loadExtra('builds')}>Versions</DropdownMenuItem><DropdownMenuItem disabled={busy || !state.signedIn} onSelect={() => loadExtra('dlc')}>Add-ons</DropdownMenuItem></>}
-              {game.apk && <>{game.source === 'meta' && <DropdownMenuSeparator />}<DropdownMenuItem disabled={busy} onSelect={() => patch()}>Patch with ovrport</DropdownMenuItem><DropdownMenuItem disabled={busy} onSelect={() => operate(async () => { await call('importAssets', game.id); notify('Install to apply content files'); })}>Add content files</DropdownMenuItem><DropdownMenuItem onSelect={() => operate(() => call('openFolder', game.id))}>Open folder</DropdownMenuItem>{game.installed && <DropdownMenuItem disabled={busy} onSelect={install}>Update installation</DropdownMenuItem>}</>}
+              {game.apk && <>{game.source === 'meta' && <DropdownMenuSeparator />}<DropdownMenuItem disabled={busy} onSelect={() => patch()}>Patch with ovrport</DropdownMenuItem><DropdownMenuItem disabled={busy} onSelect={() => operate(async () => { await call('importAssets', game.id); notify('Install to apply content files'); })}>Add content files</DropdownMenuItem><DropdownMenuItem onSelect={() => operate(() => call('openFolder', game.id))}>Open folder</DropdownMenuItem>{installed && <DropdownMenuItem disabled={busy} onSelect={install}>Update installation</DropdownMenuItem>}</>}
               {!game.apk && game.source !== 'meta' && <DropdownMenuItem disabled={busy} onSelect={() => run('import', () => call('import'))}>Import APK</DropdownMenuItem>}
-              {game.installed && <DropdownMenuItem disabled={busy} onSelect={() => loadExtra('permissions')}>Android permissions</DropdownMenuItem>}
-              {game.installed && <><DropdownMenuSeparator /><DropdownMenuItem className="text-destructive" disabled={busy || Boolean(state.running) || Boolean(activeJob)} onSelect={() => operate(() => call('uninstall', game.id))}>Uninstall</DropdownMenuItem></>}
+              {installed && <DropdownMenuItem disabled={busy} onSelect={() => loadExtra('permissions')}>Android permissions</DropdownMenuItem>}
+              {installed && <><DropdownMenuSeparator /><DropdownMenuItem className="text-destructive" disabled={busy || Boolean(state.running) || Boolean(activeJob)} onSelect={() => operate(() => call('uninstall', game.id))}>Uninstall</DropdownMenuItem></>}
               {game.apk && game.source !== 'meta' && <><DropdownMenuSeparator /><DropdownMenuItem className="text-destructive" disabled={busy || Boolean(state.running) || Boolean(activeJob)} onSelect={() => operate(async () => {
                 if (await call('removeImported', game.id)) { notify('Imported app deleted'); onClose(); }
               })}>Delete imported app</DropdownMenuItem></>}

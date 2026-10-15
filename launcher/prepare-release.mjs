@@ -1,3 +1,4 @@
+import { buildProfile } from './core/build-profile.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -41,7 +42,9 @@ const files = [
     'scripts/emulator/android_runtime_policy.py', 'scripts/emulator/audio_policy.py', 'scripts/emulator/distribution.py',
     'scripts/emulator/storage_policy.py', 'scripts/emulator/unreal_memory_policy.py', 'scripts/emulator/qemu_multicore.py',
     'scripts/emulator/performance_policy.py', 'scripts/emulator/translator.py', 'scripts/emulator/p_core_affinity.ps1',
-    'scripts/run/run_windows_game.ps1', 'scripts/run/fps_hud.ps1', 'scripts/run/stop_game.ps1',
+    'scripts/run/run_windows_game.ps1', 'scripts/run/run_direct_game.ps1', 'direct/tools/make_sysroot.py',
+    'direct/tools/prepare_art_session.py',
+    'scripts/run/fps_hud.ps1', 'scripts/run/stop_game.ps1',
     'scripts/run/performance_scan.ps1',
     'modules/performance_overlay/collect_guest_cpu.py', 'modules/performance_overlay/resource_history.py',
     'scripts/run/open_windows_features.ps1', 'scripts/run/android_app_label.py', 'scripts/run/steamvr_app_identity.py'].map(p => [p, p]),
@@ -58,8 +61,35 @@ async function addDigitalis(directory, relative = 'out/digitalis/prebuilts') {
 const digitalis = path.join(root, 'out/digitalis/prebuilts');
 try { if (process.env.AXRB_SKIP_DIGITALIS !== '1') { await fs.access(digitalis); await addDigitalis(digitalis); } }
 catch (error) { if (error.code !== 'ENOENT') throw error; }
+// Direct mode (scripts/build/build_direct.ps1 stages it in out/direct).
+async function tree(directory) {
+  const found = [];
+  for (const item of await fs.readdir(path.join(root, directory), { withFileTypes: true })) {
+    const relative = `${directory}/${item.name}`;
+    if (item.isDirectory()) found.push(...await tree(relative)); else found.push([relative, relative]);
+  }
+  return found;
+}
+files.push(...await tree('out/direct'));
+// The Maven standalone binary needs neither an installed SDK nor Java.
+const aapt2 = {
+  url: 'https://dl.google.com/dl/android/maven2/com/android/tools/build/aapt2/8.6.1-11315950/aapt2-8.6.1-11315950-windows.jar',
+  size: 1947069, sha256: 'd7911de3afa8d5de1f1213f5244de7144093442d4fc20c8eb75d188ebe132ea5',
+};
+const aaptArchive = path.join(root, 'out/distribution/aapt2-windows.jar');
+if (!await verify(aaptArchive, aapt2)) await downloadFile({ ...aapt2, destination: aaptArchive, validate: value => {
+  if (value !== aapt2.url) throw new Error('Unexpected APK reader download URL');
+} });
+if (!await verify(aaptArchive, aapt2)) throw new Error('APK reader checksum mismatch');
+await extractZip(aaptArchive, path.join(runtime, 'tools/aapt2'), { entries: ['aapt2.exe', 'NOTICE'] });
+files.push(['scripts/run/android_tools.py', 'scripts/run/android_tools.py']);
 const sha256 = {};
+for (const name of ['aapt2.exe', 'NOTICE']) {
+  sha256[`tools/aapt2/${name}`] = createHash('sha256').update(await fs.readFile(path.join(runtime, 'tools/aapt2', name))).digest('hex');
+}
 for (const [from, to] of files) {
+  if (!buildProfile.emulatorEnabled && (to.startsWith('scripts/emulator/') || to.startsWith('out/clock/') ||
+      ['scripts/run/run_windows_game.ps1', 'scripts/run/open_windows_features.ps1'].includes(to))) continue;
   const bytes = await fs.readFile(path.join(root, from));
   await fs.mkdir(path.dirname(path.join(runtime, to)), { recursive: true });
   await fs.writeFile(path.join(runtime, to), bytes);
@@ -75,6 +105,7 @@ if (!await verify(archive, python)) throw new Error('Python checksum mismatch');
 await extractZip(archive, path.join(runtime, 'tools/python'));
 await fs.appendFile(path.join(runtime, 'tools/python/python314._pth'), '\n../../scripts/emulator\n../../scripts/run\n../../launcher\n');
 await fs.cp(path.join(launcher, 'licenses'), path.join(staging, 'licenses'), { recursive: true });
+await fs.copyFile(path.join(runtime, 'tools/aapt2/NOTICE'), path.join(staging, 'licenses/aapt2-NOTICE.txt'));
 await fs.cp(path.join(root, 'licenses'), path.join(staging, 'licenses'), { recursive: true });
 await fs.copyFile(path.join(root, 'LICENSE'), path.join(staging, 'licenses/AXRB-LICENSE.txt'));
 await fs.copyFile(path.join(root, 'CONTRIBUTING.md'), path.join(staging, 'licenses/CONTRIBUTING.md'));
@@ -82,7 +113,15 @@ for (const name of ['bc7e', 'bc7enc']) {
   await fs.copyFile(path.join(root, `runtime/vulkan/texture/${name}/LICENSE`), path.join(staging, `licenses/${name}.txt`));
 }
 await fs.copyFile(path.join(launcher, 'LICENSE'), path.join(staging, 'licenses/AXRB-launcher-GPL-3.0.txt'));
+// axrb-direct.exe links Dynarmic, the libraries it vendors, and Boost headers.
+for (const [from, name] of [['dynarmic/LICENSE.txt', 'dynarmic.txt'], ['dynarmic/externals/fmt/LICENSE.rst', 'fmt.txt'],
+  ['dynarmic/externals/mcl/LICENSE', 'mcl.txt'], ['dynarmic/externals/robin-map/LICENSE', 'robin-map.txt'],
+  ['dynarmic/externals/xbyak/COPYRIGHT', 'xbyak.txt'], ['dynarmic/externals/zycore/LICENSE', 'zycore.txt'],
+  ['dynarmic/externals/zydis/LICENSE', 'zydis.txt'], ['boost_1_84_0/LICENSE_1_0.txt', 'boost.txt']]) {
+  await fs.copyFile(path.join(root, 'third_party', from), path.join(staging, 'licenses', name));
+}
 await fs.copyFile(path.join(launcher, 'THIRD_PARTY_NOTICES.md'), path.join(staging, 'licenses/THIRD_PARTY_NOTICES.md'));
+await fs.copyFile(path.join(root, 'out/direct/art/AOSP-NOTICE.xml.gz'), path.join(staging, 'licenses/AOSP-NOTICE.xml.gz'));
 // Preserve the license texts for renderer dependencies, which Vite embeds in JS.
 async function licenses(directory) {
   for (const item of await fs.readdir(directory, { withFileTypes: true })) {

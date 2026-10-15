@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+  <item android:id="@android:id/background" android:gravity="center_vertical|fill_horizontal" android:height="@dimen/progress_bar_height_material">
+    <shape android:shape="rectangle"><solid android:color="@color/progress_track_material" /></shape>
+  </item>
+  <item android:id="@android:id/secondaryProgress" android:gravity="center_vertical|fill_horizontal" android:height="@dimen/progress_bar_height_material">
+    <clip><shape android:shape="rectangle"><solid android:color="@color/secondary_progress_material" /></shape></clip>
+  </item>
+  <item android:id="@android:id/progress" android:gravity="center_vertical|fill_horizontal" android:height="@dimen/progress_bar_height_material">
+    <clip><shape android:shape="rectangle"><solid android:color="@color/control_activated_material" /></shape></clip>
+  </item>
+</layer-list>

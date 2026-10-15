@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android" android:paddingMode="stack">
+  <item>
+    <shape android:shape="rectangle">
+      <solid android:color="@color/transparent" />
+      <padding android:left="0dp" android:top="0dp" android:right="24dp" android:bottom="0dp" />
+    </shape>
+  </item>
+  <item android:gravity="end|center_vertical" android:width="24dp" android:height="24dp">
+    <vector android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+      <path android:fillColor="@color/control_normal_material" android:pathData="M7,10l5,5 5,-5z" />
+    </vector>
+  </item>
+</layer-list>

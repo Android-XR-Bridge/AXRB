@@ -4,7 +4,8 @@ bc7e.ispc is written in Intel's ISPC language. The Vulkan layer links the
 objects ISPC makes from it, checked in beside the source, so building AXRB
 does not need ISPC. Run this after changing bc7e.ispc: it downloads the pinned
 ISPC release into out/tools (checking its SHA-256) and compiles the SSE4 and
-AVX2 variants for Android x86_64, with ISPC's runtime dispatch between them.
+AVX2 variants for Android x86_64, with ISPC's runtime dispatch between them,
+and the same variants as Windows x64 COFF objects (win64/) for AXRB Direct.
 """
 import hashlib
 from pathlib import Path
@@ -46,7 +47,14 @@ def main():
     # Only the dispatching header is used; ISPC also writes one per target.
     for extra in ('bc7e_ispc_sse4.h', 'bc7e_ispc_avx2.h'):
         (SOURCE / extra).unlink(missing_ok=True)
-    for name in ('bc7e.o', 'bc7e_sse4.o', 'bc7e_avx2.o'):
+    windows = SOURCE / 'win64'
+    windows.mkdir(exist_ok=True)
+    subprocess.run([str(ispc()), '-O2', '--target=sse4-i32x4,avx2-i32x8', '--target-os=windows', '--arch=x86-64',
+                    '--opt=fast-math', '--woff', '-o', str(windows / 'bc7e.obj'), '-h', str(windows / 'bc7e_ispc.h'),
+                    str(SOURCE / 'bc7e.ispc')], check=True)
+    for extra in ('bc7e_ispc_sse4.h', 'bc7e_ispc_avx2.h', 'bc7e_ispc.h'):
+        (windows / extra).unlink(missing_ok=True)
+    for name in ('bc7e.o', 'bc7e_sse4.o', 'bc7e_avx2.o', 'win64/bc7e.obj', 'win64/bc7e_sse4.obj', 'win64/bc7e_avx2.obj'):
         print(name, hashlib.sha256((SOURCE / name).read_bytes()).hexdigest())
 
 

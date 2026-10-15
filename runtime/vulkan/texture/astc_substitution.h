@@ -14,8 +14,11 @@
 // out of the game's buffer when the copy is recorded and transcoded by the
 // background workers (transcode_workers.h). Submitting the command buffer
 // waits for its transcodes, after checking that the game's buffer still holds
-// the bytes that were transcoded (and transcoding again if not). Staging
-// memory returns to a pool when the command buffer is reset or freed.
+// the bytes that were transcoded (and transcoding again if not). A GPU
+// transcode from a buffer the game keeps mapped reads the bytes once, at
+// submit (or when the game unmaps or frees that memory first), since that
+// mapping is usually uncached memory. Staging memory returns to a pool when
+// the command buffer is reset or freed.
 //
 // Images that could be viewed or copied as another format, images with
 // extension structures this code does not know, and uploads whose source is
@@ -155,12 +158,34 @@ public:
         bool srgb = false;
         Codec codec = Codec::None;
         VkFormat target = VK_FORMAT_UNDEFINED;
-        if (!state || !info || !compressed_format(info->format, bw, bh, srgb, codec, target) || !substitutable(*info))
+        if (!state || !info || !compressed_format(info->format, bw, bh, srgb, codec, target))
             return state ? state->calls.createImage(device, info, allocator, out) : VK_ERROR_INITIALIZATION_FAILED;
         if (codec == Codec::Astc && state->gpu && state->gpu->ready())
             target = srgb ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
         VkImageCreateInfo bc7 = *info;
         bc7.format = target;
+        VkImageFormatListCreateInfo formatList{VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO};
+        std::vector<VkFormat> viewFormats;
+        if (info->pNext) {
+            const auto* list = static_cast<const VkImageFormatListCreateInfo*>(info->pNext);
+            if (list->sType != VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO || list->pNext)
+                return VK_ERROR_FORMAT_NOT_SUPPORTED;
+            for (uint32_t i = 0; i < list->viewFormatCount; ++i) {
+                int vw, vh; bool vsrgb; Codec vc; VkFormat vf;
+                if (!compressed_format(list->pViewFormats[i], vw, vh, vsrgb, vc, vf) || vc != codec || vw != bw || vh != bh)
+                    return VK_ERROR_FORMAT_NOT_SUPPORTED;
+                if (codec == Codec::Astc && state->gpu && state->gpu->ready())
+                    vf = vsrgb ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
+                viewFormats.push_back(vf);
+            }
+            formatList.viewFormatCount = static_cast<uint32_t>(viewFormats.size());
+            formatList.pViewFormats = viewFormats.data();
+            bc7.pNext = &formatList;
+        }
+        auto checked = *info;
+        checked.pNext = nullptr;
+        // Never forward unsupported mobile formats directly to the desktop ICD.
+        if (!substitutable(checked)) return VK_ERROR_FORMAT_NOT_SUPPORTED;
         const VkResult result = state->calls.createImage(device, &bc7, allocator, out);
         if (result != VK_SUCCESS) return result;
         std::lock_guard lock(mutex_);
@@ -186,9 +211,13 @@ public:
         {
             std::lock_guard lock(mutex_);
             auto it = images_.find(info->image);
-            int bw, bh;
-            bool srgb;
-            if (it != images_.end()) view.format = it->second.target;
+            if (it != images_.end()) {
+                int bw, bh; bool srgb; Codec codec; VkFormat target;
+                if (!compressed_format(info->format,bw,bh,srgb,codec,target)) return VK_ERROR_FORMAT_NOT_SUPPORTED;
+                if (it->second.target == VK_FORMAT_BC3_UNORM_BLOCK || it->second.target == VK_FORMAT_BC3_SRGB_BLOCK)
+                    target = srgb ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
+                view.format = target;
+            }
         }
         return state->calls.createImageView(device, &view, allocator, out);
     }
@@ -201,6 +230,7 @@ public:
     }
     void free_memory(VkDeviceMemory memory) {
         std::lock_guard lock(mutex_);
+        take_live(memory);
         memories_.erase(memory);
     }
     void mapped(VkDeviceMemory memory, VkDeviceSize offset, void* pointer) {
@@ -210,6 +240,7 @@ public:
     }
     void unmapped(VkDeviceMemory memory) {
         std::lock_guard lock(mutex_);
+        take_live(memory);
         auto it = memories_.find(memory);
         if (it != memories_.end()) it->second.mapped = nullptr;
     }
@@ -345,12 +376,16 @@ public:
             }
         }
         if (planned.empty()) return true; // nothing that can be transcoded; the copy is dropped
+        upload->sourceSize = last - first;
         if (!mappedHere) {
             upload->liveMemory = buffer.memory;
             upload->liveMapping = memory.mapped;
             upload->live = bytes;
         }
-        upload->source = std::make_shared<std::vector<uint8_t>>(bytes, bytes + (last - first));
+        // The game's mapping is often uncached memory, slow to read: a GPU
+        // transcode reads it once, at submit (see before_submit).
+        if (mappedHere || dump_limit() > 0)
+            upload->source = std::make_shared<std::vector<uint8_t>>(bytes, bytes + upload->sourceSize);
         if (mappedHere) state->calls.unmapMemory(device, buffer.memory);
         for (auto& region : planned) region.sourceOffset = region.copy.bufferOffset - first;
         upload->regions = planned;
@@ -361,7 +396,7 @@ public:
         const bool bc3 = image.codec == Codec::Astc && image.target != bc7_format(image.srgb);
         const uint32_t family = families_.count(pools_[command]) ? families_[pools_[command]] : 32;
         const VkDeviceSize inputOffset = (stagingSize + 15) & ~VkDeviceSize(15);
-        const VkDeviceSize total = inputOffset + upload->source->size();
+        const VkDeviceSize total = inputOffset + upload->sourceSize;
         const bool gpu = bc3 && primaries_[command] && oneTime_[command] && family < 32 &&
                          (state->calls.computeFamilies & (1u << family)) && total <= state->calls.maxStorageRange;
         Staging staging = state->take(gpu ? total : stagingSize, command_);
@@ -391,11 +426,15 @@ public:
             upload->gpu = state->gpu->record(family, staging.buffer, staging.size, pushes, slices);
             if (upload->gpu) {
                 upload->gpuSource = staging.mapped + inputOffset;
-                std::memcpy(upload->gpuSource, upload->source->data(), upload->source->size());
+                if (upload->source) std::memcpy(upload->gpuSource, upload->source->data(), upload->sourceSize);
+                else upload->deferred = true;
                 for (const auto& r : upload->regions) upload->texels += uint64_t(r.width)*r.height*r.slices;
             }
         }
-        if (!upload->gpu) start(*upload);
+        if (!upload->gpu) {
+            if (!upload->source) upload->source = std::make_shared<std::vector<uint8_t>>(bytes, bytes + upload->sourceSize);
+            start(*upload);
+        }
         command_.uploads.push_back(upload);
         stats_.uploads += 1;
         stats_.uploadTexels += upload->texels;
@@ -414,6 +453,12 @@ public:
         if (uploads.empty()) return;
         const auto begin = std::chrono::steady_clock::now();
         for (auto& upload : uploads) {
+            if (upload->deferred) {
+                // The copy reads the game's buffer now, as the GPU would have.
+                std::lock_guard lock(mutex_);
+                take_live(*upload);
+                continue;
+            }
             if (upload->batch) upload->batch->wait();
             // The game may write its upload buffer after recording the copy;
             // it can only be read while the memory is still mapped where it was.
@@ -423,9 +468,9 @@ public:
                 auto m = memories_.find(upload->liveMemory);
                 readable = m != memories_.end() && m->second.mapped == upload->liveMapping;
             }
-            if (readable && std::memcmp(upload->live, upload->source->data(), upload->source->size())) {
-                std::memcpy(upload->source->data(), upload->live, upload->source->size());
-                if (upload->gpu) std::memcpy(upload->gpuSource, upload->source->data(), upload->source->size());
+            if (readable && std::memcmp(upload->live, upload->source->data(), upload->sourceSize)) {
+                std::memcpy(upload->source->data(), upload->live, upload->sourceSize);
+                if (upload->gpu) std::memcpy(upload->gpuSource, upload->source->data(), upload->sourceSize);
                 else { start(*upload); upload->batch->wait(); }
                 std::lock_guard lock(mutex_);
                 ++stats_.retranscodes;
@@ -496,6 +541,8 @@ private:
         std::shared_ptr<Batch> batch;
         std::shared_ptr<GpuAstc::Job> gpu;
         uint8_t* gpuSource = nullptr;
+        VkDeviceSize sourceSize = 0;
+        std::atomic<bool> deferred{false};              // gpuSource not filled yet; read live at submit
         uint64_t texels = 0;
     };
     struct Chunk {
@@ -626,25 +673,26 @@ private:
     // Only images used as plain sampled textures: no other format may ever
     // see their memory, and no extension structure changes their meaning.
     static bool substitutable(const VkImageCreateInfo& info) {
-        const VkImageCreateFlags reinterpreting = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT |
+        const VkImageCreateFlags reinterpreting = VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT |
                                                   VK_IMAGE_CREATE_EXTENDED_USAGE_BIT | VK_IMAGE_CREATE_ALIAS_BIT |
                                                   VK_IMAGE_CREATE_SPARSE_BINDING_BIT;
         const VkImageUsageFlags plain = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-        return info.imageType == VK_IMAGE_TYPE_2D && info.tiling == VK_IMAGE_TILING_OPTIMAL && !(info.flags & reinterpreting) &&
+        return (info.imageType == VK_IMAGE_TYPE_2D || info.imageType == VK_IMAGE_TYPE_3D) &&
+               (info.tiling == VK_IMAGE_TILING_OPTIMAL || info.tiling == VK_IMAGE_TILING_LINEAR) && !(info.flags & reinterpreting) &&
                !(info.usage & ~plain) && info.pNext == nullptr;
     }
     static uint64_t emulated_bytes(const VkImageCreateInfo& info, int bw, int bh, uint32_t blockBytes) {
         uint64_t bytes = 0;
         for (uint32_t mip = 0; mip < info.mipLevels; ++mip) {
             const uint64_t w = std::max(1u, info.extent.width >> mip), h = std::max(1u, info.extent.height >> mip);
-            bytes += w * h * 4 + (w + bw - 1) / bw * ((h + bh - 1) / bh) * blockBytes;
+            bytes += (w * h * 4 + (w + bw - 1) / bw * ((h + bh - 1) / bh) * blockBytes) * std::max(1u, info.extent.depth >> mip);
         }
         return bytes * info.arrayLayers;
     }
     static uint64_t bc7_bytes(const VkImageCreateInfo& info, uint32_t blockBytes) {
         uint64_t bytes = 0;
         for (uint32_t mip = 0; mip < info.mipLevels; ++mip)
-            bytes += uint64_t((std::max(1u, info.extent.width >> mip) + 3) / 4) * ((std::max(1u, info.extent.height >> mip) + 3) / 4) * blockBytes;
+            bytes += uint64_t((std::max(1u, info.extent.width >> mip) + 3) / 4) * ((std::max(1u, info.extent.height >> mip) + 3) / 4) * blockBytes * std::max(1u, info.extent.depth >> mip);
         return bytes * info.arrayLayers;
     }
     static bool host_visible(const DeviceState& state, uint32_t type) {
@@ -713,6 +761,20 @@ private:
         }
     }
 
+    // Fills a deferred upload's transcode input from the game's mapping, if
+    // still mapped there. Called with mutex_ held.
+    void take_live(Upload& upload) {
+        if (!upload.deferred.exchange(false)) return;
+        auto m = memories_.find(upload.liveMemory);
+        if (m != memories_.end() && m->second.mapped == upload.liveMapping)
+            std::memcpy(upload.gpuSource, upload.live, upload.sourceSize);
+    }
+    // Before the game's mapping goes away.
+    void take_live(VkDeviceMemory memory) {
+        for (auto& [command, state] : commands_)
+            for (auto& upload : state->uploads)
+                if (upload->deferred && upload->liveMemory == memory) take_live(*upload);
+    }
     void collect(VkCommandBuffer command, std::vector<std::shared_ptr<Upload>>& uploads) {
         auto it = commands_.find(command);
         if (it == commands_.end()) return;
@@ -745,13 +807,17 @@ private:
     }
     // Development aid: debug.axrb.astc_dump=N saves the first N uploaded
     // regions as .astc files in the game's cache directory.
-    void dump(const Upload& upload) {
-        if (upload.image.codec != Codec::Astc) return;
+    static int dump_limit() {
         static const int limit = [] {
             char value[PROP_VALUE_MAX]{};
             __system_property_get("debug.axrb.astc_dump", value);
             return std::atoi(value);
         }();
+        return limit;
+    }
+    void dump(const Upload& upload) {
+        if (upload.image.codec != Codec::Astc) return;
+        const int limit = dump_limit();
         static std::atomic<int> dumped{0};
         if (limit <= 0) return;
         char package[256]{};

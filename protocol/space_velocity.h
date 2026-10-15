@@ -1,5 +1,6 @@
 #pragma once
 #include "pose_frame.h"
+#include <cstddef>
 
 namespace axrb::protocol {
 inline Vector3 add(Vector3 a, Vector3 b) { return {a.x+b.x,a.y+b.y,a.z+b.z}; }
@@ -49,5 +50,48 @@ inline SpaceVelocity relative_velocity(SpaceVelocity v, SpaceVelocity base,
         out.linear=rotate(basePose,subtract(subtract(v.linear,base.linear),cross(base.angular,displacement)),true);
     }
     return clean_velocity(out);
+}
+// Motion over `seconds` at a constant tracking-world velocity: the
+// translation and the world-frame rotation (an identity rotation if unknown).
+inline Pose motion(SpaceVelocity v, float seconds) {
+    v=clean_velocity(v);
+    Pose d{};
+    if (v.flags&1) { d.x=v.linear.x*seconds; d.y=v.linear.y*seconds; d.z=v.linear.z*seconds; }
+    const Vector3 w=scale(v.angular,seconds);
+    const float angle=std::sqrt(w.x*w.x+w.y*w.y+w.z*w.z);
+    if ((v.flags&2) && angle>1e-6f) {
+        const float s=std::sin(angle*0.5f)/angle;
+        d.qx=w.x*s; d.qy=w.y*s; d.qz=w.z*s; d.qw=std::cos(angle*0.5f);
+    }
+    return d;
+}
+// Move `p` rigidly with a body at `origin` undergoing motion `d`.
+inline Pose move_rigidly(const Pose& p, const Pose& origin, const Pose& d) {
+    const Vector3 arm=rotate(d,{p.x-origin.x,p.y-origin.y,p.z-origin.z});
+    Pose out{origin.x+d.x+arm.x,origin.y+d.y+arm.y,origin.z+d.z+arm.z};
+    out.qw=d.qw*p.qw-d.qx*p.qx-d.qy*p.qy-d.qz*p.qz;
+    out.qx=d.qw*p.qx+d.qx*p.qw+d.qy*p.qz-d.qz*p.qy;
+    out.qy=d.qw*p.qy-d.qx*p.qz+d.qy*p.qw+d.qz*p.qx;
+    out.qz=d.qw*p.qz+d.qx*p.qy-d.qy*p.qx+d.qz*p.qw;
+    return out;
+}
+// Advance controllers, and hand joints that follow them, from the host's
+// predicted display time to a later one. The head stays as sampled: the
+// host compositor reprojects it, but nothing corrects a late controller.
+inline void predict_controllers(PoseFrame& f, float seconds) {
+    if (f.version<7 || !(seconds>0)) return;
+    for (size_t hand=0; hand<2; ++hand) {
+        Pose& grip=hand ? f.right_controller : f.left_controller;
+        if ((f.grip_flags[hand]&3)==3) {
+            const Pose before=grip;
+            const Pose d=motion(f.grip_velocity[hand],seconds);
+            grip=move_rigidly(before,before,d);
+            auto& skeleton=f.hands[hand];
+            if (skeleton.active && skeleton.source!=1) // Optical hands do not move with the grip.
+                for (auto& joint : skeleton.joints) joint.pose=move_rigidly(joint.pose,before,d);
+        }
+        if ((f.aim_flags[hand]&3)==3)
+            f.aim[hand]=move_rigidly(f.aim[hand],f.aim[hand],motion(f.aim_velocity[hand],seconds));
+    }
 }
 }

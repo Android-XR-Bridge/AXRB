@@ -7,6 +7,25 @@ import { fileURLToPath } from 'node:url';
 import { Runtime, run } from '../core/runtime.mjs';
 import { loadCompatibilityProfiles, resolveCompatibility, compatibilityRuntimeOptions } from '../core/compatibility.mjs';
 
+test('Direct launches forward the selected translator and default to Dynarmic', { skip: process.platform !== 'win32', timeout: 15000 }, async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'axrb-translator-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const script = path.join(root, 'direct.ps1');
+  await fs.writeFile(script, `param($Apk, $Package, $GameName, $Activity, $Translator, $Executable, $DataDirectory, $Sysroot, $FpsHudEventName)
+Write-Output "TRANSLATOR:$Translator"
+`);
+  const runtime = new Runtime(root, {}, () => {}, { emulatorEnabled: false });
+  const game = { id: 'test', package: 'com.example.game', activity: 'com.example.game/.Main' };
+  for (const translator of [undefined, 'digitalis', 'dynarmic']) {
+    runtime.settings.directTranslator = translator;
+    const result = await new Promise(resolve => runtime.launch(game, (code, output) => resolve({ code, output }), {}, {
+      direct: { script, apk: 'fixture.apk', executable: 'fixture.exe', data: root, sysroot: root }
+    }));
+    assert.equal(result.code, 0, result.output);
+    assert.match(result.output, new RegExp(`TRANSLATOR:${translator || 'dynarmic'}`));
+  }
+});
+
 test('status() reports a stopped, unreachable emulator without throwing', { skip: process.platform !== 'win32', timeout: 15000 }, async () => {
   const root = fileURLToPath(new URL('../..', import.meta.url));
   const runtime = new Runtime(root, { avd: 'axrb-managed-api36', port: 5584, sdk: 'C:\\fixture\\does-not-exist', memoryMB: 8192 });

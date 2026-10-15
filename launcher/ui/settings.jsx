@@ -63,13 +63,26 @@ export function Settings({ state, run, pending, notify }) {
     });
   }}>
     {field('downloadDir', 'Download folder', { required: true })}
+    <div className="space-y-2">
+      <label htmlFor="directTranslator">ARM64 translator</label>
+      <select id="directTranslator" className="w-full rounded-md border bg-background p-2"
+        value={draft.directTranslator ?? 'dynarmic'} onChange={e => edit('directTranslator', e.target.value)}>
+        <option value="dynarmic">Dynarmic (default)</option>
+        <option value="digitalis">Digitalis (experimental)</option>
+      </select>
+      <p className="text-xs text-muted-foreground">Used for direct mode on the next game launch. Try Digitalis if a game encounters unsupported ARM instructions.</p>
+    </div>
     {field('ovrportCli', 'ovrport CLI', { placeholder: 'Optional .exe or .jar' })}
     {state.portable && <p className="text-sm text-muted-foreground">Portable mode keeps downloads, imported files and patch output inside its folder. Put the complete optional ovrport CLI distribution inside that folder before selecting it. Java, when required by the CLI, remains a system prerequisite.</p>}
     <div className="flex items-center justify-between border-y py-4"><span>Meta{state.signedIn && <span className="ml-3 text-muted-foreground">Connected</span>}</span>
       <Button type="button" variant="outline" disabled={pending.has('account')} onClick={() => run('account', () => call(state.signedIn ? 'logout' : 'login'))}>{state.signedIn ? 'Sign out' : 'Connect'}</Button>
     </div>
     {state.portable && <p className="text-sm text-muted-foreground">This portable install stores your Meta session unencrypted in data/meta-session.txt inside its folder. Anyone with a copy can use your Meta session for the store and downloads until it expires. Sign out before sharing or discarding the folder. Signing out does not revoke earlier copies; revoke the session in Meta account settings if the folder or drive is lost.</p>}
-    <details className="group" data-runtime-settings><summary className="flex cursor-pointer list-none items-center justify-between py-1">Android runtime<ChevronDown className="size-4 transition-transform group-open:rotate-180" /></summary>
+    {state.build?.emulatorEnabled === false ? <div className="space-y-2 border-b pb-4" data-emulatorless><div>Direct Android storage</div><p className="break-all text-sm text-muted-foreground">{state.setup?.directory || state.settings.managedDirectory}</p><p className="text-sm text-muted-foreground">Game files and saves are stored directly on Windows. The Android Emulator backend is disabled in this build.</p></div> : state.setup?.directOnly ? <div className="flex items-center justify-between gap-4 border-b pb-4" data-direct-only>
+      <div className="space-y-1"><div>Android emulator</div><p className="text-sm text-muted-foreground">Not set up. Games play in direct mode, without the emulator.</p></div>
+      <Button type="button" variant="outline" disabled={pending.has('setup-resume') || state.busy || Boolean(state.running)}
+        onClick={() => run('setup-resume', () => call('setupResume'))}>Set up Android emulator</Button>
+    </div> : <details className="group" data-runtime-settings><summary className="flex cursor-pointer list-none items-center justify-between py-1">Android runtime<ChevronDown className="size-4 transition-transform group-open:rotate-180" /></summary>
       <div className="mt-5 space-y-5">
         <div className="flex items-center justify-between gap-4 rounded-md border p-3">
           <EmulatorStatus emulator={state.emulator} />
@@ -155,7 +168,7 @@ export function Settings({ state, run, pending, notify }) {
           <p id="cpu-restart" className="text-xs text-muted-foreground">Applies after restarting Android. Six is the emulator's own maximum. Leave some of the PC's cores free: past that, Android competes with the headset compositor and frames get worse, not better.</p>
         </div>
       </div>
-    </details>
+    </details>}
     <div className="flex items-center justify-between gap-4">
       <div>
         <label htmlFor="precompose-projection-layers">Precompose projection layers</label>

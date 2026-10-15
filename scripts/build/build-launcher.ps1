@@ -20,8 +20,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Installer build failed ($LASTEXITCODE)." }
 
     $release = Join-Path $AxrbRoot 'out/releases'
-    $installer = Join-Path $release $(if ($Portable) { "AXRB-Portable-$version.zip" } elseif ($Setup) { "AXRB-Setup-$version.exe" } else { "AXRB-$version.exe" })
-    $source = Join-Path $release "AXRB-$version-source.zip"
+    $installer = Join-Path $release $(if ($Portable) { "AXRB-Emulatorless-Portable-$version.zip" } elseif ($Setup) { "AXRB-Emulatorless-Setup-$version.exe" } else { "AXRB-Emulatorless-$version.exe" })
+    $source = Join-Path $release "AXRB-Emulatorless-$version-source.zip"
     foreach ($file in @($installer, $source)) {
         if (!(Test-Path -LiteralPath $file -PathType Leaf)) { throw "Expected build artifact is missing: $file" }
     }

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<animated-rotate xmlns:android="http://schemas.android.com/apk/res/android" android:pivotX="50%" android:pivotY="50%">
+  <vector android:width="48dp" android:height="48dp" android:viewportWidth="48" android:viewportHeight="48">
+    <path android:strokeColor="?attr/colorControlActivated" android:strokeWidth="4" android:strokeLineCap="square"
+        android:pathData="M24,5 A19,19 0 1,1 5,24" />
+  </vector>
+</animated-rotate>

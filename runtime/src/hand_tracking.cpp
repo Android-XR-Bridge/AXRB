@@ -12,7 +12,11 @@ XrResult XRAPI_CALL xrCreateHandTrackerEXT_impl(XrSession session, const XrHandT
     if (!info || info->type != XR_TYPE_HAND_TRACKER_CREATE_INFO_EXT || !tracker ||
         (info->hand != XR_HAND_LEFT_EXT && info->hand != XR_HAND_RIGHT_EXT) || info->handJointSet != XR_HAND_JOINT_SET_DEFAULT_EXT)
         return XR_ERROR_VALIDATION_FAILURE;
-    uint32_t sources = 3;
+    // Quest applications use active hand tracking to switch away from their
+    // controller-driven avatar. SteamVR can synthesize a skeleton from held
+    // controllers; do not silently present that as optical hand tracking.
+    // Applications that support controller skeletons can explicitly request it.
+    uint32_t sources = 1;
     struct InputHeader { XrStructureType type; const void* next; };
     for (auto* next = static_cast<const InputHeader*>(info->next); next; next = static_cast<const InputHeader*>(next->next)) {
         if (next->type != XR_TYPE_HAND_TRACKING_DATA_SOURCE_INFO_EXT) continue;
@@ -52,7 +56,7 @@ XrResult XRAPI_CALL xrLocateHandJointsEXT_impl(XrHandTrackerEXT tracker, const X
         return XR_ERROR_VALIDATION_FAILURE;
     auto* base = find_space(info->baseSpace);
     if (!base) return XR_ERROR_HANDLE_INVALID;
-    const auto& frame = pose_client().latest_pose_frame();
+    const auto frame = pose_frame_at(info->time);
     const auto& hand = frame.hands[record->hand];
     locations->isActive = hand.active && (hand.source == 0 || (hand.source <= 2 && (record->sources & (1u << (hand.source - 1)))));
     if (frame.version >= 5 && base->kind == SpaceKind::Local && (frame.local_origin_flags & 3) != 3)

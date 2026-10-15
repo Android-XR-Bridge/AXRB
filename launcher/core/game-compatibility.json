@@ -25,6 +25,14 @@
       "versions": [{ "versionCode": "101", "versionName": "1.0.1" }],
       "ovrport": { "extraPatches": ["patch_disable_meta_xr_audio_telemetry"] },
       "summary": "OVRPort's recommended patches pass the Unity Oculus hardware check, without which VR does not start. patch_disable_meta_xr_audio_telemetry stops Meta XR Audio's telemetry from aborting the game under Android's ARM translation; it needs ovrport 1.2.4 or later. The game does not use the Meta Platform SDK. Patch before installing."
+    },
+    {
+      "id": "iron-man-vr-0.2.1",
+      "label": "Marvel's Iron Man VR 0.2.1",
+      "package": "com.camouflaj.salmon",
+      "versions": [{ "versionCode": "443305" }],
+      "runtime": { "legacyOculusDriver": true, "questIdentity": true, "controllersOnly": true },
+      "summary": "Runs the unmodified store APK in direct mode: provides the com.oculus.systemdriver adapter its older Oculus loader looks for, reports a Quest (Oculus) device for Unity's hardware check, and hides hand-tracking extensions from this game. The game also needs a compatible Meta Platform initialization package, which AXRB does not include. Startup was reached in the emulator; direct mode is not yet verified in a headset."
     }
   ]
 }

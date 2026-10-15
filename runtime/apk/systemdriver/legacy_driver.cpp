@@ -65,6 +65,8 @@ static XrResult compatibleGipa(XrInstance instance, const char* name, PFN_xrVoid
     if (!std::strcmp(name, "xrEnumerateInstanceExtensionProperties")) {
         enumerateExtensions = reinterpret_cast<EnumerateExtensions>(*function);
         *function = reinterpret_cast<PFN_xrVoidFunction>(filteredExtensions);
+    } else if (!controllersOnly) {
+        // Input logging only accompanies the controller-only workaround.
     } else if (!std::strcmp(name, "xrGetActionStatePose")) {
         poseState = reinterpret_cast<GetPoseState>(*function);
         *function = reinterpret_cast<PFN_xrVoidFunction>(loggedPose);
@@ -107,9 +109,24 @@ Java_com_oculus_systemdriver_DriverLoader_nativeLoad(JNIEnv* env, jclass) {
     gipa = request.getInstanceProcAddr;
     negotiateRuntime = negotiate;
     runtime = handle;
+    // The app's process name, as Android reports it. AXRB direct mode runs the
+    // game inside app_process64, whose command line is not the package name.
     char process[128]{};
-    if (FILE* file = std::fopen("/proc/self/cmdline", "rb")) {
-        std::fread(process, 1, sizeof(process)-1, file); std::fclose(file);
+    if (jclass application = env->FindClass("android/app/Application")) {
+        jmethodID getProcessName = env->GetStaticMethodID(application, "getProcessName", "()Ljava/lang/String;");
+        auto name = getProcessName ? static_cast<jstring>(env->CallStaticObjectMethod(application, getProcessName)) : nullptr;
+        if (name && !env->ExceptionCheck()) {
+            if (const char* text = env->GetStringUTFChars(name, nullptr)) {
+                std::snprintf(process, sizeof(process), "%s", text);
+                env->ReleaseStringUTFChars(name, text);
+            }
+        }
+    }
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    if (!process[0]) {
+        if (FILE* file = std::fopen("/proc/self/cmdline", "rb")) {
+            std::fread(process, 1, sizeof(process)-1, file); std::fclose(file);
+        }
     }
     char key[256]{};
     char flag[PROP_VALUE_MAX]{};

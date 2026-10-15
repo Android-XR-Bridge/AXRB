@@ -53,6 +53,19 @@ class ApkEntryPointTests(unittest.TestCase):
                 result = self.inspect(MANIFEST.replace(other, 'android.intent.category.DEFAULT'))
                 self.assertEqual(result['activity'], PACKAGE + '/com.unity3d.player.UnityPlayerActivity')
 
+    def test_bundled_reader_needs_no_sdk_and_takes_precedence(self):
+        bundled = self.root / 'tools/aapt2/aapt2.exe'
+        bundled.parent.mkdir(parents=True)
+        bundled.write_bytes(b'fixture')
+        self.assertEqual(inspect_apk.find_aapt2(root=self.root), bundled)
+        self.assertEqual(inspect_apk.find_aapt2(self.root / 'missing-sdk', root=self.root), bundled)
+        self.assertEqual(inspect_apk.find_aapt2(self.root / 'sdk', root=self.root), bundled)
+
+    def test_broken_install_does_not_silently_rely_on_developer_sdk(self):
+        (self.root / 'distribution.json').write_text('{}')
+        with self.assertRaisesRegex(RuntimeError, 'Reinstall'):
+            inspect_apk.find_aapt2(self.root / 'sdk', root=self.root)
+
     def test_alias_is_selected_and_relative_class_names_are_normalized(self):
         for name in ('.VrEntry', 'VrEntry'):
             with self.subTest(name=name):

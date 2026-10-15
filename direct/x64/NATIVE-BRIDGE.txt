@@ -1,0 +1,197 @@
+ARM dependency-linker milestone (2026-10-07)
+==========================================
+This section supersedes the dependency-free loader restrictions in the historical
+milestone below. This is still an experimental developer target, not a game-ready
+backend or a launcher update.
+
+Changes for the ovrport/AXRB fork
+-------------------------------
+- arm_elf.cpp/.h: isolated ARM ELF dependency-group loader. Resolve DT_NEEDED
+  through sibling ARM images; map the complete graph before breadth-first symbol
+  lookup and relocation. Cycles share the graph's existing image, not recursion.
+  No ARM import is bound directly to an x86 function address.
+- Support AArch64 RELATIVE, ABS64, GLOB_DAT and JUMP_SLOT relocations; undefined
+  weak symbols resolve to zero, missing strong symbols fail. Match GNU symbol
+  version requirements/definitions instead of ignoring requested versions.
+- Decode Android APS2 packed RELA and ELF RELR address/bitmap tables with bounded
+  counts, integer/range checks and the same relocation validation as plain RELA.
+- Validate the dependency group before publishing it. Missing dependencies,
+  unsupported ISA, invalid relocations and unresolved imports release tentative
+  images. Cap each image at 512 MiB and each dependency group at 1 GiB (limits,
+  not pre-reserved RAM). Windows never executes ARM image pages.
+- arm_bridge.cpp/.h, main.cpp: read dependencies through the existing read-only
+  guest filesystem. Added private LOAD_PATH and INITIALIZER operations without
+  changing existing operation numbers. Initializer enumeration is thread-owned.
+- arm_jni_bridge.c: execute DT_INIT/DT_INIT_ARRAY through Digitalis, dependencies
+  before the parent. Publish callable JNI exports only after successful init.
+  Unsupported constructor syscalls/callbacks fail the load. Failed constructor
+  groups remain quarantined until process exit; this is not transactional undo
+  of arbitrary constructor side effects. Library unloading remains unsupported.
+- native_bridge_adapter.cpp: updated scope documentation. This supports local
+  groups only, not full Android shared/system namespaces or runtime dlopen.
+- CMakeLists.txt, run_art_probe.py, tests: added real versioned dependency fixtures,
+  function/data/weak relocation checks, dependency/parent constructor execution,
+  unsupported-constructor failure, missing dependency retries (300), strong import
+  failure, wrong version/ISA, malformed APS2 and Android/Android+RELR fixtures.
+
+Real game evidence
+------------------
+North Star's libmain.so and libunity.so were tested via ordinary System.load in
+native x86 ART. This was library startup, not activity launch or rendered gameplay.
+The original unsupported-relocation error is gone. With real ARM liblog, libc++,
+libc, libm and libdl staged from out/deps/aosp-36-r02-art into the isolated probe
+folder, both attempts stop at:
+  ARM PT_TLS requires ARM Bionic TLS integration: .../arm64/libc++.so
+No game frames were produced. The installed launcher/runtime was not changed.
+
+Remaining work
+--------------
+ARM Bionic TLS/thread startup and dynamic-linker services; TLS/IFUNC relocations;
+ARM syscall routing; broader JNI and VM thread attachment; Android framework and
+x86 graphics/audio integration; ART JIT/executable mappings. ELF section metadata
+is currently required. Full Android namespace semantics and dlopen/dlsym across
+already loaded groups are not implemented. Do not enable this in release setup.
+
+Validation/evidence
+-------------------
+out/native-x64/linker-regression.txt: all 14 CTest suites.
+out/native-x64/arm-link-probe.out/.err: native ART + translated dependency code.
+out/native-x64/game-attempt/libmain.so.err and libunity.so.err: real game blockers.
+out/native-x64/game-attempt/run.py: exact local reproduction and command record.
+out/native-x64/linker-milestone.json: current executable/plugin hashes and status.
+
+Primary format references (implementation verified against these)
+---------------------------------------------------------------
+https://github.com/ARM-software/abi-aa/blob/main/aaelf64/aaelf64.rst
+https://android.googlesource.com/platform/bionic/+/master/linker/linker_reloc_iterators.h
+https://android.googlesource.com/platform/bionic/+/android16-qpr2-release/linker/linker_relocate.cpp
+
+Historical JNI milestone
+========================
+
+﻿Native x86 ART + ARM NativeBridge change log
+2026-10-07
+
+Result
+======
+An unmodified x86_64 Android ART runtime can load the prototype NativeBridge v8
+plugin and execute a real ARM64 ELF via Digitalis using ordinary System.load.
+No hypervisor, emulator, Linux kernel or adb is started. This remains a separate
+developer target; no installed launcher/runtime/setup or default was changed.
+
+Validated flow
+==============
+Java in native x86 ART
+  -> ART's real libnativebridge / native loader
+  -> libaxrb_nativebridge.so (x86 Android ELF)
+  -> statically generated SysV argument trampoline
+  -> private versioned execution transport
+  -> Digitalis ARM64 execution
+  -> JNI gateway returns to x86 ELF
+  -> real ART JNI and Java callback
+Nested callbacks can enter another ARM invocation. JavaVM and JNIEnv wrappers
+remain stable across invocations, with JNIEnv state owned by the current thread.
+Java references and GC remain owned by ART; the bridge does not implement Java.
+
+Source changes
+==============
+arm_bridge_abi.h / arm_bridge.h / arm_bridge.cpp
+  Versioned private syscall transport, validated ARM64 ET_DYN loading, defined
+  symbols and local R_AARCH64_RELATIVE relocation. ARM images remain nonexecuting
+  Windows data pages; readonly ELF segments are protected. Actual ARM execution
+  uses the existing Digitalis adapter, including its existing optimizing path.
+  Per-thread reusable engine pools and invocation ownership checks support nested
+  calls without sharing mutable ARM register state. Work is bounded per step.
+  Unsupported ELF dependencies, constructors, TLS and relocation types fail.
+  Bounds: 256 library images and 16 concurrent nested engines per Windows thread.
+
+arm_jni_bridge.c / arm_jni_bridge.h / generate_arm_trampolines.py
+  Static x86 SysV trampolines marshal JNI integer/reference/float/double arguments
+  between AMD64 and AArch64 registers and stack slots, including register overflow.
+  JNI calls return from the translator before executing normal x86 ART functions.
+  64 cached trampoline slots; atomic publication and registration locking.
+  Persistent per-thread JNIEnv table and process JavaVM table; JavaVM::GetEnv on
+  attached ART threads, JNI_OnLoad entry ABI and dynamic RegisterNatives.
+  Supported JNI callbacks currently include class/method lookup; selected A-form
+  method calls; strings; local/global refs; exception operations; int-array regions;
+  GetJavaVM and RegisterNatives. Unsupported slots raise UnsatisfiedLinkError.
+  The implementation is a growing generic ABI adapter, not per-game Java stubs.
+
+native_bridge_adapter.cpp
+  Exports NativeBridgeItf using the existing pinned upstream v8 ABI header.
+  Initialization, ARM ELF detection, namespace/path checks, library load, named
+  and function-pointer trampoline lookup. Handles ART's zero legacy signature-
+  length parameter with a terminated shorty. Already adapted x86 function pointers
+  are not translated again during RegisterNatives.
+  Recognizes arm64/arm64-v8a library search directories. Only dependency-free
+  loading is admitted; exported system/default namespace endpoints are present.
+  CriticalNative, native library unload, anonymous/shared namespaces and fork
+  remain unsupported. This is not full Android namespace or NativeBridge parity.
+
+main.cpp
+  Routes the private bridge transport and retains native x86 ART execution.
+  Added Windows-backed process/thread CPU clocks and useful timeout diagnostics.
+  Fixed low-address memory selection: choose a free Windows region instead of
+  assuming a fixed 32 MiB..1.75 GiB reservation can succeed. A single occupied page
+  at 0x10000000 made the old reservation fail. ART then rejected high allocations
+  and repeatedly scanned a large range via msync (over 4 million calls in a failed
+  startup). Relaxed low-address hints now use another free low hole on collision.
+  MAP_32BIT requests can use the same arena. Reservations do not commit RAM.
+  The 10-second watchdog was kept; it was not extended to hide the failure.
+
+CMakeLists.txt / tests / run_art_probe.py
+  Build Digitalis, ARM ELF fixtures, x86 JNI shim and NativeBridge plugin from
+  source in the experimental output directory. Real Android integration remains
+  opt-in via AXRB_X64_SYSROOT. New --arm and --native-bridge developer harness modes.
+  --native-bridge uses ART's -XX:NativeBridge and -Xforce-nb-testing options and an
+  arm64 library path. It checks initialization/load/trampoline evidence as well
+  as the managed success marker and clean exit.
+  The plugin is copied only into the separately prepared developer sysroot.
+
+Tests
+=====
+All ten CTest suites pass in out/native-x64/bridge-test-results.txt.
+The nativebridge suite also passes ten consecutive runs without syscall tracing
+in out/native-x64/nativebridge-repeat-results.txt.
+
+Bridge coverage:
+- Real ARM library loaded with System.load, JNI_OnLoad and dynamic registration.
+- Cached JavaVM::GetEnv on main and worker ART threads.
+- Java -> ARM -> Java -> ARM reentrant invocation.
+- Mixed integer/double arguments exhausting both register sets and stack slots.
+- Strings with non-ASCII/supplementary characters; int-array region updates.
+- ARM-thrown Java exceptions and explicit rejection of an unsupported JNI slot.
+- Four Java workers, each making 50 reentrant ARM calls; GC during the run.
+- Wrong protocol version, truncated/malformed/wrong-ISA ELF, missing symbols,
+  invalid function pointers and wrong-thread invocation-handle rejection.
+- Deterministic large low-memory reservation plus occupied-hint fallback test.
+- Existing native x86 boundary, APEX parser, Bionic, pthread, managed ART and
+  Digitalis self/differential tests remain passing.
+
+Executable:
+  out/native-x64/Release/axrb-native-x64.exe
+Android x86 plugin:
+  out/native-x64/libaxrb_nativebridge.so
+Logs:
+  out/native-x64/nativebridge-probe.out
+  out/native-x64/nativebridge-probe.err
+
+Still needed before game launch or performance claims
+=====================================================
+ARM Bionic/dynamic dependencies, ARM TLS, constructors, full JNI variadic/V forms,
+AttachCurrentThread/DetachCurrentThread, native-created threads, signal delivery,
+complete memory alias/JIT support, x86 framework bootstrap and graphics/audio.
+JIT for ART remains disabled. The bridge admits only dependency-free ARM test
+libraries; real Unity/game libraries will fail its explicit dependency check.
+Library/namespace memory is retained for this bounded short-lived prototype.
+Private transport calls still use diagnostic exception gates and the kernel
+mutex; this is not the final hot-call performance path.
+No Pinball, North Star, Manta or game-FPS claim is made for this backend yet.
+
+Primary references used
+=======================
+Pinned NativeBridge ABI in third_party/digitalis/native_bridge/native_bridge.h
+https://android.googlesource.com/platform/art/+/cea2f596f9/libnativebridge/native_bridge.cc
+https://android.googlesource.com/platform/art/+/refs/heads/main/runtime/runtime.cc
+https://android.googlesource.com/platform/art/+/refs/heads/main/libnativeloader/native_loader_namespace.cpp
+https://android.googlesource.com/platform/art/+/refs/heads/main/libartbase/base/mem_map.cc

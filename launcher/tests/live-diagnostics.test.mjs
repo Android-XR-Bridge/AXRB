@@ -15,6 +15,26 @@ async function temporary(t) {
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   return directory;
 }
+
+test('Direct runtime logs reach live capture and exported bundles without ADB', async t => {
+  const directory = await temporary(t), logs = path.join(directory, 'logs/game');
+  await fs.mkdir(logs, { recursive: true });
+  const capture = new LiveDiagnostics({ directory, getConfig: () => ({}),
+    spawnProcess: () => { throw new Error('Direct capture must not start ADB'); } });
+  for (const name of ['direct.log', 'direct.out', 'direct.err']) {
+    await fs.writeFile(path.join(logs, name), `${name}: startup failed access_token=private-direct-token\n`);
+  }
+  await capture.tailFiles(directory);
+  const entries = capture.snapshot().entries;
+  assert.equal(entries.length, 3);
+  assert.ok(entries.every(entry => entry.source === 'android'));
+  const bundle = await collectDiagnostics({ dataHome: directory });
+  for (const name of ['direct.log', 'direct.out', 'direct.err']) {
+    assert.ok(entries.some(entry => entry.tag === name && entry.text.includes('startup failed')));
+    assert.ok(bundle.includes(`--- ${name} ---\n${name}: startup failed`));
+  }
+  assert.doesNotMatch(capture.text() + bundle, /private-direct-token/);
+});
 async function until(predicate) {
   const deadline = Date.now() + 5000;
   while (!predicate()) {

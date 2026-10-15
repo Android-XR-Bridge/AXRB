@@ -9,10 +9,13 @@ import { downloadFile, safeName, checkSpace } from './core/download.mjs';
 import { State } from './core/state.mjs';
 import { Runtime, run } from './core/runtime.mjs';
 import { prepareBridge } from './core/quest-bridge.mjs';
+import { checkDirectRuntime, directLaunchFiles, directPaths, directSystemReady, ensureDirectSystem, seedExternalStorage, writeAssetList } from './core/direct.mjs';
+import { buildProfile, checkBackendRequest, requireEmulator } from './core/build-profile.mjs';
+import { DirectSetup } from './core/direct-setup.mjs';
 import { Setup, identifyArchives, avdDirectory, parseStorageGB, planStorageChange, withStorageGB } from './core/setup.mjs';
 import { loadLibraryArtwork } from './core/artwork.mjs';
-import { Quest } from './core/quest.mjs';
-import { findOriginalApk, importGameArchive } from './core/game-files.mjs';
+import { Quest, ensurePlatformTools } from './core/quest.mjs';
+import { classifyAsset, fileRecord, findCompanionAssets, findOriginalApk, importGameArchive } from './core/game-files.mjs';
 import { exportGamesZip, gameExportFilename } from './core/game-export.mjs';
 import { collectDiagnostics, describeSessionEnd, parseSessionRecord, redact, uploadDiagnostics } from './core/diagnostics.mjs';
 import { LiveDiagnostics } from './core/live-diagnostics.mjs';
@@ -43,12 +46,14 @@ if (app.isPackaged) process.env.PATH = path.join(root, 'tools/python') + path.de
 process.env.PYTHONUTF8 = '1';
 const smoke = process.argv.includes('--smoke-test');
 const debug = process.argv.includes('--axrb-debug') || process.argv.includes('--debug') || process.env.AXRB_DEBUG === '1';
+app.setName(buildProfile.productName);
+app.setAppUserModelId('org.axrb.emulatorless');
 const profile = app.commandLine.getSwitchValue('user-data-dir');
-const portable = app.isPackaged && existsSync(path.join(path.dirname(process.execPath), 'AXRB.portable')) ? path.dirname(process.execPath) : '';
+const portable = app.isPackaged && existsSync(path.join(path.dirname(process.execPath), 'AXRB-Emulatorless.portable')) ? path.dirname(process.execPath) : '';
 if (portable) configurePortable(app, portable);
 else if (profile) app.setPath('userData', path.resolve(profile));
 else if (smoke) app.setPath('userData', path.join(root, 'out/launcher/smoke'));
-else app.setPath('userData', path.join(app.getPath('appData'), 'AXRB'));
+else app.setPath('userData', path.join(app.getPath('appData'), buildProfile.productName));
 if (!app.requestSingleInstanceLock()) app.quit();
 app.on('second-instance', () => { window?.show(); window?.focus(); });
 let window, authWindow, state, runtime, token = '', account = '', busy = false;
@@ -74,7 +79,7 @@ app.on('before-quit', event => {
   void requestClose();
 });
 const requestClose = createCloseRequest({
-  getStatus: () => runtime ? runtime.status() : Promise.resolve({ running: false }),
+  getStatus: () => !buildProfile.emulatorEnabled ? Promise.resolve({ running: Boolean(runtime?.child) }) : runtime ? runtime.status() : Promise.resolve({ running: false }),
   prompt: async () => {
     if (installUpdateOnQuit) {
       const {response}=await dialog.showMessageBox(window,{type:'question',title:'Install AXRB update?',message:'Stop the emulator and install the update?',detail:'The running game will close. Save your progress first.',buttons:['Stop emulator and install','Later'],defaultId:1,cancelId:1,noLink:true});
@@ -82,16 +87,16 @@ const requestClose = createCloseRequest({
     }
     const { response } = await dialog.showMessageBox(window, {
       type: 'question', title: 'Close AXRB?',
-      message: 'The Android emulator is still running.',
-      detail: 'Stop the emulator before closing? Any running game will also be stopped.',
-      buttons: ['Stop emulator and close', 'Leave running and close', 'Cancel'],
+      message: buildProfile.emulatorEnabled ? 'The Android emulator is still running.' : 'A game is still running.',
+      detail: buildProfile.emulatorEnabled ? 'Stop the emulator before closing? Any running game will also be stopped.' : 'Save your progress before closing the game.',
+      buttons: [buildProfile.emulatorEnabled ? 'Stop emulator and close' : 'Stop game and close', 'Leave running and close', 'Cancel'],
       defaultId: 0, cancelId: 2, noLink: true,
     });
     return ['stop', 'leave', 'cancel'][response];
   },
   stop: () => exclusive(async () => {
     if (setup?.status?.active) throw new Error('Wait for runtime setup to finish before stopping the emulator.');
-    await runtime.stopEmulator();
+    if (buildProfile.emulatorEnabled) await runtime.stopEmulator(); else await runtime.stop();
   }),
   onError: async error => {
     liveDiagnostics?.append('launcher', `Close cancelled: ${message(error)}`, { tag: 'runtime', level: 'E' });
@@ -112,7 +117,7 @@ const requestClose = createCloseRequest({
       emulatorWatchdog?.stop();
       if (runtime.bridgeStopEvent) await runtime.stop().catch(error => liveDiagnostics.append('launcher', `Quest Bridge shutdown failed: ${message(error)}`, { tag: 'runtime', level: 'E' }));
       const idle = !busy && !setup?.status?.active && await runtime.adbServerIdle(watched).catch(() => false);
-      liveDiagnostics.append('launcher', idle ? 'Stopping the ADB server; Android is not running.' : 'Leaving the ADB server running for Android or a game session.', { tag: 'runtime' });
+      if (buildProfile.emulatorEnabled) liveDiagnostics.append('launcher', idle ? 'Stopping the ADB server; Android is not running.' : 'Leaving the ADB server running for Android or a game session.', { tag: 'runtime' });
       // Capture stops first so its logcat children end quietly with the launcher.
       await liveDiagnostics.stop();
       if (idle) await runtime.stopAdbServer();
@@ -137,12 +142,15 @@ const uiPath = path.join(directory, 'dist/index.html');
 const message = error => String(error?.message || error).replace(/(?:OC|FRL|EA)[A-Za-z0-9_|-]{30,}/g, '[redacted]').replace(/access_token=[^\s&]+/g, 'access_token=[redacted]');
 const exists = async file => { try { await fs.access(file); return true; } catch { return false; } };
 function publicState() {
-  return { ...state.data, setup: setup?.status, signedIn: Boolean(token), account, running: runtime.game, busy, portable: Boolean(portable),
+  return { ...state.data, build: buildProfile, setup: setup?.status, signedIn: Boolean(token), account, running: runtime.game, busy, portable: Boolean(portable),
     emulator: emulatorWatchdog?.snapshot() ?? null,
     // Credentials and signed CDN URLs never reach the renderer or library file.
     games: state.data.games.map(g => {
-      const { status, label, summary, verifiedVersions } = resolveCompatibility(compatibilityProfiles, g);
-      return { ...g, compatibility: { status, label, summary, verifiedVersions },
+      const resolution = resolveCompatibility(compatibilityProfiles, g);
+      const { status, label, summary, verifiedVersions } = resolution;
+      // Direct mode runs the store APK when its profile provides the legacy Oculus driver.
+      const directUnpatched = compatibilityRuntimeOptions(resolution).legacyOculusDriver === true;
+      return { ...g, compatibility: { status, label, summary, verifiedVersions, directUnpatched },
         files: g.files?.map(f => ({ name: f.name, path: f.path, kind: f.kind, size: f.size })) };
     }) };
 }
@@ -161,6 +169,12 @@ function handler(name, callback) {
     const started = Date.now(), trace = !name.startsWith('ai') && !['state', 'diagnosticsRead', 'diagnostics', 'copyText'].includes(name);
     if (trace) liveDiagnostics?.append('launcher', `${name} started`, { tag: 'operation' });
     try {
+      checkBackendRequest(name, args, buildProfile.emulatorEnabled);
+      if (name === 'play' && !args[1] && !buildProfile.emulatorEnabled) args[1] = 'direct';
+      // A player who skipped the emulator's setup plays in direct mode only.
+      if (setup?.status.directOnly && (['install', 'uninstall', 'startAndroid', 'stopAndroid', 'permissions', 'setPermission', 'storage'].includes(name) || (name === 'play' && args[1] !== 'direct'))) {
+        throw new Error('The Android emulator is not set up. Play in direct mode, or set up the emulator in Settings.');
+      }
       if (setup && setup.status.phase !== 'ready' && ['play', 'install', 'uninstall', 'removeImported', 'import', 'patch', 'settings', 'questDevices', 'questGames', 'questImport', 'importZip', 'startAndroid', 'stopAndroid'].includes(name)) throw new Error('Complete runtime setup first.');
       const value = await callback(...args);
       if (trace) liveDiagnostics?.append('launcher', `${name} completed (${Date.now() - started} ms)`, { tag: 'operation' });
@@ -290,6 +304,26 @@ async function downloadGame(id, binaryId, dlcId) {
   return job.id;
 }
 
+// An APK and the expansion files sideloaded beside it (findCompanionAssets).
+// Without companions the game keeps the content files it already has.
+async function importApk(file, inspect, { signal, update }) {
+  const metadata = await inspect(file);
+  const companions = await findCompanionAssets(file, metadata.package);
+  if (companions.length) update(`Copying ${companions.length} expansion file${companions.length === 1 ? '' : 's'}`);
+  const [apk, ...carried] = await carryPortableFiles(portable, state.data.settings.downloadDir, [file, ...companions.map(asset => asset.file)], signal);
+  if (!companions.length) return { ...metadata, apk, downloaded: true };
+  const files = [];
+  for (const [index, asset] of companions.entries()) {
+    update(`Verifying ${asset.name}`);
+    files.push(await fileRecord(carried[index], asset.name, /\.obb$/i.test(asset.name) ? 'obb' : 'asset', asset.destination, signal));
+  }
+  return { ...metadata, apk, files, downloaded: true };
+}
+
+// adb comes with the emulator's setup; without it, it is fetched on first use.
+let platformTools;
+const quest = () => new Quest(runtime.settings, run, { prepare: () => ensurePlatformTools(runtime.settings.sdk, platformTools) });
+
 async function importTransfer(kind, input) {
   if (busy || controllers.size) throw new Error('Wait for current transfers and installations to finish.');
   if (kind === 'zip' && runtime.child) throw new Error('Close the running game before installing.');
@@ -309,8 +343,8 @@ async function importTransfer(kind, input) {
       const inspect = (file, flags) => runtime.inspect(file, flags);
       portableOutput(portable, state.data.settings.downloadDir);
       const imported = kind === 'quest'
-        ? await new Quest(runtime.settings).pullGame(input.serial, input.package, state.data.settings.downloadDir, inspect, options)
-        : kind === 'apk' ? { ...await inspect(input.file), apk: (await carryPortableFiles(portable, state.data.settings.downloadDir, [input.file], controller.signal))[0], downloaded: true }
+        ? await quest().pullGame(input.serial, input.package, state.data.settings.downloadDir, inspect, options)
+        : kind === 'apk' ? await importApk(input.file, inspect, options)
         : await importGameArchive(input.file, state.data.settings.downloadDir, inspect, options);
       controller.signal.throwIfAborted();
       const imports = Array.isArray(imported) ? imported : [imported];
@@ -322,7 +356,7 @@ async function importTransfer(kind, input) {
       });
       job.gameId = games[0].id; job.name = games.length > 1 ? `${games.length} games` : games[0].name; job.completed = job.total;
       await persist();
-      if (kind === 'zip') {
+      if (kind === 'zip' && buildProfile.emulatorEnabled && !setup?.status.directOnly) {
         Object.assign(job, { status: 'installing', stage: 'Starting Android', completed: 0, total: 0, progressUnit: 'bytes' }); changed();
         // A cancelled extraction never reaches installation. After this point the
         // job remains an install, so its APK/asset transaction is not interrupted.
@@ -332,7 +366,7 @@ async function importTransfer(kind, input) {
           await persist();
         }
       }
-      job.status = 'complete'; job.stage = kind === 'zip' ? 'Installed' : 'Ready to install';
+      job.status = 'complete'; job.stage = !buildProfile.emulatorEnabled || setup?.status.directOnly ? 'Imported for direct mode' : kind === 'zip' ? 'Installed' : 'Ready to install';
     } catch (error) { job.status = controller.signal.aborted ? 'cancelled' : 'failed'; job.error = message(error); }
     finally { controllers.delete(job.id); busy = false; await persist(); }
   })().catch(error => { console.error(message(error)); });
@@ -345,22 +379,25 @@ state = new State(app.getPath('userData')); await state.load({ portableRoot: por
 metaSession = new MetaSession(state.directory, { portable: Boolean(portable), safeStorage });
 const pendingRuntime = await state.pendingRuntime();
 const components = JSON.parse(await fs.readFile(path.join(directory, 'core/components.json'), 'utf8'));
+platformTools = components.find(c => c.id === 'platform-tools');
 state.data.settings = { sdk: path.join(process.env.LOCALAPPDATA || '', 'Android/Sdk'), avd: 'axrb-games-api34', port: 5580,
-  memoryMB: 8192, cpuCores: 4, textureMode: 'gpu', downloadDir: path.join(portable || app.getPath('downloads'), portable ? 'downloads' : 'AXRB'), ovrportCli: '',
-  precomposeProjectionLayers: false,
+  memoryMB: 8192, cpuCores: 4, textureMode: 'gpu', downloadDir: path.join(portable || app.getPath('downloads'), portable ? 'downloads' : buildProfile.productName), ovrportCli: '',
+  precomposeProjectionLayers: false, directTranslator: 'dynarmic',
   guestClock: 'Auto', ...state.data.settings };
 migrateClockPolicy(state.data.settings);
 await state.save();
 portableOutput(portable, state.data.settings.downloadDir);
-runtime = new Runtime(root, state.data.settings, (text, metadata) => liveDiagnostics?.write('launcher', text, { tag: 'runtime', ...metadata }));
-if (!smoke && (app.isPackaged || pendingRuntime || state.data.settings.managedDirectory || !await exists(path.join(state.data.settings.sdk, 'emulator/emulator.exe')))) {
-  const managed = pendingRuntime?.directory || state.data.settings.managedDirectory || path.join(portable || process.env.LOCALAPPDATA, 'AXRB Runtime');
+runtime = new Runtime(root, state.data.settings, (text, metadata) => liveDiagnostics?.write('launcher', text, { tag: 'runtime', ...metadata }), { emulatorEnabled: buildProfile.emulatorEnabled });
+if (!smoke && (!buildProfile.emulatorEnabled || app.isPackaged || pendingRuntime || state.data.settings.managedDirectory || !await exists(path.join(state.data.settings.sdk, 'emulator/emulator.exe')))) {
+  const managed = pendingRuntime?.directory || state.data.settings.managedDirectory || path.join(portable || process.env.LOCALAPPDATA, buildProfile.runtimeDirectory);
   portableOutput(portable, managed);
   // The setup receipt persists the managed root; derive all runtime paths from
   // it on every launch so a previous install never falls back to the user's
   // unrelated default SDK, AVD or emulator port.
   Object.assign(runtime.settings, { sdk: path.join(managed, 'sdk'), avd: 'axrb-managed-api36', port: 5584 });
-  setup = new Setup({ root, portableRoot: portable, directory: managed, currentDirectory: state.data.settings.managedDirectory || managed,
+  setup = new (buildProfile.emulatorEnabled ? Setup : DirectSetup)({ root, portableRoot: portable, directory: managed, currentDirectory: state.data.settings.managedDirectory || managed,
+    recommendedDirectory: path.join(portable || process.env.LOCALAPPDATA, buildProfile.runtimeDirectory),
+    recommendedDownloadDirectory: path.join(portable || app.getPath('downloads'), portable ? 'downloads' : buildProfile.productName),
     resumableDirectory: pendingRuntime?.directory || '', runtime, components,
     select: value => state.stageRuntime(portableOutput(portable, value)),
     stage: (value, installed) => state.stageRuntime(value, installed),
@@ -377,7 +414,7 @@ if (!smoke && (app.isPackaged || pendingRuntime || state.data.settings.managedDi
 }
 liveDiagnostics = new LiveDiagnostics({
   directory: path.join(state.directory, 'diagnostics'),
-  getConfig: () => ({ sdk: runtime.settings.sdk, avd: runtime.settings.avd, port: runtime.settings.port, dataHome: process.env.AXRB_DATA_HOME || path.join(root, 'out') }),
+  getConfig: () => ({ emulatorEnabled: buildProfile.emulatorEnabled, sdk: runtime.settings.sdk, avd: runtime.settings.avd, port: runtime.settings.port, dataHome: process.env.AXRB_DATA_HOME || path.join(root, 'out') }),
   // Setup owns ADB while it installs or boots Android, and every operation
   // behind the exclusive gate drives it too. Capture keeps watching, but
   // leaves starting the server to them rather than forking a competitor.
@@ -390,14 +427,14 @@ emulatorWatchdog = new EmulatorWatchdog({
   onChange: () => changed(),
   onTransition: state => liveDiagnostics.append('launcher', state.detail, { tag: 'watchdog', level: state.phase === 'unknown' ? 'W' : 'I' }),
 });
-emulatorWatchdog.start();
+if (buildProfile.emulatorEnabled) emulatorWatchdog.start();
 // Reclaiming the drive must never delay or fail startup, and anything a live
 // run is still using is far newer than the cutoff.
 if (portable) void sweepPortableTemp(portable)
   .then(removed => { if (removed) liveDiagnostics?.write('launcher', `Removed ${removed} stale portable temporary ${removed === 1 ? 'entry' : 'entries'}.\n`, { tag: 'runtime' }); })
   .catch(error => liveDiagnostics?.write('launcher', `Portable temporary sweep failed: ${message(error)}\n`, { tag: 'runtime' }));
 token = await metaSession.load();
-window = new BrowserWindow({ width: 1320, height: 880, minWidth: 920, minHeight: 640, title: 'AXRB', icon: path.join(directory, 'assets/axrb.ico'), backgroundColor: '#141414',
+window = new BrowserWindow({ width: 1320, height: 880, minWidth: 920, minHeight: 640, title: buildProfile.productName, icon: path.join(directory, 'assets/axrb.ico'), backgroundColor: '#141414',
   autoHideMenuBar: true, webPreferences: { preload: path.join(directory, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false } });
 window.on('close', event => {
   if (quitting) return;
@@ -421,6 +458,11 @@ handler('copyText', text => {
 handler('setupCheck', () => setup?.check());
 handler('setupStart', options => setup?.start(options));
 handler('setupCancel', () => setup?.cancel());
+handler('setupSkip', options => setup?.skipEmulator(options));
+handler('setupResume', async () => {
+  if (busy || runtime.child) throw new Error('Close the running game before setting up the Android emulator.');
+  return setup?.resumeEmulatorSetup();
+});
 handler('chooseSetupArchives', async () => {
   if (setup?.status.active) throw new Error('Wait until setup is ready to select archives.');
   const choice = await dialog.showOpenDialog(window, { title: 'Use downloaded Android setup files',
@@ -453,15 +495,15 @@ handler('import', async () => {
   if (result.canceled) return;
   return importTransfer('apk', { file: result.filePaths[0] });
 });
-handler('questDevices', () => new Quest(runtime.settings).devices());
-handler('questGames', async serial => (await new Quest(runtime.settings).games(serial)).map(game => {
+handler('questDevices', () => quest().devices());
+handler('questGames', async serial => (await quest().games(serial)).map(game => {
   const known = state.data.games.find(g => g.package === game.package);
   return { ...game, name: known?.name || game.name, downloaded: Boolean(known?.downloaded), image: known?.image || '' };
 }));
 handler('questImport', (serial, packageName) => importTransfer('quest', { serial, package: packageName }));
 handler('importZip', async () => {
   if (busy) throw new Error('Wait for the current task to finish.');
-  const result = await dialog.showOpenDialog(window, { title: 'Install game ZIP', filters: [{ name: 'Game ZIP', extensions: ['zip'] }], properties: ['openFile'] });
+  const result = await dialog.showOpenDialog(window, { title: buildProfile.emulatorEnabled ? 'Install game ZIP' : 'Import game ZIP', filters: [{ name: 'Game ZIP', extensions: ['zip'] }], properties: ['openFile'] });
   if (!result.canceled) return importTransfer('zip', { file: result.filePaths[0] });
 });
 handler('exportGames', async ids => {
@@ -501,6 +543,8 @@ handler('importAssets', id => exclusive(async () => {
   const chosen = result.filePaths.map(file => path.basename(file));
   const duplicate = chosen.find((name, index) => chosen.indexOf(name) !== index);
   if (duplicate) throw new Error(`Selected two files named "${duplicate}". Add one of them at a time.`);
+  // Expansion files go to Android/obb/<package>; a main/patch OBB named for another game is a wrong pick.
+  if (game.package) for (const name of chosen) if (/\.obb$/i.test(name)) classifyAsset(name, game.package);
   const carried = await carryPortableFiles(portable, state.data.settings.downloadDir, result.filePaths, shutdown.signal);
   for (const file of carried) files.push({ path: file, name: safeName(path.basename(file)), kind: file.endsWith('.obb') ? 'obb' : 'asset', size: (await fs.stat(file)).size });
   game.files = [...(game.files || []).filter(f => !files.some(n => n.name === f.name)), ...files]; await persist();
@@ -549,10 +593,10 @@ handler('removeImported', id => exclusive(async () => {
   }
   const answer = await dialog.showMessageBox(window, { type: 'warning', title: 'Delete imported app',
     message: `Delete ${game.name}?`,
-    detail: 'This uninstalls the app from AXRB’s Android emulator and deletes imported files copied into AXRB-managed storage. Android app data and saves will be lost. An original APK selected from outside AXRB will not be deleted.',
+    detail: !buildProfile.emulatorEnabled ? 'Deletes imported files copied into AXRB-Emulatorless storage. Your Direct saves and original APK remain on your PC.' : 'This uninstalls the app from AXRB’s Android emulator and deletes imported files copied into AXRB-managed storage. Android app data and saves will be lost. An original APK selected from outside AXRB will not be deleted.',
     buttons: ['Cancel', 'Delete app'], defaultId: 0, cancelId: 0, noLink: true });
   if (answer.response !== 1) return false;
-  if (game.installed) await runtime.uninstall(game, () => {});
+  if (buildProfile.emulatorEnabled && game.installed) await runtime.uninstall(game, () => {});
   await removeManagedImportFiles(game, state.data.settings.downloadDir);
   state.data.games = state.data.games.filter(item => item !== game);
   await persist();
@@ -616,13 +660,39 @@ handler('patch', (id, selected) => exclusive(async () => {
   await persist();
   return { profileLabel: compatibility.status === 'matched' ? compatibility.label : null };
 }));
-handler('play', (id, backend = 'android') => exclusive(async () => {
+// Direct mode needs the Android system libraries once (setup's runtime
+// folder, beside the emulator's files), then reads the game where it is.
+async function prepareDirect(game, compatibility) {
+  const files = directLaunchFiles(game, compatibility);
+  const paths = directPaths(root, setup?.directory || state.data.settings.managedDirectory || path.join(portable || process.env.LOCALAPPDATA, buildProfile.runtimeDirectory));
+  await checkDirectRuntime(root);
+  const identity = await runtime.inspect(files.apk);
+  if (identity.package !== game.package) throw new Error('The APK package does not match this library entry. Import it again.');
+  if (!identity.activity) throw new Error('The APK has no launch activity.');
+  if (!await directSystemReady(paths)) {
+    const job = { id: randomUUID(), gameId: game.id, name: game.name, status: 'installing', stage: 'Preparing direct mode' };
+    state.data.jobs.unshift(job); await persist();
+    try {
+      await ensureDirectSystem(root, paths, { update: (stage, progress) => { Object.assign(job, { stage, completed: 0, total: 0, progressUnit: 'bytes' }, progress); changed(); } });
+      job.status = 'complete'; job.stage = 'Direct mode ready';
+    } catch (error) { job.status = 'failed'; job.error = message(error); throw error; }
+    finally { await persist(); }
+  }
+  const assetList = path.join(paths.data, 'sessions', `${game.package}.assets`);
+  await writeAssetList(assetList, files.assets);
+  await seedExternalStorage(paths.data, files.external);
+  return { ...paths, apk: files.apk, activity: identity.activity, assetList };
+}
+handler('play', (id, backend = buildProfile.emulatorEnabled ? 'android' : 'direct') => exclusive(async () => {
   const game = getGame(id);
-  if (!['android', 'quest-bridge'].includes(backend)) throw new Error('Unknown runtime backend.');
+  if (!['android', 'quest-bridge', 'direct'].includes(backend)) throw new Error('Unknown runtime backend.');
   if (backend === 'android' && !game.installed) throw new Error('Install the game first.');
   if (runtime.child) throw new Error('A game is already running.');
+  // Direct mode's compatibility decides which APK it accepts, so it is resolved first.
+  const direct = backend === 'direct' ? await prepareDirect(game, compatibilityRuntimeOptions(resolveCompatibility(compatibilityProfiles, game))) : null;
   const bridge = backend === 'quest-bridge' ? await prepareBridge({ root, directory: path.join(state.directory, 'quest-bridge'), sdk: runtime.settings.sdk, game, execute: run, onOutput: runtime.onOutput }) : null;
-  const prepared = bridge ? { game: { ...game, versionCode: bridge.versionCode }, ownsEmulator: false } : await runtime.prepareLaunch(game);
+  const prepared = bridge ? { game: { ...game, versionCode: bridge.versionCode }, ownsEmulator: false }
+    : direct ? { game: { ...game, activity: direct.activity }, ownsEmulator: false } : await runtime.prepareLaunch(game);
   let compatibility;
   try {
     compatibility = resolveCompatibility(bridge ? [] : compatibilityProfiles, prepared.game);
@@ -654,7 +724,7 @@ handler('play', (id, backend = 'android') => exclusive(async () => {
         if (window && !window.isDestroyed()) window.webContents.send('axrb:launch-error', `${game.name}: ${error}`);
       }
       await persist();
-    }, compatibilityRuntimeOptions(compatibility), { ownsEmulator: prepared.ownsEmulator, sessionId, bridge });
+    }, compatibilityRuntimeOptions(compatibility), { ownsEmulator: prepared.ownsEmulator, sessionId, bridge, direct });
   } catch (error) {
     if (prepared.ownsEmulator) await runtime.adb(['emu', 'kill']).catch(cleanupError => liveDiagnostics.append('launcher', `Android shutdown failed: ${message(cleanupError)}`, { tag: 'game', level: 'W' }));
     throw error;
@@ -701,7 +771,7 @@ handler('fpsHud', async enabled => {
   await persist();
 });
 handler('settings', async values => {
-  const allowed = ['sdk', 'avd', 'port', 'memoryMB', 'cpuCores', 'textureMode', 'downloadDir', 'ovrportCli', 'diagnosticsEndpoint', 'precomposeProjectionLayers'];
+  const allowed = ['sdk', 'avd', 'port', 'memoryMB', 'cpuCores', 'textureMode', 'downloadDir', 'ovrportCli', 'diagnosticsEndpoint', 'precomposeProjectionLayers', 'directTranslator'];
   if (!values || typeof values !== 'object') throw new Error('Invalid settings.');
   if (busy || controllers.size || runtime.child) throw new Error('Finish current tasks before changing runtime settings.');
   const settings = { ...state.data.settings };
@@ -715,6 +785,7 @@ handler('settings', async values => {
   if (!Number.isInteger(settings.cpuCores) || settings.cpuCores < 2 || settings.cpuCores > 6) throw new Error('Choose between 2 and 6 vCPUs.');
   if (typeof settings.precomposeProjectionLayers !== 'boolean') throw new Error('Choose whether to precompose projection layers.');
   if (!['gpu', 'bc7'].includes(settings.textureMode)) throw new Error('Choose a supported texture conversion mode.');
+  if (!['dynarmic', 'digitalis'].includes(settings.directTranslator)) throw new Error('Choose Dynarmic or Digitalis as the ARM64 translator.');
   for (const key of ['sdk', 'downloadDir']) if (typeof settings[key] !== 'string' || !path.isAbsolute(settings[key])) throw new Error('Select absolute Windows paths.');
   portableOutput(portable, settings.downloadDir);
   if (settings.ovrportCli) portableOutput(portable, settings.ovrportCli);
@@ -829,11 +900,11 @@ let aiGameId = '';
 const aiHarness = new DiagnosticHarness({
   context: () => {
     const game = state.data.games.find(g => g.id === (aiGameId || runtime.game));
-    return { sdk: runtime.settings.sdk, port: runtime.settings.port, avd: runtime.settings.avd,
+    return { emulatorEnabled: buildProfile.emulatorEnabled, sdk: runtime.settings.sdk, port: runtime.settings.port, avd: runtime.settings.avd,
       root, launcher:directory, downloadDir:runtime.settings.downloadDir, avdHome:process.env.ANDROID_AVD_HOME,
       games:state.data.games.map(g=>({name:g.title || g.name || g.package,package:g.package,installed:Boolean(g.installed)})),
       dataHome: process.env.AXRB_DATA_HOME || path.join(root, 'out'), game: game?.id || '', package: game?.package || '',
-      title: game?.name || game?.title || '', session: runtime.child?.pid || null, backend: runtime.bridgeStopEvent ? 'quest-bridge' : 'android-emulator',
+      title: game?.name || game?.title || '', session: runtime.child?.pid || null, backend: !buildProfile.emulatorEnabled || runtime.direct ? 'direct' : runtime.bridgeStopEvent ? 'quest-bridge' : 'android-emulator',
       runningGame: runtime.game || '', watchdog: emulatorWatchdog?.snapshot(),
       memoryMB: runtime.settings.memoryMB, cpuCores: runtime.settings.cpuCores, hardware: setup?.status.hardware };
   },
@@ -843,7 +914,7 @@ const aiHarness = new DiagnosticHarness({
     if (!runtime.child) throw new Error('No running AXRB game. Start the game and keep the headset active before measuring.');
     if (aiGameId && aiGameId !== runtime.game) throw new Error('Selected game is not the running game.');
     const game = state.data.games.find(g => g.id === runtime.game);
-    return run('powershell.exe', performanceScanArgs(root, state.data.settings, { seconds, version: app.getVersion(), packageName: game?.package || '' }),
+    return run('powershell.exe', performanceScanArgs(root, state.data.settings, { emulatorEnabled: buildProfile.emulatorEnabled, seconds, version: app.getVersion(), packageName: game?.package || '' }),
       { timeout: performanceScanTimeout(seconds), signal });
   },
   approveStop: async (reason, signal, assertScope) => {
@@ -858,6 +929,7 @@ const aiHarness = new DiagnosticHarness({
     return { stopped: true };
   },
   approveAdb: async (args, reason, signal, assertScope) => {
+    requireEmulator(buildProfile.emulatorEnabled);
     const { response }=await dialog.showMessageBox(window,{type:'question',title:'AXRB assistant',
       message:'Allow this emulator command?',
       detail:`${reason}\n\nTarget: emulator-${runtime.settings.port} (AXRB only)\nArguments: ${JSON.stringify(args)}\n\nThis may modify Android, installed games, files or runtime state.`,
@@ -927,7 +999,7 @@ handler('performanceScan', async ({ upload = false, seconds = 10 } = {}) => {
   if (!runtime.child) throw new Error('Start a game first: the scan samples a running session.');
   const game = state.data.games.find(g => g.id === runtime.game);
   const output = await run('powershell.exe', performanceScanArgs(root, state.data.settings,
-    { seconds, version: app.getVersion(), packageName: game?.package || '' }), { timeout: performanceScanTimeout(seconds) });
+    { emulatorEnabled: buildProfile.emulatorEnabled, seconds, version: app.getVersion(), packageName: game?.package || '' }), { timeout: performanceScanTimeout(seconds) });
   // The script removes the same three identifiers itself, so that a report
   // someone runs by hand is safe to send. Running it again here costs nothing
   // and keeps the launcher's guarantee independent of the script's.
@@ -940,7 +1012,7 @@ if (smoke) window.webContents.on('console-message', details => { if (details.lev
 await window.loadFile(uiPath);
 window.show();
 window.focus();
-if (app.isPackaged && !smoke && !portable && !process.env.PORTABLE_EXECUTABLE_FILE && existsSync(path.join(process.resourcesPath,'app-update.yml'))) {
+if (buildProfile.updatesEnabled && app.isPackaged && !smoke && !portable && !process.env.PORTABLE_EXECUTABLE_FILE && existsSync(path.join(process.resourcesPath,'app-update.yml'))) {
   launcherUpdates=new LauncherUpdates({updater:electronUpdater.autoUpdater,
     prompt:options=>dialog.showMessageBox(window,options),
     progress:value=>{if(!window.isDestroyed())window.setProgressBar(value);},
@@ -959,12 +1031,12 @@ if (smoke) {
   const { aiChatSmoke } = await import('./tests/ai-chat-smoke.mjs');
   window.webContents.send('axrb:changed', publicState());
   await aiChatSmoke(window, aiDiagnostics, chatgpt, path.join(root, 'out/launcher/smoke'));
-  const { libraryActionsSmoke } = await import('./tests/library-actions-smoke.mjs');
+  const { libraryActionsSmoke } = await import(buildProfile.emulatorEnabled ? './tests/library-actions-smoke.mjs' : './tests/emulatorless-actions-smoke.mjs');
   await libraryActionsSmoke(window, { state, runtime, dialog, persist, publicState, ovrport });
   const { gameExportSmoke } = await import('./tests/game-export-smoke.mjs');
   await gameExportSmoke(window, { state, runtime, dialog, persist });
   app.quit();
-} else { if (!setup || setup.status.phase === 'ready') syncInstalled().catch(() => {}); refreshArtwork().catch(() => {}); }
+} else { if (!setup || (setup.status.phase === 'ready' && !setup.status.directOnly)) syncInstalled().catch(() => {}); refreshArtwork().catch(() => {}); }
 app.on('window-all-closed', () => { for (const controller of controllers.values()) controller.abort(); setup?.cancel(); if (setup?.task) setup.task.finally(() => app.quit()); else app.quit(); });
 }
 app.whenReady().then(bootstrap).catch(error => { console.error(message(error)); if (!smoke) dialog.showErrorBox('AXRB could not start', message(error)); app.exit(1); });

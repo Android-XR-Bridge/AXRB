@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+  <item android:state_enabled="false" android:alpha="0.5" android:color="?attr/colorSwitchThumbNormal" />
+  <item android:state_checked="true" android:color="?attr/colorControlActivated" />
+  <item android:color="?attr/colorSwitchThumbNormal" />
+</selector>

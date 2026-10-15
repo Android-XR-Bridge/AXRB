@@ -9,7 +9,7 @@
 #include <vector>
 
 namespace axrb::host {
-// The child surface preserves aspect ratio while DXGI scales the GPU image.
+// The desktop mirror center-crops game frames to 16:9, then scales without distortion.
 class MirrorWindow {
 public:
     ~MirrorWindow();
@@ -38,7 +38,7 @@ private:
     bool closed_ = false, failed_ = false;
     HANDLE closeRequest_ = nullptr, closeReady_ = nullptr;
     ULONGLONG closeDeadline_ = 0;
-    UINT width_ = 1, height_ = 1;
+    UINT width_ = 16, height_ = 9;
     DXGI_FORMAT format_ = DXGI_FORMAT_UNKNOWN;
     Microsoft::WRL::ComPtr<IDXGIFactory2> factory_;
     Microsoft::WRL::ComPtr<ID3D11Device> device_;

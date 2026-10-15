@@ -78,7 +78,9 @@ struct PoseFrame {
     Pose local_origin; // v5: host LOCAL origin in the transmitted tracking world.
     uint32_t local_origin_flags = 0;
     uint32_t hmd_flags = 0;
-    uint32_t reserved_v5 = 0;
+    // Former v5 reserved word: how far after monotonic_time_ns (the capture)
+    // the host predicted these poses for display. Zero means unknown.
+    uint32_t display_lead_ns = 0;
     ViewFov view_fov[2]; // v6: actual host per-eye optical FOV, in radians.
     uint32_t view_fov_valid = 0;
     uint32_t reserved_v6 = 0;

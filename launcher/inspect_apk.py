@@ -1,7 +1,9 @@
-"""Read APK identity with Android SDK tools; never install or modify the APK."""
-import argparse, base64, json, re, subprocess, zipfile
+"""Read APK identity with the bundled APK reader; never modify the APK."""
+import argparse, base64, json, re, subprocess, sys, zipfile
 from pathlib import Path
 import xml.etree.ElementTree as ET
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts/run'))
+from android_tools import find_aapt2
 
 def _manifest_activity(output, package):
     """Find an enabled public MAIN entry point omitted by aapt's badging view."""
@@ -43,11 +45,8 @@ def _dump(tool, *args):
         capture_output=True, encoding='utf-8', errors='replace', timeout=60,
         creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)).stdout
 
-def inspect(apk, sdk, allow_split=False):
-    versions = [p for p in (sdk / 'build-tools').glob('*/aapt2.exe')]
-    if not versions:
-        raise RuntimeError('Android SDK build-tools (aapt2) are required')
-    tool = max(versions, key=lambda p: tuple(int(x) for x in re.findall(r'\d+', p.parent.name)))
+def inspect(apk, sdk=None, allow_split=False):
+    tool = find_aapt2(sdk)
     output = _dump(tool, 'badging', str(apk))
     package = re.search(r"^package: name='([^']+)'", output, re.M)
     activity_match = re.search(r"^launchable-activity: name='([^']+)'", output, re.M)
@@ -77,7 +76,7 @@ def inspect(apk, sdk, allow_split=False):
 if __name__ == '__main__':
     p = argparse.ArgumentParser()
     p.add_argument('--apk', type=Path, required=True)
-    p.add_argument('--sdk', type=Path, required=True)
+    p.add_argument('--sdk', type=Path)
     p.add_argument('--allow-split', action='store_true')
     a = p.parse_args()
     try: print(json.dumps(inspect(a.apk, a.sdk, a.allow_split)))

@@ -176,6 +176,8 @@ test('malformed envelopes, identities and unknown keys are rejected', async t =>
     ['runtime not boolean', doc(profile({ runtime: { precomposeProjectionLayers: 'yes' } }))],
     ['runtime empty', doc(profile({ runtime: {} }))],
     ['no actions', doc((() => { const p = profile(); delete p.ovrport; delete p.runtime; return p; })())],
+    ['controllersOnly without the driver', doc(profile({ runtime: { controllersOnly: true } }))],
+    ['legacy option not boolean', doc(profile({ runtime: { legacyOculusDriver: 1 } }))],
     ['inert runtime false alone', doc((() => { const p = profile(); delete p.ovrport; p.runtime = { precomposeProjectionLayers: false }; return p; })())],
   ];
   for (const [name, body] of cases) {
@@ -217,10 +219,20 @@ test('patch and runtime helpers act only on matched profiles', () => {
   const runtimeOnly = { status: 'matched', profile: { runtime: { precomposeProjectionLayers: true } } };
   assert.deepEqual(compatibilityPatchArgs(runtimeOnly), []);
   assert.deepEqual(compatibilityRuntimeOptions(runtimeOnly), { precomposeProjectionLayers: true });
+  const legacy = { status: 'matched', profile: { runtime: { legacyOculusDriver: true, questIdentity: true, controllersOnly: true, precomposeProjectionLayers: false } } };
+  assert.deepEqual(compatibilityRuntimeOptions(legacy), { legacyOculusDriver: true, questIdentity: true, controllersOnly: true });
   const disabled = { status: 'matched', profile: { runtime: { precomposeProjectionLayers: false } } };
   assert.deepEqual(compatibilityRuntimeOptions(disabled), {});
   for (const resolution of [{ status: 'mismatch' }, { status: 'none' }, null, undefined, {}]) {
     assert.deepEqual(compatibilityPatchArgs(resolution), []);
     assert.deepEqual(compatibilityRuntimeOptions(resolution), {});
   }
+});
+
+test('the shipped profiles load, and Iron Man VR runs its store APK with the legacy Oculus driver', async () => {
+  const profiles = await loadCompatibilityProfiles(new URL('../core/game-compatibility.json', import.meta.url));
+  const ironMan = resolveCompatibility(profiles, { package: 'com.camouflaj.salmon', versionCode: '443305' });
+  assert.equal(ironMan.status, 'matched');
+  assert.deepEqual(compatibilityRuntimeOptions(ironMan), { legacyOculusDriver: true, questIdentity: true, controllersOnly: true });
+  assert.equal(resolveCompatibility(profiles, { package: 'com.camouflaj.salmon', versionCode: '1' }).status, 'mismatch');
 });

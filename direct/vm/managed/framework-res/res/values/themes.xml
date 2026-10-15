@@ -1,0 +1,458 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Themes of the runtime. Every public theme family (legacy Theme, Holo,
+  Material, DeviceDefault) resolves to the same Material-style widget set; the
+  families differ in palette and window features only. Parents are explicit.
+-->
+<resources>
+  <!-- ===== Base: dark palette, legacy title bar ===== -->
+  <style name="Theme" parent="">
+    <item name="isLightTheme">false</item>
+    <item name="colorForeground">@color/foreground_material_dark</item>
+    <item name="colorForegroundInverse">@color/foreground_material_light</item>
+    <item name="colorBackground">@color/background_material_dark</item>
+    <item name="colorBackgroundCacheHint">?attr/colorBackground</item>
+    <item name="colorBackgroundFloating">@color/background_floating_material_dark</item>
+    <item name="colorPrimary">@color/primary_material_dark</item>
+    <item name="colorPrimaryDark">@color/primary_dark_material_dark</item>
+    <item name="colorAccent">@color/accent_material_dark</item>
+    <item name="colorControlNormal">?attr/textColorSecondary</item>
+    <item name="colorControlActivated">?attr/colorAccent</item>
+    <item name="colorControlHighlight">@color/ripple_material_dark</item>
+    <item name="colorButtonNormal">@color/button_material_dark</item>
+    <item name="colorSwitchThumbNormal">@color/switch_thumb_normal_material_dark</item>
+    <item name="colorEdgeEffect">?attr/colorPrimary</item>
+    <item name="colorError">@color/error_color_material_dark</item>
+    <item name="disabledAlpha">@dimen/disabled_alpha_material_dark</item>
+    <item name="backgroundDimAmount">@dimen/background_dim_amount</item>
+    <item name="backgroundDimEnabled">true</item>
+
+    <item name="textColorPrimary">@color/primary_text_dark</item>
+    <item name="textColorSecondary">@color/secondary_text_dark</item>
+    <item name="textColorTertiary">@color/tertiary_text_dark</item>
+    <item name="textColorPrimaryInverse">@color/primary_text_light</item>
+    <item name="textColorSecondaryInverse">@color/secondary_text_light</item>
+    <item name="textColorTertiaryInverse">@color/tertiary_text_light</item>
+    <item name="textColorPrimaryDisableOnly">@color/primary_text_dark</item>
+    <item name="textColorHint">@color/hint_foreground_material_dark</item>
+    <item name="textColorHintInverse">@color/hint_foreground_material_light</item>
+    <item name="textColorHighlight">@color/highlighted_text_material_dark</item>
+    <item name="textColorHighlightInverse">@color/highlighted_text_material_light</item>
+    <item name="textColorLink">?attr/colorAccent</item>
+    <item name="textColorLinkInverse">?attr/colorAccent</item>
+    <item name="textColorAlertDialogListItem">?attr/textColorPrimary</item>
+    <item name="editTextColor">?attr/textColorPrimary</item>
+
+    <item name="textAppearance">@style/TextAppearance.Material</item>
+    <item name="textAppearanceInverse">@style/TextAppearance.Material.Inverse</item>
+    <item name="textAppearanceLarge">@style/TextAppearance.Material.Large</item>
+    <item name="textAppearanceMedium">@style/TextAppearance.Material.Medium</item>
+    <item name="textAppearanceSmall">@style/TextAppearance.Material.Small</item>
+    <item name="textAppearanceLargeInverse">@style/TextAppearance.Material.Large.Inverse</item>
+    <item name="textAppearanceMediumInverse">@style/TextAppearance.Material.Medium.Inverse</item>
+    <item name="textAppearanceSmallInverse">@style/TextAppearance.Material.Small.Inverse</item>
+    <item name="textAppearanceButton">@style/TextAppearance.Material.Widget.Button</item>
+    <item name="textAppearanceListItem">@style/TextAppearance.Material.Subhead</item>
+    <item name="textAppearanceListItemSmall">@style/TextAppearance.Material.Subhead</item>
+    <item name="textAppearanceListItemSecondary">@style/TextAppearance.Material.Body1</item>
+    <item name="textAppearanceLargePopupMenu">@style/TextAppearance.Material.Menu</item>
+    <item name="textAppearanceSmallPopupMenu">@style/TextAppearance.Material.Menu</item>
+    <item name="textCheckMark">@drawable/btn_check_material</item>
+    <item name="textCheckMarkInverse">@drawable/btn_check_material</item>
+
+    <item name="textViewStyle">@style/Widget.Material.TextView</item>
+    <item name="buttonStyle">@style/Widget.Material.Button</item>
+    <item name="buttonStyleSmall">@style/Widget.Material.Button.Small</item>
+    <item name="buttonStyleToggle">@style/Widget.Material.Button.Toggle</item>
+    <item name="borderlessButtonStyle">@style/Widget.Material.Button.Borderless</item>
+    <item name="buttonBarStyle">@style/Widget.Material.ButtonBar</item>
+    <item name="buttonBarButtonStyle">@style/Widget.Material.Button.ButtonBar.AlertDialog</item>
+    <item name="imageButtonStyle">@style/Widget.Material.ImageButton</item>
+    <item name="editTextStyle">@style/Widget.Material.EditText</item>
+    <item name="editTextBackground">@drawable/edit_text_material</item>
+    <item name="checkboxStyle">@style/Widget.Material.CompoundButton.CheckBox</item>
+    <item name="radioButtonStyle">@style/Widget.Material.CompoundButton.RadioButton</item>
+    <item name="switchStyle">@style/Widget.Material.CompoundButton.Switch</item>
+    <item name="checkedTextViewStyle">@style/Widget.Material.CheckedTextView</item>
+    <item name="listViewStyle">@style/Widget.Material.ListView</item>
+    <item name="gridViewStyle">@style/Widget.Material.GridView</item>
+    <item name="scrollViewStyle">@style/Widget.Material.ScrollView</item>
+    <item name="horizontalScrollViewStyle">@style/Widget.Material.HorizontalScrollView</item>
+    <item name="progressBarStyle">@style/Widget.Material.ProgressBar</item>
+    <item name="progressBarStyleHorizontal">@style/Widget.Material.ProgressBar.Horizontal</item>
+    <item name="progressBarStyleSmall">@style/Widget.Material.ProgressBar.Small</item>
+    <item name="progressBarStyleLarge">@style/Widget.Material.ProgressBar.Large</item>
+    <item name="seekBarStyle">@style/Widget.Material.SeekBar</item>
+    <item name="ratingBarStyle">@style/Widget.Material.RatingBar</item>
+    <item name="spinnerStyle">@style/Widget.Material.Spinner</item>
+    <item name="dropDownListViewStyle">@style/Widget.Material.ListView.DropDown</item>
+    <item name="spinnerItemStyle">@style/Widget.Material.TextView.SpinnerItem</item>
+    <item name="toolbarStyle">@style/Widget.Material.Toolbar</item>
+    <item name="actionBarStyle">@style/Widget.Material.ActionBar.Solid</item>
+    <item name="actionBarSize">@dimen/action_bar_default_height_material</item>
+    <item name="homeAsUpIndicator">@drawable/ic_ab_back_material</item>
+
+    <item name="listPreferredItemHeight">@dimen/list_item_height_material</item>
+    <item name="listPreferredItemHeightSmall">@dimen/list_item_height_small_material</item>
+    <item name="listPreferredItemHeightLarge">@dimen/list_item_height_large_material</item>
+    <item name="listPreferredItemPaddingLeft">@dimen/list_item_padding_horizontal_material</item>
+    <item name="listPreferredItemPaddingRight">@dimen/list_item_padding_horizontal_material</item>
+    <item name="listPreferredItemPaddingStart">@dimen/list_item_padding_horizontal_material</item>
+    <item name="listPreferredItemPaddingEnd">@dimen/list_item_padding_horizontal_material</item>
+    <item name="listDivider">@drawable/list_divider_material</item>
+    <item name="dividerHorizontal">@drawable/list_divider_material</item>
+    <item name="dividerVertical">@drawable/list_divider_material</item>
+    <item name="listChoiceBackgroundIndicator">@drawable/item_background_material</item>
+    <item name="listChoiceIndicatorSingle">@drawable/btn_radio_material</item>
+    <item name="listChoiceIndicatorMultiple">@drawable/btn_check_material</item>
+    <item name="selectableItemBackground">@drawable/item_background_material</item>
+    <item name="selectableItemBackgroundBorderless">@drawable/item_background_borderless_material</item>
+    <item name="activatedBackgroundIndicator">@drawable/activated_background_material</item>
+
+    <item name="dialogTheme">@style/ThemeOverlay.Material.Dialog</item>
+    <item name="alertDialogTheme">@style/ThemeOverlay.Material.Dialog.Alert</item>
+    <item name="dialogPreferredPadding">@dimen/dialog_padding_material</item>
+
+    <item name="windowBackground">?attr/colorBackground</item>
+    <item name="windowNoTitle">false</item>
+    <item name="windowActionBar">false</item>
+    <item name="windowActionBarOverlay">false</item>
+    <item name="windowFullscreen">false</item>
+    <item name="windowIsFloating">false</item>
+    <item name="windowIsTranslucent">false</item>
+    <item name="windowContentOverlay">@null</item>
+    <item name="windowCloseOnTouchOutside">false</item>
+    <item name="windowDrawsSystemBarBackgrounds">true</item>
+    <item name="windowLightStatusBar">false</item>
+    <item name="windowElevation">0dp</item>
+    <item name="statusBarColor">?attr/colorPrimaryDark</item>
+    <item name="navigationBarColor">@color/black</item>
+    <item name="windowMinWidthMajor">@dimen/dialog_min_width_major</item>
+    <item name="windowMinWidthMinor">@dimen/dialog_min_width_minor</item>
+  </style>
+
+  <style name="Theme.Light" parent="Theme">
+    <item name="isLightTheme">true</item>
+    <item name="colorForeground">@color/foreground_material_light</item>
+    <item name="colorForegroundInverse">@color/foreground_material_dark</item>
+    <item name="colorBackground">@color/background_material_light</item>
+    <item name="colorBackgroundFloating">@color/background_floating_material_light</item>
+    <item name="colorPrimary">@color/primary_material_light</item>
+    <item name="colorPrimaryDark">@color/primary_dark_material_light</item>
+    <item name="colorAccent">@color/accent_material_light</item>
+    <item name="colorControlHighlight">@color/ripple_material_light</item>
+    <item name="colorButtonNormal">@color/button_material_light</item>
+    <item name="colorSwitchThumbNormal">@color/switch_thumb_normal_material_light</item>
+    <item name="colorError">@color/error_color_material_light</item>
+    <item name="disabledAlpha">@dimen/disabled_alpha_material_light</item>
+    <item name="textColorPrimary">@color/primary_text_light</item>
+    <item name="textColorSecondary">@color/secondary_text_light</item>
+    <item name="textColorTertiary">@color/tertiary_text_light</item>
+    <item name="textColorPrimaryInverse">@color/primary_text_dark</item>
+    <item name="textColorSecondaryInverse">@color/secondary_text_dark</item>
+    <item name="textColorTertiaryInverse">@color/tertiary_text_dark</item>
+    <item name="textColorPrimaryDisableOnly">@color/primary_text_light</item>
+    <item name="textColorHint">@color/hint_foreground_material_light</item>
+    <item name="textColorHintInverse">@color/hint_foreground_material_dark</item>
+    <item name="textColorHighlight">@color/highlighted_text_material_light</item>
+    <item name="textColorHighlightInverse">@color/highlighted_text_material_dark</item>
+    <item name="actionBarTheme">@null</item>
+  </style>
+
+  <!-- Window-feature mixins, repeated per family below. -->
+  <style name="Theme.NoTitleBar" parent="Theme">
+    <item name="windowNoTitle">true</item>
+  </style>
+  <style name="Theme.NoTitleBar.Fullscreen" parent="Theme.NoTitleBar">
+    <item name="windowFullscreen">true</item>
+  </style>
+  <style name="Theme.NoTitleBar.OverlayActionModes" parent="Theme.NoTitleBar" />
+  <style name="Theme.WithActionBar" parent="Theme">
+    <item name="windowActionBar">true</item>
+    <item name="windowNoTitle">true</item>
+  </style>
+  <style name="Theme.Black" parent="Theme">
+    <item name="colorBackground">@color/black</item>
+  </style>
+  <style name="Theme.Black.NoTitleBar" parent="Theme.Black">
+    <item name="windowNoTitle">true</item>
+  </style>
+  <style name="Theme.Black.NoTitleBar.Fullscreen" parent="Theme.Black.NoTitleBar">
+    <item name="windowFullscreen">true</item>
+  </style>
+  <style name="Theme.Light.NoTitleBar" parent="Theme.Light">
+    <item name="windowNoTitle">true</item>
+  </style>
+  <style name="Theme.Light.NoTitleBar.Fullscreen" parent="Theme.Light.NoTitleBar">
+    <item name="windowFullscreen">true</item>
+  </style>
+  <style name="Theme.Translucent" parent="Theme">
+    <item name="windowBackground">@color/transparent</item>
+    <item name="windowIsTranslucent">true</item>
+  </style>
+  <style name="Theme.Translucent.NoTitleBar" parent="Theme.Translucent">
+    <item name="windowNoTitle">true</item>
+  </style>
+  <style name="Theme.Translucent.NoTitleBar.Fullscreen" parent="Theme.Translucent.NoTitleBar">
+    <item name="windowFullscreen">true</item>
+  </style>
+  <style name="Theme.NoDisplay" parent="Theme">
+    <item name="windowBackground">@null</item>
+    <item name="windowIsTranslucent">true</item>
+    <item name="windowNoTitle">true</item>
+  </style>
+  <style name="Theme.Dialog" parent="Theme">
+    <item name="windowIsFloating">true</item>
+    <item name="windowBackground">@drawable/dialog_background_material</item>
+    <item name="windowCloseOnTouchOutside">true</item>
+  </style>
+  <style name="Theme.Panel" parent="Theme">
+    <item name="windowBackground">@color/transparent</item>
+    <item name="windowIsFloating">true</item>
+    <item name="windowNoTitle">true</item>
+  </style>
+  <style name="Theme.Light.Panel" parent="Theme.Light">
+    <item name="windowBackground">@color/transparent</item>
+    <item name="windowIsFloating">true</item>
+    <item name="windowNoTitle">true</item>
+  </style>
+  <style name="Theme.InputMethod" parent="Theme.Panel" />
+  <style name="Theme.Wallpaper" parent="Theme">
+    <item name="windowBackground">@color/transparent</item>
+  </style>
+  <style name="Theme.Wallpaper.NoTitleBar" parent="Theme.Wallpaper">
+    <item name="windowNoTitle">true</item>
+  </style>
+  <style name="Theme.Wallpaper.NoTitleBar.Fullscreen" parent="Theme.Wallpaper.NoTitleBar">
+    <item name="windowFullscreen">true</item>
+  </style>
+  <style name="Theme.WallpaperSettings" parent="Theme.Dialog" />
+  <style name="Theme.Light.WallpaperSettings" parent="Theme.Material.Light.Dialog" />
+
+  <!-- ===== Material ===== -->
+  <style name="Theme.Material" parent="Theme">
+    <item name="windowActionBar">true</item>
+    <item name="windowNoTitle">true</item>
+  </style>
+  <style name="Theme.Material.Light" parent="Theme.Light">
+    <item name="windowActionBar">true</item>
+    <item name="windowNoTitle">true</item>
+  </style>
+  <style name="Theme.Material.Light.DarkActionBar" parent="Theme.Material.Light">
+    <item name="colorPrimary">@color/primary_material_dark</item>
+    <item name="colorPrimaryDark">@color/primary_dark_material_dark</item>
+    <item name="actionBarTheme">@style/ThemeOverlay.Material.Dark.ActionBar</item>
+  </style>
+  <style name="Theme.Material.Light.LightStatusBar" parent="Theme.Material.Light">
+    <item name="windowLightStatusBar">true</item>
+    <item name="statusBarColor">?attr/colorBackground</item>
+  </style>
+  <style name="Theme.Material.NoActionBar" parent="Theme.Material">
+    <item name="windowActionBar">false</item>
+  </style>
+  <style name="Theme.Material.NoActionBar.Fullscreen" parent="Theme.Material.NoActionBar">
+    <item name="windowFullscreen">true</item>
+  </style>
+  <style name="Theme.Material.NoActionBar.Overscan" parent="Theme.Material.NoActionBar.Fullscreen" />
+  <style name="Theme.Material.NoActionBar.TranslucentDecor" parent="Theme.Material.NoActionBar">
+    <item name="windowTranslucentStatus">true</item>
+    <item name="windowTranslucentNavigation">true</item>
+  </style>
+  <style name="Theme.Material.Light.NoActionBar" parent="Theme.Material.Light">
+    <item name="windowActionBar">false</item>
+  </style>
+  <style name="Theme.Material.Light.NoActionBar.Fullscreen" parent="Theme.Material.Light.NoActionBar">
+    <item name="windowFullscreen">true</item>
+  </style>
+  <style name="Theme.Material.Light.NoActionBar.Overscan" parent="Theme.Material.Light.NoActionBar.Fullscreen" />
+  <style name="Theme.Material.Light.NoActionBar.TranslucentDecor" parent="Theme.Material.Light.NoActionBar">
+    <item name="windowTranslucentStatus">true</item>
+    <item name="windowTranslucentNavigation">true</item>
+  </style>
+  <style name="Theme.Material.Dialog" parent="Theme.Material">
+    <item name="windowIsFloating">true</item>
+    <item name="windowActionBar">false</item>
+    <item name="windowNoTitle">false</item>
+    <item name="windowCloseOnTouchOutside">true</item>
+    <item name="windowBackground">@drawable/dialog_background_material</item>
+    <item name="windowTitleStyle">@style/DialogWindowTitle.Material</item>
+    <item name="windowElevation">24dp</item>
+    <item name="colorBackground">?attr/colorBackgroundFloating</item>
+  </style>
+  <style name="Theme.Material.Dialog.Alert" parent="Theme.Material.Dialog">
+    <item name="windowNoTitle">true</item>
+  </style>
+  <style name="Theme.Material.Dialog.MinWidth" parent="Theme.Material.Dialog" />
+  <style name="Theme.Material.Dialog.NoActionBar" parent="Theme.Material.Dialog">
+    <item name="windowNoTitle">true</item>
+  </style>
+  <style name="Theme.Material.Dialog.NoActionBar.MinWidth" parent="Theme.Material.Dialog.NoActionBar" />
+  <style name="Theme.Material.Dialog.Presentation" parent="Theme.Material.NoActionBar.Fullscreen" />
+  <style name="Theme.Material.DialogWhenLarge" parent="Theme.Material" />
+  <style name="Theme.Material.DialogWhenLarge.NoActionBar" parent="Theme.Material.NoActionBar" />
+  <style name="Theme.Material.Light.Dialog" parent="Theme.Material.Light">
+    <item name="windowIsFloating">true</item>
+    <item name="windowActionBar">false</item>
+    <item name="windowNoTitle">false</item>
+    <item name="windowCloseOnTouchOutside">true</item>
+    <item name="windowBackground">@drawable/dialog_background_material</item>
+    <item name="windowTitleStyle">@style/DialogWindowTitle.Material</item>
+    <item name="windowElevation">24dp</item>
+    <item name="colorBackground">?attr/colorBackgroundFloating</item>
+  </style>
+  <style name="Theme.Material.Light.Dialog.Alert" parent="Theme.Material.Light.Dialog">
+    <item name="windowNoTitle">true</item>
+  </style>
+  <style name="Theme.Material.Light.Dialog.MinWidth" parent="Theme.Material.Light.Dialog" />
+  <style name="Theme.Material.Light.Dialog.NoActionBar" parent="Theme.Material.Light.Dialog">
+    <item name="windowNoTitle">true</item>
+  </style>
+  <style name="Theme.Material.Light.Dialog.NoActionBar.MinWidth" parent="Theme.Material.Light.Dialog.NoActionBar" />
+  <style name="Theme.Material.Light.Dialog.Presentation" parent="Theme.Material.Light.NoActionBar.Fullscreen" />
+  <style name="Theme.Material.Light.DialogWhenLarge" parent="Theme.Material.Light" />
+  <style name="Theme.Material.Light.DialogWhenLarge.NoActionBar" parent="Theme.Material.Light.NoActionBar" />
+  <style name="Theme.Material.Light.DialogWhenLarge.DarkActionBar" parent="Theme.Material.Light.DarkActionBar" />
+  <style name="Theme.Material.Panel" parent="Theme.Material">
+    <item name="windowBackground">@color/transparent</item>
+    <item name="windowIsFloating">true</item>
+    <item name="windowActionBar">false</item>
+  </style>
+  <style name="Theme.Material.Light.Panel" parent="Theme.Material.Light">
+    <item name="windowBackground">@color/transparent</item>
+    <item name="windowIsFloating">true</item>
+    <item name="windowActionBar">false</item>
+  </style>
+  <style name="Theme.Material.InputMethod" parent="Theme.Material.Panel" />
+  <style name="Theme.Material.Settings" parent="Theme.Material.Light.DarkActionBar" />
+  <style name="Theme.Material.Voice" parent="Theme.Material.Dialog" />
+  <style name="Theme.Material.Light.Voice" parent="Theme.Material.Light.Dialog" />
+  <style name="Theme.Material.Wallpaper" parent="Theme.Material.NoActionBar">
+    <item name="windowBackground">@color/transparent</item>
+  </style>
+  <style name="Theme.Material.Wallpaper.NoTitleBar" parent="Theme.Material.Wallpaper" />
+
+  <!-- ===== Holo (rendered with the Material widget set) ===== -->
+  <style name="Theme.Holo" parent="Theme.Material" />
+  <style name="Theme.Holo.Light" parent="Theme.Material.Light" />
+  <style name="Theme.Holo.Light.DarkActionBar" parent="Theme.Material.Light.DarkActionBar" />
+  <style name="Theme.Holo.NoActionBar" parent="Theme.Material.NoActionBar" />
+  <style name="Theme.Holo.NoActionBar.Fullscreen" parent="Theme.Material.NoActionBar.Fullscreen" />
+  <style name="Theme.Holo.NoActionBar.Overscan" parent="Theme.Material.NoActionBar.Overscan" />
+  <style name="Theme.Holo.NoActionBar.TranslucentDecor" parent="Theme.Material.NoActionBar.TranslucentDecor" />
+  <style name="Theme.Holo.Light.NoActionBar" parent="Theme.Material.Light.NoActionBar" />
+  <style name="Theme.Holo.Light.NoActionBar.Fullscreen" parent="Theme.Material.Light.NoActionBar.Fullscreen" />
+  <style name="Theme.Holo.Light.NoActionBar.Overscan" parent="Theme.Material.Light.NoActionBar.Overscan" />
+  <style name="Theme.Holo.Light.NoActionBar.TranslucentDecor" parent="Theme.Material.Light.NoActionBar.TranslucentDecor" />
+  <style name="Theme.Holo.Dialog" parent="Theme.Material.Dialog" />
+  <style name="Theme.Holo.Dialog.MinWidth" parent="Theme.Material.Dialog.MinWidth" />
+  <style name="Theme.Holo.Dialog.NoActionBar" parent="Theme.Material.Dialog.NoActionBar" />
+  <style name="Theme.Holo.Dialog.NoActionBar.MinWidth" parent="Theme.Material.Dialog.NoActionBar.MinWidth" />
+  <style name="Theme.Holo.Light.Dialog" parent="Theme.Material.Light.Dialog" />
+  <style name="Theme.Holo.Light.Dialog.MinWidth" parent="Theme.Material.Light.Dialog.MinWidth" />
+  <style name="Theme.Holo.Light.Dialog.NoActionBar" parent="Theme.Material.Light.Dialog.NoActionBar" />
+  <style name="Theme.Holo.Light.Dialog.NoActionBar.MinWidth" parent="Theme.Material.Light.Dialog.NoActionBar.MinWidth" />
+  <style name="Theme.Holo.DialogWhenLarge" parent="Theme.Material.DialogWhenLarge" />
+  <style name="Theme.Holo.DialogWhenLarge.NoActionBar" parent="Theme.Material.DialogWhenLarge.NoActionBar" />
+  <style name="Theme.Holo.Light.DialogWhenLarge" parent="Theme.Material.Light.DialogWhenLarge" />
+  <style name="Theme.Holo.Light.DialogWhenLarge.NoActionBar" parent="Theme.Material.Light.DialogWhenLarge.NoActionBar" />
+  <style name="Theme.Holo.Panel" parent="Theme.Material.Panel" />
+  <style name="Theme.Holo.Light.Panel" parent="Theme.Material.Light.Panel" />
+  <style name="Theme.Holo.Wallpaper" parent="Theme.Material.Wallpaper" />
+  <style name="Theme.Holo.Wallpaper.NoTitleBar" parent="Theme.Material.Wallpaper.NoTitleBar" />
+  <style name="Theme.Holo.InputMethod" parent="Theme.Material.InputMethod" />
+
+  <!-- ===== DeviceDefault (Material) ===== -->
+  <style name="Theme.DeviceDefault" parent="Theme.Material" />
+  <style name="Theme.DeviceDefault.Light" parent="Theme.Material.Light" />
+  <style name="Theme.DeviceDefault.Light.DarkActionBar" parent="Theme.Material.Light.DarkActionBar" />
+  <style name="Theme.DeviceDefault.NoActionBar" parent="Theme.Material.NoActionBar" />
+  <style name="Theme.DeviceDefault.NoActionBar.Fullscreen" parent="Theme.Material.NoActionBar.Fullscreen" />
+  <style name="Theme.DeviceDefault.NoActionBar.Overscan" parent="Theme.Material.NoActionBar.Overscan" />
+  <style name="Theme.DeviceDefault.NoActionBar.TranslucentDecor" parent="Theme.Material.NoActionBar.TranslucentDecor" />
+  <style name="Theme.DeviceDefault.Light.NoActionBar" parent="Theme.Material.Light.NoActionBar" />
+  <style name="Theme.DeviceDefault.Light.NoActionBar.Fullscreen" parent="Theme.Material.Light.NoActionBar.Fullscreen" />
+  <style name="Theme.DeviceDefault.Light.NoActionBar.Overscan" parent="Theme.Material.Light.NoActionBar.Overscan" />
+  <style name="Theme.DeviceDefault.Light.NoActionBar.TranslucentDecor" parent="Theme.Material.Light.NoActionBar.TranslucentDecor" />
+  <style name="Theme.DeviceDefault.Dialog" parent="Theme.Material.Dialog" />
+  <style name="Theme.DeviceDefault.Dialog.Alert" parent="Theme.Material.Dialog.Alert" />
+  <style name="Theme.DeviceDefault.Dialog.MinWidth" parent="Theme.Material.Dialog.MinWidth" />
+  <style name="Theme.DeviceDefault.Dialog.NoActionBar" parent="Theme.Material.Dialog.NoActionBar" />
+  <style name="Theme.DeviceDefault.Dialog.NoActionBar.MinWidth" parent="Theme.Material.Dialog.NoActionBar.MinWidth" />
+  <style name="Theme.DeviceDefault.Light.Dialog" parent="Theme.Material.Light.Dialog" />
+  <style name="Theme.DeviceDefault.Light.Dialog.Alert" parent="Theme.Material.Light.Dialog.Alert" />
+  <style name="Theme.DeviceDefault.Light.Dialog.MinWidth" parent="Theme.Material.Light.Dialog.MinWidth" />
+  <style name="Theme.DeviceDefault.Light.Dialog.NoActionBar" parent="Theme.Material.Light.Dialog.NoActionBar" />
+  <style name="Theme.DeviceDefault.Light.Dialog.NoActionBar.MinWidth" parent="Theme.Material.Light.Dialog.NoActionBar.MinWidth" />
+  <style name="Theme.DeviceDefault.DialogWhenLarge" parent="Theme.Material.DialogWhenLarge" />
+  <style name="Theme.DeviceDefault.DialogWhenLarge.NoActionBar" parent="Theme.Material.DialogWhenLarge.NoActionBar" />
+  <style name="Theme.DeviceDefault.Light.DialogWhenLarge" parent="Theme.Material.Light.DialogWhenLarge" />
+  <style name="Theme.DeviceDefault.Light.DialogWhenLarge.NoActionBar" parent="Theme.Material.Light.DialogWhenLarge.NoActionBar" />
+  <style name="Theme.DeviceDefault.Panel" parent="Theme.Material.Panel" />
+  <style name="Theme.DeviceDefault.Light.Panel" parent="Theme.Material.Light.Panel" />
+  <style name="Theme.DeviceDefault.Wallpaper" parent="Theme.Material.Wallpaper" />
+  <style name="Theme.DeviceDefault.Wallpaper.NoTitleBar" parent="Theme.Material.Wallpaper.NoTitleBar" />
+  <style name="Theme.DeviceDefault.InputMethod" parent="Theme.Material.InputMethod" />
+  <style name="Theme.DeviceDefault.Settings" parent="Theme.Material.Settings" />
+  <style name="Theme.DeviceDefault.DocumentsUI" parent="Theme.Material.Light" />
+  <!-- values-night overrides the parent with the dark theme. -->
+  <style name="Theme.DeviceDefault.DayNight" parent="Theme.Material.Light" />
+  <style name="Theme.Leanback.FormWizard" parent="Theme.Material.NoActionBar" />
+
+  <!-- ===== Overlays ===== -->
+  <style name="ThemeOverlay" parent="" />
+  <style name="ThemeOverlay.Material" parent="ThemeOverlay" />
+  <style name="ThemeOverlay.Material.Dark" parent="ThemeOverlay.Material">
+    <item name="isLightTheme">false</item>
+    <item name="colorForeground">@color/foreground_material_dark</item>
+    <item name="colorForegroundInverse">@color/foreground_material_light</item>
+    <item name="colorBackground">@color/background_material_dark</item>
+    <item name="colorBackgroundFloating">@color/background_floating_material_dark</item>
+    <item name="colorControlHighlight">@color/ripple_material_dark</item>
+    <item name="colorButtonNormal">@color/button_material_dark</item>
+    <item name="colorSwitchThumbNormal">@color/switch_thumb_normal_material_dark</item>
+    <item name="disabledAlpha">@dimen/disabled_alpha_material_dark</item>
+    <item name="textColorPrimary">@color/primary_text_dark</item>
+    <item name="textColorSecondary">@color/secondary_text_dark</item>
+    <item name="textColorTertiary">@color/tertiary_text_dark</item>
+    <item name="textColorPrimaryInverse">@color/primary_text_light</item>
+    <item name="textColorHint">@color/hint_foreground_material_dark</item>
+    <item name="textColorHighlight">@color/highlighted_text_material_dark</item>
+  </style>
+  <style name="ThemeOverlay.Material.Dark.ActionBar" parent="ThemeOverlay.Material.Dark">
+    <item name="colorControlNormal">?attr/textColorPrimary</item>
+  </style>
+  <style name="ThemeOverlay.Material.Light" parent="ThemeOverlay.Material">
+    <item name="isLightTheme">true</item>
+    <item name="colorForeground">@color/foreground_material_light</item>
+    <item name="colorForegroundInverse">@color/foreground_material_dark</item>
+    <item name="colorBackground">@color/background_material_light</item>
+    <item name="colorBackgroundFloating">@color/background_floating_material_light</item>
+    <item name="colorControlHighlight">@color/ripple_material_light</item>
+    <item name="colorButtonNormal">@color/button_material_light</item>
+    <item name="colorSwitchThumbNormal">@color/switch_thumb_normal_material_light</item>
+    <item name="disabledAlpha">@dimen/disabled_alpha_material_light</item>
+    <item name="textColorPrimary">@color/primary_text_light</item>
+    <item name="textColorSecondary">@color/secondary_text_light</item>
+    <item name="textColorTertiary">@color/tertiary_text_light</item>
+    <item name="textColorPrimaryInverse">@color/primary_text_dark</item>
+    <item name="textColorHint">@color/hint_foreground_material_light</item>
+    <item name="textColorHighlight">@color/highlighted_text_material_light</item>
+  </style>
+  <style name="ThemeOverlay.Material.ActionBar" parent="ThemeOverlay.Material.Light">
+    <item name="colorControlNormal">?attr/textColorPrimary</item>
+  </style>
+  <style name="ThemeOverlay.Material.Dialog" parent="ThemeOverlay.Material">
+    <item name="windowIsFloating">true</item>
+    <item name="windowActionBar">false</item>
+    <item name="windowNoTitle">false</item>
+    <item name="windowCloseOnTouchOutside">true</item>
+    <item name="windowBackground">@drawable/dialog_background_material</item>
+    <item name="windowTitleStyle">@style/DialogWindowTitle.Material</item>
+    <item name="windowElevation">24dp</item>
+    <item name="colorBackground">?attr/colorBackgroundFloating</item>
+  </style>
+  <style name="ThemeOverlay.Material.Dialog.Alert" parent="ThemeOverlay.Material.Dialog">
+    <item name="windowNoTitle">true</item>
+  </style>
+  <style name="ThemeOverlay.DeviceDefault.Accent.DayNight" parent="ThemeOverlay.Material" />
+</resources>

@@ -4,6 +4,9 @@
 #include <dxgi1_2.h>
 #include <wrl/client.h>
 #include <chrono>
+#include <cstring>
+#include <utility>
+#include <vector>
 #include "windows_gpu_frame.h"
 #include "gpu_completion.h"
 #include "image_frame.h"
@@ -77,6 +80,44 @@ public:
         return true;
     }
     void commit_receive(uint64_t sequence) { sequence_ = sequence; }
+    // A layer that arrived as pixels fills the same host-owned image, so
+    // layer stacks compose alike for both transports. Rows arrive bottom-up
+    // and one source layer serves both eyes of a mono panel.
+    bool receive_pixels(ID3D11Device* device, ID3D11DeviceContext* context, const uint8_t* rgba,
+                        UINT width, UINT height, UINT layers, DXGI_FORMAT targetFormat) {
+        if (!rgba || layers < 1 || layers > 2) return false;
+        if (!cached_ || session_ || sourceEyeCount_ || width_ != width || height_ != height ||
+            eyeCount_ != 2 || targetFormat_ != targetFormat) {
+            cached_.Reset(); renderCache_.Reset(); shared_[0].Reset(); shared_[1].Reset();
+            if (cacheHandle_) { CloseHandle(cacheHandle_); cacheHandle_ = nullptr; }
+            D3D11_TEXTURE2D_DESC desc{}; desc.Width = width; desc.Height = height;
+            desc.MipLevels = 1; desc.ArraySize = 2; desc.SampleDesc.Count = 1; desc.Format = targetFormat;
+            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+            desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED;
+            if (FAILED(device->CreateTexture2D(&desc, nullptr, &cached_))) return false;
+            Microsoft::WRL::ComPtr<IDXGIResource1> resource;
+            if (FAILED(cached_.As(&resource)) || FAILED(resource->CreateSharedHandle(nullptr,
+                    DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, nullptr, &cacheHandle_))) {
+                cached_.Reset(); return false;
+            }
+            session_ = 0; sourceEyeCount_ = 0; width_ = width; height_ = height; eyeCount_ = 2;
+            targetFormat_ = targetFormat;
+        }
+        const bool bgra = targetFormat == DXGI_FORMAT_B8G8R8A8_UNORM || targetFormat == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+        const size_t stride = static_cast<size_t>(width) * 4;
+        std::vector<uint8_t> rows(stride * height);
+        for (UINT eye = 0; eye < 2; ++eye) {
+            const uint8_t* source = rgba + (layers > 1 ? eye : 0) * stride * height;
+            for (UINT y = 0; y < height; ++y) {
+                uint8_t* out = rows.data() + y * stride;
+                std::memcpy(out, source + (height - 1 - y) * stride, stride);
+                if (bgra) for (size_t x = 0; x < stride; x += 4) std::swap(out[x], out[x + 2]);
+            }
+            context->UpdateSubresource(cached_.Get(), eye, nullptr, rows.data(), static_cast<UINT>(stride), 0);
+        }
+        sequence_ = UINT64_MAX;
+        return receiveCompletion_.wait(device, context);
+    }
     bool receive(ID3D11Device* device, ID3D11DeviceContext* context,
                  const protocol::WindowsGpuFrame& frame, uint64_t sequence,
                  UINT width, UINT height, DXGI_FORMAT targetFormat,

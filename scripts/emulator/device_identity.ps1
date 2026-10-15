@@ -1,5 +1,5 @@
 # Derived from Refract scripts/device_identity.ps1 (MIT).
-# Copyright (c) 2026 Refract contributors; Copyright (c) 2026 Florian Reintgen (AXRB).
+# Copyright (c) 2026 Refract contributors; Copyright (c) 2026 Feline Reintgen (AXRB).
 # See licenses/Refract-device-identity-MIT.txt for the full license notice.
 param([Parameter(Mandatory)][ValidateSet('quest', 'google')][string]$Identity, [ValidatePattern('^emulator-[0-9]+$')][string]$Serial = 'emulator-5580',
     [string]$Sdk = "$env:LOCALAPPDATA\Android\Sdk",

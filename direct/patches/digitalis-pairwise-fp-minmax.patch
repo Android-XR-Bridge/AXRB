@@ -1,0 +1,81 @@
+diff --git a/lite_translator/arm64_to_x86_64/lite_translator_simd_three_same.inc b/lite_translator/arm64_to_x86_64/lite_translator_simd_three_same.inc
+index ac1d177..9c29525 100644
+--- a/lite_translator/arm64_to_x86_64/lite_translator_simd_three_same.inc
++++ b/lite_translator/arm64_to_x86_64/lite_translator_simd_three_same.inc
+@@ -1776,7 +1776,11 @@
+       case Decoder::AdvSimdThreeSameOpcode::kFmaxV:
+       case Decoder::AdvSimdThreeSameOpcode::kFminV:
+       case Decoder::AdvSimdThreeSameOpcode::kFmaxnmV:
+-      case Decoder::AdvSimdThreeSameOpcode::kFminnmV: {
++      case Decoder::AdvSimdThreeSameOpcode::kFminnmV:
++      case Decoder::AdvSimdThreeSameOpcode::kFmaxpV:
++      case Decoder::AdvSimdThreeSameOpcode::kFminpV:
++      case Decoder::AdvSimdThreeSameOpcode::kFmaxnmpV:
++      case Decoder::AdvSimdThreeSameOpcode::kFminnmpV: {
+         // FP vector FMAX / FMIN / FMAXNM / FMINNM.
+         //
+         // ARM and x86 disagree on NaN handling for MAX/MIN:
+@@ -1805,10 +1809,23 @@
+         // mantissa strictly contains FP16's. NaN-result bit patterns may
+         // differ from a canonical FP16 qNaN (0x7E00), but are still valid
+         // NaNs per ARM ARM default-NaN propagation rules.
++        // Pairwise forms (FMAXP/FMINP/FMAXNMP/FMINNMP) combine adjacent lanes
++        // of the concatenation Vm:Vn. De-interleaving it into its even and
++        // odd elements turns them into the element-wise operation below, with
++        // the even (lower) element as the first operand of each pair.
++        const bool pairwise = (args.opcode == Decoder::AdvSimdThreeSameOpcode::kFmaxpV ||
++                               args.opcode == Decoder::AdvSimdThreeSameOpcode::kFminpV ||
++                               args.opcode == Decoder::AdvSimdThreeSameOpcode::kFmaxnmpV ||
++                               args.opcode == Decoder::AdvSimdThreeSameOpcode::kFminnmpV);
+         const bool is_max = (args.opcode == Decoder::AdvSimdThreeSameOpcode::kFmaxV ||
+-                             args.opcode == Decoder::AdvSimdThreeSameOpcode::kFmaxnmV);
++                             args.opcode == Decoder::AdvSimdThreeSameOpcode::kFmaxnmV ||
++                             args.opcode == Decoder::AdvSimdThreeSameOpcode::kFmaxpV ||
++                             args.opcode == Decoder::AdvSimdThreeSameOpcode::kFmaxnmpV);
+         const bool is_nm  = (args.opcode == Decoder::AdvSimdThreeSameOpcode::kFmaxnmV ||
+-                             args.opcode == Decoder::AdvSimdThreeSameOpcode::kFminnmV);
++                             args.opcode == Decoder::AdvSimdThreeSameOpcode::kFminnmV ||
++                             args.opcode == Decoder::AdvSimdThreeSameOpcode::kFmaxnmpV ||
++                             args.opcode == Decoder::AdvSimdThreeSameOpcode::kFminnmpV);
++        if (pairwise && args.is_fp16) { Undefined(); return; }
+         if (!args.is_fp16) {
+           // FP32 (.2S/.4S, args.size=0) and FP64 (.2D, args.size=1).  The
+           // decoder filters sz=1 && !Q (the reserved .1D shape) to Undefined,
+@@ -1821,6 +1838,37 @@
+           if (!success()) { return; }
+           LoadVReg(xn, args.rn);
+           LoadVReg(xm, args.rm);
++          if (pairwise) {
++            if (is_double) {
++              // .2D: [n0, m0] op [n1, m1].
++              SimdRegister odd = AllocTempSimdReg();
++              if (!success()) { return; }
++              as_.Movdqa(odd, xn);
++              as_.Punpcklqdq(xn, xm);
++              as_.Punpckhqdq(odd, xm);
++              as_.Movdqa(xm, odd);
++            } else if (args.q) {
++              // .4S: [n0, n2, m0, m2] op [n1, n3, m1, m3].
++              SimdRegister odd = AllocTempSimdReg();
++              if (!success()) { return; }
++              as_.Pshufd(xn, xn, static_cast<int8_t>(0xD8));
++              as_.Pshufd(xm, xm, static_cast<int8_t>(0xD8));
++              as_.Movdqa(odd, xn);
++              as_.Punpcklqdq(xn, xm);
++              as_.Punpckhqdq(odd, xm);
++              as_.Movdqa(xm, odd);
++            } else {
++              // .2S: [n0, m0] op [n1, m1] in the low half.
++              as_.Punpcklqdq(xn, xm);
++              as_.Pshufd(xm, xn, static_cast<int8_t>(0xDD));
++              as_.Pshufd(xn, xn, static_cast<int8_t>(0x88));
++            }
++          } else if (!args.q) {
++            // .2S: stale upper lanes must not take part; a NaN there would
++            // raise a spurious invalid-operation flag.
++            MaskLow64(xn);
++            MaskLow64(xm);
++          }
+           // ARM FMAX/FMAXNM are computed as -FMIN(-a,-b). x86 MAXPS/MINPS return
+           // the SECOND source on a +-0 tie (OR-of-signs), which is correct only
+           // for FMIN (most-negative). Negating inputs+output makes FMAX reuse the

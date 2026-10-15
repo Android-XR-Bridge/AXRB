@@ -482,3 +482,28 @@ test('invalid explicit selections fail before provisioning instead of falling ba
   assert.deepEqual(await fs.readFile(insideSdk), a.bytes);
   await assert.rejects(fs.access(path.join(target, 'license-acceptance.json')), { code: 'ENOENT' });
 });
+
+test('skipping the emulator records the license and opens the library in direct mode only', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'axrb-setup-')); t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  restoreSetupEnvironment(t);
+  const selected = [];
+  const setup = new Setup({ root: dir, directory: path.join(dir, 'AXRB Runtime'), runtime: { settings: { sdk: 'unused' } }, components: [],
+    select: async value => { selected.push(value); }, changed() {} });
+  setup.status.hardware = { hypervisor: false, supportedGpu: true, x64: true, memoryGB: 16 };
+  await assert.rejects(setup.skipEmulator({ accepted: false }), /Android SDK license/);
+  await assert.rejects(setup.skipEmulator({ directory: 'relative', accepted: true }), /absolute/);
+  const parent = path.join(dir, 'Games');
+  await setup.skipEmulator({ directory: parent, accepted: true });
+  const runtimeDirectory = path.join(parent, 'AXRB Runtime');
+  assert.deepEqual(selected, [runtimeDirectory]);
+  assert.equal(setup.directory, runtimeDirectory);
+  assert.equal(setup.status.phase, 'ready'); assert.equal(setup.status.directOnly, true);
+  assert.equal(JSON.parse(await fs.readFile(path.join(runtimeDirectory, 'license-acceptance.json'), 'utf8')).license, 'android-sdk-license');
+  await fs.access(path.join(runtimeDirectory, 'direct-only.json'));
+});
+
+test('a hardware gap blocks direct mode too, but the hypervisor does not', async () => {
+  const setup = new Setup({ directory: 'unused', runtime: {}, changed() {} });
+  setup.status.hardware = { hypervisor: true, supportedGpu: false, x64: true, memoryGB: 16 };
+  await assert.rejects(setup.skipEmulator({ accepted: true }), /requirements/);
+});

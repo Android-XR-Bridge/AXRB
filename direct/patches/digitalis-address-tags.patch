@@ -1,0 +1,145 @@
+diff --git a/code_gen_lib/include/berberis/code_gen_lib/code_gen_lib.h b/code_gen_lib/include/berberis/code_gen_lib/code_gen_lib.h
+index 6b1d4b6..14a8f7f 100644
+--- a/code_gen_lib/include/berberis/code_gen_lib/code_gen_lib.h
++++ b/code_gen_lib/include/berberis/code_gen_lib/code_gen_lib.h
+@@ -45,6 +45,11 @@ void EmitIndirectJump(Assembler* as, Assembler::Register target);
+ void EmitSyscall(x86_64::Assembler* as, GuestAddr pc);
+ void EmitDirectDispatch(x86_64::Assembler* as, GuestAddr pc, bool check_pending_signals);
+ void EmitIndirectDispatch(x86_64::Assembler* as, x86_64::Assembler::Register target);
++// Whether the guest instruction at this address clears the top byte of the
++// addresses it accesses (ARM64 top-byte-ignore). Where it does not, a tagged
++// pointer faults in the host, and the embedder switches it on for that
++// instruction: only for accesses that have fault recovery.
++bool MaskAddressTopByte(GuestAddr insn_addr);
+ void EmitExitGeneratedCode(x86_64::Assembler* as, x86_64::Assembler::Register target);
+ void EmitAllocStackFrame(x86_64::Assembler* as, uint32_t frame_size);
+ void EmitFreeStackFrame(x86_64::Assembler* as, uint32_t frame_size);
+diff --git a/heavy_optimizer/arm64/frontend.h b/heavy_optimizer/arm64/frontend.h
+index f613d1c..00c422d 100644
+--- a/heavy_optimizer/arm64/frontend.h
++++ b/heavy_optimizer/arm64/frontend.h
+@@ -24,6 +24,7 @@
+ #include "berberis/backend/x86_64/machine_ir_builder.h"
+ #include "berberis/base/arena_map.h"
+ #include "berberis/base/checks.h"
++#include "berberis/code_gen_lib/code_gen_lib.h"
+ #include "berberis/decoder/arm64/decoder.h"
+ #include "berberis/decoder/arm64/semantics_player.h"
+ #include "berberis/guest_state/guest_addr.h"
+@@ -710,7 +711,14 @@ class HeavyOptimizerFrontend {
+   // pointers in load/store; x86 does not, so we mask it ourselves. Returns a
+   // fresh register holding (base & 0x00FF'FFFF'FFFF'FFFF). Mirrors
+   // lite_translator.h::ApplyTbi (movq; shlq 8; shrq 8).
+-  [[nodiscard]] Register ApplyTbi(Register base) {
++  // recoverable: every access through the result has a recovery block, so it may go
++  // without the mask until a tagged pointer faults there (see MaskAddressTopByte).
++  [[nodiscard]] Register ApplyTbi(Register base, bool recoverable = false) {
++    if (recoverable && !MaskAddressTopByte(GetInsnAddr())) {
++      // A move the backend keeps, not Copy(): copy renaming would use `base` itself as the
++      // address, and its other uses may want a register class that a memory base's only overlaps.
++      return std::get<0>(Gen<x86_64::MovqRegReg>(base));
++    }
+     Register tbi = Copy(base);
+     tbi = std::get<0>(Gen<x86_64::ShlqRegImm, kNoSSA>(tbi, int8_t{8}));
+     tbi = std::get<0>(Gen<x86_64::ShrqRegImm, kNoSSA>(tbi, int8_t{8}));
+diff --git a/lite_translator/arm64_to_x86_64/lite_translator.h b/lite_translator/arm64_to_x86_64/lite_translator.h
+index f2cfbba..8a1bb1f 100644
+--- a/lite_translator/arm64_to_x86_64/lite_translator.h
++++ b/lite_translator/arm64_to_x86_64/lite_translator.h
+@@ -24,6 +24,7 @@
+ #include "berberis/assembler/common.h"
+ #include "berberis/assembler/x86_64.h"
+ #include "berberis/base/checks.h"
++#include "berberis/code_gen_lib/code_gen_lib.h"
+ #include "berberis/base/macros.h"
+ #include "berberis/decoder/arm64/decoder.h"
+ #include "berberis/decoder/arm64/semantics_player.h"
+diff --git a/lite_translator/arm64_to_x86_64/lite_translator_integer_ctrl.inc b/lite_translator/arm64_to_x86_64/lite_translator_integer_ctrl.inc
+index 86691d8..a8a14f0 100644
+--- a/lite_translator/arm64_to_x86_64/lite_translator_integer_ctrl.inc
++++ b/lite_translator/arm64_to_x86_64/lite_translator_integer_ctrl.inc
+@@ -484,18 +484,22 @@
+   // address register before using it in a host x86 load/store. ARM64 ignores
+   // the top byte of pointers in load/store; x86 doesn't, so we must clear it
+   // ourselves. Returns a temp register holding (base & 0x00FFFFFFFFFFFFFF).
+-  Register ApplyTbi(Register base) {
++  // recoverable: the access has a recovery point, so it may go without the mask
++  // until a tagged pointer faults there (see MaskAddressTopByte).
++  Register ApplyTbi(Register base, bool recoverable = false) {
+     Register tbi = AllocTempReg();
+     as_.Movq(tbi, base);
+-    as_.Shlq(tbi, static_cast<int8_t>(8));
+-    as_.Shrq(tbi, static_cast<int8_t>(8));
++    if (!recoverable || MaskAddressTopByte(GetInsnAddr())) {
++      as_.Shlq(tbi, static_cast<int8_t>(8));
++      as_.Shrq(tbi, static_cast<int8_t>(8));
++    }
+     return tbi;
+   }
+ 
+   Register Load(Decoder::LoadStoreSize size, bool is_signed, bool is_64bit_target,
+                 Register base, int32_t offset) {
+     // apply TBI mask before using base as memory operand.
+-    base = ApplyTbi(base);
++    base = ApplyTbi(base, /*recoverable=*/true);
+     AssemblerBase::Label* recovery_label = as_.MakeLabel();
+     as_.SetRecoveryPoint(recovery_label);
+ 
+@@ -548,7 +552,7 @@
+ 
+   void Store(Decoder::LoadStoreSize size, Register base, int32_t offset, Register data) {
+     // apply TBI mask before using base as memory operand.
+-    base = ApplyTbi(base);
++    base = ApplyTbi(base, /*recoverable=*/true);
+     AssemblerBase::Label* recovery_label = as_.MakeLabel();
+     as_.SetRecoveryPoint(recovery_label);
+ 
+diff --git a/heavy_optimizer/arm64/frontend.cc b/heavy_optimizer/arm64/frontend.cc
+index c978f8b..b371996 100644
+--- a/heavy_optimizer/arm64/frontend.cc
++++ b/heavy_optimizer/arm64/frontend.cc
+@@ -2875,7 +2926,7 @@ Register HeavyOptimizerFrontend::Load(Decoder::LoadStoreSize size,
+   if (!success()) {
+     return AllocTempReg();
+   }
+-  Register masked = ApplyTbi(base);
++  Register masked = ApplyTbi(base, /*recoverable=*/true);
+   Register res;
+   switch (size) {
+     case Decoder::LoadStoreSize::k64bit:
+@@ -2927,7 +2978,7 @@ void HeavyOptimizerFrontend::Store(Decoder::LoadStoreSize size, Register base, i
+   if (!success()) {
+     return;
+   }
+-  Register masked = ApplyTbi(base);
++  Register masked = ApplyTbi(base, /*recoverable=*/true);
+   switch (size) {
+     case Decoder::LoadStoreSize::k64bit:
+       Gen<x86_64::MovqOpReg>({.base = masked, .disp = offset}, data);
+@@ -5467,7 +5518,7 @@ void HeavyOptimizerFrontend::SimdLoadStoreImm(const Decoder::SimdLoadStoreImmArg
+     UndefinedReturningVoid(BailReason::kUnsupportedSize);
+     return;
+   }
+-  Register masked = ApplyTbi(base);
++  Register masked = ApplyTbi(base, /*recoverable=*/true);
+   const int32_t off = static_cast<int32_t>(args.offset);
+   const int32_t vreg_off = GetVRegOffset(args.rt);
+   FpRegister xmm = AllocTempSimdReg();
+@@ -5524,7 +5575,7 @@ void HeavyOptimizerFrontend::SimdLoadStorePair(const Decoder::SimdLoadStorePairA
+       UndefinedReturningVoid();
+       return;
+   }
+-  Register masked = ApplyTbi(addr);
++  Register masked = ApplyTbi(addr, /*recoverable=*/true);
+   const int32_t v1_off = GetVRegOffset(args.rt1);
+   const int32_t v2_off = GetVRegOffset(args.rt2);
+   if (args.is_store) {
+@@ -5606,7 +5657,7 @@ void HeavyOptimizerFrontend::SimdLoadStoreReg(const Decoder::SimdLoadStoreRegArg
+     return;
+   }
+   Register addr = EmitRegOffsetAddr(base, offset, args.extend_type, args.shift_amount);
+-  Register masked = ApplyTbi(addr);
++  Register masked = ApplyTbi(addr, /*recoverable=*/true);
+   const int32_t vreg_off = GetVRegOffset(args.rt);
+   FpRegister xmm = AllocTempSimdReg();
+   if (args.is_store) {

@@ -71,7 +71,7 @@ export function assetDestination(packageName, relative) {
   return `/sdcard/${relative}`;
 }
 
-export function classifyAsset(name, packageName) {
+export function classifyAsset(name, packageName, { looseBundle = false } = {}) {
   const parts = name.split('/');
   // Allow one enclosing game folder or sdcard prefix, but retain the Android layout.
   const android = parts.indexOf('Android');
@@ -87,9 +87,16 @@ export function classifyAsset(name, packageName) {
   }
   const base = parts.at(-1);
   if (/\.obb$/i.test(base)) {
-    if (!new RegExp(`^(?:main|patch)\\.\\d+\\.${packageName.replaceAll('.', '\\.')}\\.obb$`, 'i').test(base)) throw new Error(`OBB does not match ${packageName}: ${base}`);
+    // Standard expansion names encode a package and must match. Custom OBBs
+    // (for example Audio_NonVO.obb) do not; the ZIP's single base APK supplies
+    // their owner. Keep the exact name because games open these files directly.
+    if (/^(?:main|patch|overflow\d*)\./i.test(base) &&
+        !new RegExp(`^(?:main|patch|overflow[1-9]\\d*)\\.(?:\\d+\\.)?${packageName.replaceAll('.', '\\.')}\\.obb$`, 'i').test(base)) throw new Error(`OBB does not match ${packageName}: ${base}`);
     return `Android/obb/${packageName}/${safeName(base)}`;
   }
+  // Flat exports can put Unity bundles beside their sole base APK. Only infer
+  // this layout for siblings; nested bundles still need explicit app storage.
+  if (looseBundle && /\.bundle$/i.test(base)) return `Android/obb/${packageName}/${safeName(base)}`;
   throw new Error(`Cannot determine where ${name} belongs. Place assets under Android/obb/${packageName} or Android/data/${packageName}.`);
 }
 
@@ -129,13 +136,44 @@ export async function inspectGameFolder(directory, inspect, { signal, update = (
     signal?.throwIfAborted();
     if (name.startsWith('__MACOSX/') || name.endsWith('/.DS_Store') || name === '.DS_Store') continue;
     const apk = apks.find(a => a.name === name);
-    const destination = apk ? undefined : classifyAsset(name, game.package);
+    const destination = apk ? undefined : classifyAsset(name, game.package, {
+      looseBundle: path.posix.dirname(name) === path.posix.dirname(bases[0].name),
+    });
     if (destination && destinations.has(destination.toLowerCase())) throw new Error('Multiple assets target the same file.');
     if (destination) destinations.add(destination.toLowerCase());
     update(`Verifying ${name}`);
     files.push(await fileRecord(path.join(directory, name), name, apk ? (apk.metadata.split ? 'split' : 'apk') : 'asset', destination, signal));
   }
   return { ...game, apk: path.join(directory, bases[0].name), files, downloaded: true };
+}
+
+// Expansion files sideloaded next to an APK, in the layouts sideloading tools
+// use: a folder named after the package (copied to Android/obb/<package>),
+// Android/obb|data/<package> folders, or standard-named OBBs beside the APK.
+// Nothing else in the APK's folder is touched.
+export async function findCompanionAssets(apk, packageName) {
+  assetDestination(packageName, `Android/obb/${packageName}/x`);
+  const folder = path.dirname(apk), found = [];
+  const isDirectory = file => fs.stat(file).then(stat => stat.isDirectory(), () => false);
+  const add = async (directory, destinationOf) => {
+    if (!await isDirectory(directory)) return;
+    for (const name of await walkFiles(directory)) {
+      if (name.split('/').at(-1) === '.DS_Store') continue;
+      found.push({ file: path.join(directory, ...name.split('/')), name, destination: destinationOf(name) });
+    }
+  };
+  await add(path.join(folder, packageName), name => `Android/obb/${packageName}/${name}`);
+  for (const area of ['obb', 'data']) await add(path.join(folder, 'Android', area, packageName), name => `Android/${area}/${packageName}/${name}`);
+  const expansion = new RegExp(`^(?:main|patch|overflow[1-9]\\d*)\\.\\d+\\.${packageName.replaceAll('.', '\\.')}\\.obb$`, 'i');
+  for (const entry of await fs.readdir(folder, { withFileTypes: true }).catch(() => [])) {
+    if (entry.isFile() && expansion.test(entry.name)) found.push({ file: path.join(folder, entry.name), name: entry.name, destination: `Android/obb/${packageName}/${entry.name}` });
+  }
+  const seen = new Set();
+  return found.filter(asset => {
+    assetDestination(packageName, asset.destination);
+    const key = asset.destination.toLowerCase();
+    return !seen.has(key) && seen.add(key);
+  });
 }
 
 export async function importGameZip(file, downloadDir, inspect, { signal, update = () => {}, progress = () => {}, reserve } = {}) {

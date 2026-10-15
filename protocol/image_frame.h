@@ -32,6 +32,13 @@ inline bool valid_mixed_part(uint16_t version, uint32_t part) {
     return count >= 2 && count <= kMaxWireCompositionLayers && index < count &&
         mixed_gpu_version(version);
 }
+// CPU-transfer layer stacks reuse the per-layer pixel versions; reserved
+// carries (count << 16) | index exactly as the mixed GPU versions do.
+inline bool valid_pixel_part(uint16_t version, uint32_t part) {
+    const uint32_t count = part >> 16, index = part & 0xffff;
+    return count >= 2 && index < count && (version == kProjectionImageFrameVersion ||
+        version == kQuadImageFrameVersion || version == kEquirectImageFrameVersion);
+}
 constexpr uint16_t kImageFrameTypeRgba8 = 2;
 constexpr uint32_t kImageFrameFormatRgba8 = 1;
 

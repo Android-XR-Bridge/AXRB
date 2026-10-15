@@ -11,7 +11,7 @@ $env:PYTHONUTF8 = '1'
 # Derive portable homes from the adjacent marker, not the caller's environment.
 $AxrbPortableRoot = $null
 $portableCandidate = [IO.Path]::GetFullPath((Join-Path $AxrbRoot '../..'))
-if (Test-Path -LiteralPath (Join-Path $portableCandidate 'AXRB.portable') -PathType Leaf) {
+if (Test-Path -LiteralPath (Join-Path $portableCandidate 'AXRB-Emulatorless.portable') -PathType Leaf) {
     $AxrbPortableRoot = $portableCandidate
     function Assert-AxrbPortablePath([string]$Value) {
         $full = [IO.Path]::GetFullPath($Value)
@@ -34,7 +34,7 @@ if (Test-Path -LiteralPath (Join-Path $portableCandidate 'AXRB.portable') -PathT
     $libraryFile = Join-Path $data 'library.json'
     $library = if (Test-Path -LiteralPath $libraryFile) { Get-Content -LiteralPath $libraryFile -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null }
     if ($library) { $AxrbPortableSettings = $library.settings }
-    $managed = Join-Path $AxrbPortableRoot 'AXRB Runtime'
+    $managed = Join-Path $AxrbPortableRoot 'AXRB-Emulatorless Runtime'
     if ($env:AXRB_PORTABLE_ROOT -eq $AxrbPortableRoot -and $env:AXRB_DATA_HOME) {
         # A setup-in-progress may be preparing a different disk than the saved one.
         $managed = Split-Path (Assert-AxrbPortablePath $env:AXRB_DATA_HOME) -Parent

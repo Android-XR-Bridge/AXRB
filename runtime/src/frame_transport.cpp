@@ -62,11 +62,12 @@ public:
         if (projection && directWindows_) {
             header.version = gpu ? axrb::protocol::kWindowsGpuFrameVersion : axrb::protocol::kProjectionImageFrameVersion;
             if (projection->quad_count()) header.version = gpu ? axrb::protocol::kQuadGpuFrameVersion : axrb::protocol::kQuadImageFrameVersion;
+            // Pixel parts keep their per-layer version; only GPU parts are "mixed".
             if (batchPart) {
-                header.version = projection->quad_count() ? axrb::protocol::kMixedQuadGpuFrameVersion : axrb::protocol::kMixedProjectionGpuFrameVersion;
+                if (gpu) header.version = projection->quad_count() ? axrb::protocol::kMixedQuadGpuFrameVersion : axrb::protocol::kMixedProjectionGpuFrameVersion;
                 header.reserved = batchPart;
             }
-            if (projection->is_equirect()) header.version = batchPart ? axrb::protocol::kMixedEquirectGpuFrameVersion : gpu ? axrb::protocol::kEquirectGpuFrameVersion : axrb::protocol::kEquirectImageFrameVersion;
+            if (projection->is_equirect()) header.version = batchPart && gpu ? axrb::protocol::kMixedEquirectGpuFrameVersion : gpu ? axrb::protocol::kEquirectGpuFrameVersion : axrb::protocol::kEquirectImageFrameVersion;
             if (gpu) header.type = axrb::protocol::kWindowsGpuFrameType;
             header.header_size += sizeof(*projection);
         }
@@ -602,6 +603,15 @@ XrResult submit_projection_frame(const XrFrameEndInfo& info, uint32_t batchPart,
         return std::strcmp(value, "0") != 0;
     }();
 #endif
+    auto failed = [&](const char* reason) {
+#if defined(__ANDROID__)
+        static uint32_t reports = 0;
+        if (reports++ < 12) __android_log_print(ANDROID_LOG_ERROR, "AXRB.Frame", "frame not delivered: %s layers=%u", reason, info.layerCount);
+#else
+        (void)reason;
+#endif
+        return XR_ERROR_RUNTIME_FAILURE;
+    };
     auto invalid = [&](const char* reason) {
 #if defined(__ANDROID__)
         static uint32_t reports = 0;
@@ -631,7 +641,7 @@ XrResult submit_projection_frame(const XrFrameEndInfo& info, uint32_t batchPart,
     if (info.layerCount == 0) {
 #if defined(__ANDROID__)
         if (g_vulkan.active() && g_vulkan.gpu_export_enabled() &&
-            (!g_vulkan.release_batch() || !image_transport_client().send_empty(g_imageFrameSequence++))) return XR_ERROR_RUNTIME_FAILURE;
+            (!g_vulkan.release_batch() || !image_transport_client().send_empty(g_imageFrameSequence++))) return failed("empty frame release");
 #endif
         return XR_SUCCESS;
     }
@@ -666,9 +676,9 @@ XrResult submit_projection_frame(const XrFrameEndInfo& info, uint32_t batchPart,
                 for (uint32_t eye = 0; eye < 2; ++eye) {
                     auto* sc = input.swapchains[eye];
                     if (sc->surface && std::find(updatedSurfaces.begin(), updatedSurfaces.end(), sc) == updatedSurfaces.end()) {
-                        if (!sc->surface->update()) return XR_ERROR_RUNTIME_FAILURE;
+                        if (!sc->surface->update()) return failed("surface update");
                         if (sc->surface->needs_copy()) {
-                            if (!g_vulkan.copy_surface(sc->vulkan, sc->width, sc->height)) return XR_ERROR_RUNTIME_FAILURE;
+                            if (!g_vulkan.copy_surface(sc->vulkan, sc->width, sc->height)) return failed("surface copy");
                             sc->surface->copied();
                         }
                         updatedSurfaces.push_back(sc);
@@ -678,7 +688,7 @@ XrResult submit_projection_frame(const XrFrameEndInfo& info, uint32_t batchPart,
                 }
             }
             std::vector<axrb::protocol::WindowsGpuFrame> exports;
-            if (!g_vulkan.export_batch(requests, exports, asyncExport)) return XR_ERROR_RUNTIME_FAILURE;
+            if (!g_vulkan.export_batch(requests, exports, asyncExport)) return failed("batch export");
             std::vector<axrb::protocol::GpuBatchPart> parts(info.layerCount);
             const auto timestamp = static_cast<uint64_t>(monotonic_time_ns());
             for (uint32_t i = 0; i < info.layerCount; ++i) {
@@ -703,15 +713,17 @@ XrResult submit_projection_frame(const XrFrameEndInfo& info, uint32_t batchPart,
                     const bool sent = image_transport_client().send_batch(parts);
                     g_vulkan.acknowledge_batch(sent);
                     return sent;
-                }) ? XR_SUCCESS : XR_ERROR_RUNTIME_FAILURE;
+                }) ? XR_SUCCESS : failed("batch publish");
             }
             const bool sent = image_transport_client().send_batch(parts);
             g_vulkan.acknowledge_batch(sent);
             static bool reported = false;
             if (sent && !reported) { __android_log_print(ANDROID_LOG_INFO, "AXRB.GPU", "Whole-frame export active: %u layers, one export submission and one acknowledgment", info.layerCount); reported = true; }
-            return sent ? XR_SUCCESS : XR_ERROR_RUNTIME_FAILURE;
+            return sent ? XR_SUCCESS : failed("batch send");
         }
 #endif
+        // Pixel transfer (OpenGL ES, or Vulkan after export fell back) sends
+        // the layers in order as tagged parts; the host assembles the stack.
         for (uint32_t i = 0; i < info.layerCount; ++i) {
             auto part = info; part.layerCount = 1; part.layers = &info.layers[i];
             const auto result = submit_projection_frame(part, (info.layerCount << 16) | i);
@@ -727,7 +739,12 @@ XrResult submit_projection_frame(const XrFrameEndInfo& info, uint32_t batchPart,
     if (!quads && !equirect && (info.layerCount != 1 || layer->type != XR_TYPE_COMPOSITION_LAYER_PROJECTION || layer->viewCount != 2 || layer->views == nullptr ||
         (layer->layerFlags & ~uint64_t{axrb::protocol::kCompositionLayerFlagsMask}) != 0)) { return invalid("projection type/views/flags"); }
     const auto* space = find_space(layer->space);
-    if (!space) { return XR_ERROR_HANDLE_INVALID; }
+    if (!space) {
+#if defined(__ANDROID__)
+        __android_log_print(ANDROID_LOG_WARN, "AXRB.Frame", "projection layer space %p is not a live space", reinterpret_cast<void*>(layer->space));
+#endif
+        return XR_ERROR_HANDLE_INVALID;
+    }
     const XrPosef spaceWorld = world_pose_for_space(*space, g_lastViewPoseFrame);
     const XrPosef projectionSpace =
         space->kind == SpaceKind::View ? space->offsetInParent : spaceWorld;
@@ -757,7 +774,12 @@ XrResult submit_projection_frame(const XrFrameEndInfo& info, uint32_t batchPart,
             if (!quad || quad->type != XR_TYPE_COMPOSITION_LAYER_QUAD ||
                 (quad->layerFlags & ~uint64_t{axrb::protocol::kCompositionLayerFlagsMask})) return invalid("quad type/flags");
             const auto* quadSpace = find_space(quad->space);
-            if (!quadSpace) return XR_ERROR_HANDLE_INVALID;
+            if (!quadSpace) {
+#if defined(__ANDROID__)
+                __android_log_print(ANDROID_LOG_WARN, "AXRB.Frame", "quad layer %u space %p is not a live space", i, reinterpret_cast<void*>(quad->space));
+#endif
+                return XR_ERROR_HANDLE_INVALID;
+            }
             const auto pose = multiply_pose(world_pose_for_space(*quadSpace, g_lastViewPoseFrame), quad->pose);
             projection.quads[i] = {{pose.position.x, pose.position.y, pose.position.z,
                 pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w},
@@ -809,12 +831,17 @@ XrResult submit_projection_frame(const XrFrameEndInfo& info, uint32_t batchPart,
     for (uint32_t eye = 0; eye < 2; ++eye) {
         const auto& sub = *subimages[eye];
         auto* sc = find_swapchain(sub.swapchain);
-        if (!sc) { return XR_ERROR_HANDLE_INVALID; }
+        if (!sc) {
+#if defined(__ANDROID__)
+            __android_log_print(ANDROID_LOG_WARN, "AXRB.Frame", "eye %u swapchain %p is not a live swapchain", eye, reinterpret_cast<void*>(sub.swapchain));
+#endif
+            return XR_ERROR_HANDLE_INVALID;
+        }
 #if defined(__ANDROID__)
         if (sc->surface && !validateOnly && (eye == 0 || swapchains[0] != sc)) {
-            if (!sc->surface->update()) return XR_ERROR_RUNTIME_FAILURE;
+            if (!sc->surface->update()) return failed("surface update");
             if (sc->surface->needs_copy()) {
-                if (!g_vulkan.copy_surface(sc->vulkan, sc->width, sc->height)) return XR_ERROR_RUNTIME_FAILURE;
+                if (!g_vulkan.copy_surface(sc->vulkan, sc->width, sc->height)) return failed("surface copy");
                 sc->surface->copied();
             }
         }
@@ -872,7 +899,6 @@ XrResult submit_projection_frame(const XrFrameEndInfo& info, uint32_t batchPart,
         if (g_lastReleasedSwapchain) { maybe_send_swapchain_image(*g_lastReleasedSwapchain); }
         return XR_SUCCESS;
     }
-    if (batchPart && (!g_vulkan.active())) return XR_ERROR_RUNTIME_FAILURE;
     static std::vector<uint8_t> eyes[2];
     static std::vector<uint8_t> stereo;
     const size_t eyeBytes = static_cast<size_t>(width) * height * 4;
@@ -884,8 +910,7 @@ XrResult submit_projection_frame(const XrFrameEndInfo& info, uint32_t batchPart,
         const VulkanSwapchain* vkSwapchains[] = {&swapchains[0]->vulkan, &swapchains[1]->vulkan};
         const uint32_t indices[] = {swapchains[0]->releasedImage, swapchains[1]->releasedImage};
         const bool deferred = asyncExport;
-        if (batchPart && !g_vulkan.gpu_export_enabled()) return XR_ERROR_RUNTIME_FAILURE;
-        if (!g_vulkan.readback(vkSwapchains, indices, subimages, width, height, eyes, verticalFlip, deferred)) return XR_ERROR_RUNTIME_FAILURE;
+        if (!g_vulkan.readback(vkSwapchains, indices, subimages, width, height, eyes, verticalFlip, deferred)) return failed("readback");
         if (deferred && g_vulkan.gpu_export_enabled()) {
             const uint64_t sequence = g_imageFrameSequence++;
             return g_vulkan.publish([sequence, width, height, projection, batchPart] {
@@ -895,17 +920,17 @@ XrResult submit_projection_frame(const XrFrameEndInfo& info, uint32_t batchPart,
                 return image_transport_client().send_frame(sequence, width, height, 2,
                     reinterpret_cast<const uint8_t*>(&gpu), sizeof(gpu), &projection, true, batchPart) &&
                     image_transport_client().wait_gpu_ack_before_reuse();
-            }) ? XR_SUCCESS : XR_ERROR_RUNTIME_FAILURE;
+            }) ? XR_SUCCESS : failed("GPU publish");
         }
         if (deferred) {
             const uint64_t sequence = g_imageFrameSequence++;
-            return g_vulkan.publish([sequence, width, height, projection] {
+            return g_vulkan.publish([sequence, width, height, projection, batchPart] {
                 std::vector<uint8_t> pixels[2];
                 if (!g_vulkan.complete_readback(width, height, pixels)) return false;
                 pixels[0].insert(pixels[0].end(), pixels[1].begin(), pixels[1].end());
                 return image_transport_client().send_frame(sequence, width, height, 2,
-                    pixels[0].data(), pixels[0].size(), &projection);
-            }) ? XR_SUCCESS : XR_ERROR_RUNTIME_FAILURE;
+                    pixels[0].data(), pixels[0].size(), &projection, false, batchPart);
+            }) ? XR_SUCCESS : failed("pixel publish");
         }
         if (g_vulkan.gpu_marker().status == 1) {
             const auto& marker = g_vulkan.gpu_marker();
@@ -916,14 +941,14 @@ XrResult submit_projection_frame(const XrFrameEndInfo& info, uint32_t batchPart,
                 if (sequence % 90 == 0) __android_log_print(ANDROID_LOG_INFO, "AXRB.GPU", "shared GPU eyes seq=%llu %ux%u; no pixel readback", static_cast<unsigned long long>(sequence), width, height);
                 return XR_SUCCESS;
             }
-            if (batchPart) return XR_ERROR_RUNTIME_FAILURE;
+            if (batchPart) return failed("batch part send");
             // No consumer has seen the initial image if the first connection is not ready.
             // Retry export next frame; retain the safety fallback after any connection.
             if (!image_transport_client().has_connected_once()) return XR_SUCCESS;
             // Never reuse shared images after an uncertain consumer completion.
             g_vulkan.disable_gpu_export();
             __android_log_print(ANDROID_LOG_WARN, "AXRB.GPU", "GPU consumer unavailable; disabling shared export for this session");
-            if (!g_vulkan.readback(vkSwapchains, indices, subimages, width, height, eyes, verticalFlip)) return XR_ERROR_RUNTIME_FAILURE;
+            if (!g_vulkan.readback(vkSwapchains, indices, subimages, width, height, eyes, verticalFlip)) return failed("fallback readback");
         }
     }
     for (uint32_t eye = 0; eye < 2; ++eye) {
@@ -936,14 +961,13 @@ XrResult submit_projection_frame(const XrFrameEndInfo& info, uint32_t batchPart,
                                      eyes[eye].begin() + (height - 1 - y) * stride);
             }
         }
-        if (eyes[eye].size() != eyeBytes) { return XR_ERROR_RUNTIME_FAILURE; }
+        if (eyes[eye].size() != eyeBytes) { return failed("eye image size"); }
     }
-    if (batchPart) return XR_ERROR_RUNTIME_FAILURE;
     stereo.resize(eyeBytes * 2);
     std::memcpy(stereo.data(), eyes[0].data(), eyeBytes);
     std::memcpy(stereo.data() + eyeBytes, eyes[1].data(), eyeBytes);
     const uint64_t sequence = g_imageFrameSequence++;
-    if (image_transport_client().send_frame(sequence, width, height, 2, stereo.data(), stereo.size(), &projection) && sequence % 450 == 0) {
+    if (image_transport_client().send_frame(sequence, width, height, 2, stereo.data(), stereo.size(), &projection, false, batchPart) && sequence % 450 == 0) {
         __android_log_print(ANDROID_LOG_INFO, "AXRB.Stereo", "sent two eyes seq=%llu %ux%u API=%s",
             static_cast<unsigned long long>(sequence), width, height,
             g_vulkan.active() ? "Vulkan" : "OpenGLES");

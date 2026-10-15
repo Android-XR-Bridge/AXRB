@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string name="ok">OK</string>
+  <string name="cancel">Abbrechen</string>
+  <string name="yes">OK</string>
+  <string name="no">Abbrechen</string>
+  <string name="copy">Kopieren</string>
+  <string name="copyUrl">URL kopieren</string>
+  <string name="cut">Ausschneiden</string>
+  <string name="paste">Einfügen</string>
+  <string name="paste_as_plain_text">Nur Text einfügen</string>
+  <string name="selectAll">Alle auswählen</string>
+  <string name="selectTextMode">Text auswählen</string>
+  <string name="untitled">&lt;Unbenannt&gt;</string>
+  <string name="unknownName">Unbekannt</string>
+  <string name="emptyPhoneNumber">(Keine Telefonnummer)</string>
+  <string name="dialog_alert_title">Achtung</string>
+  <string name="search_go">Suche</string>
+  <string name="capital_on">AN</string>
+  <string name="capital_off">AUS</string>
+  <string name="action_bar_up_description">Nach oben</string>
+</resources>

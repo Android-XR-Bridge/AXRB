@@ -128,6 +128,8 @@ export function planStorageChange(currentGB, requestedGB) {
   return currentGB === null || requestedGB > currentGB;
 }
 const managedAvd = 'axrb-managed-api36';
+// Marks a runtime folder whose player skipped the emulator for direct mode.
+const DIRECT_ONLY = 'direct-only.json';
 async function installationAt(directory) {
   const avd = path.join(directory, 'avd', `${managedAvd}.avd`);
   if (!await exists(path.join(avd, 'userdata-qemu.img'))) return null;
@@ -236,8 +238,41 @@ export class Setup {
     try {
       await this.refreshCurrent();
       const hardware = JSON.parse(await run('powershell.exe', powershellArgs(path.join(this.root, 'scripts/emulator/check_windows.ps1'), {})));
-      this.update({ hardware, phase: setupPhase(hardware, { ready: this.status.needs.ready, debug: this.debug }) });
+      const phase = setupPhase(hardware, { ready: this.status.needs.ready, debug: this.debug });
+      // Direct mode needs neither the hypervisor nor the emulator, so a player
+      // who skipped their setup is ready on any otherwise supported PC.
+      const directOnly = ['hypervisor', 'install'].includes(phase) && this.status.needs.licensed && await exists(path.join(this.directory, DIRECT_ONLY));
+      this.update({ hardware, phase: directOnly ? 'ready' : phase, directOnly });
     } catch (error) { this.update({ phase: 'error', error: error.message }); }
+  }
+  // Skips the Android emulator's setup: the library opens with direct mode as
+  // the only way to play. The SDK license still applies, to the system image
+  // direct mode downloads on first play. Undone by resumeEmulatorSetup().
+  async skipEmulator({ directory, accepted } = {}) {
+    if (this.status.active || this.starting) throw new Error('Setup is already running.');
+    if (!this.debug && !hardwareRequirementsMet(this.status.hardware)) throw new Error('Resolve the system requirements first.');
+    let selected = this.directory;
+    if (directory !== undefined && directory !== null && directory !== '') {
+      if (typeof directory !== 'string' || !path.isAbsolute(directory) || /[\r\n]/.test(directory)) throw new Error('Choose an absolute installation folder.');
+      selected = path.join(directory, 'AXRB Runtime');
+    }
+    const licensed = (await readJson(path.join(selected, 'license-acceptance.json')))?.license === 'android-sdk-license';
+    if (accepted !== true && !licensed) throw new Error('Accept the Android SDK license to use direct mode.');
+    await fs.mkdir(selected, { recursive: true });
+    if (!licensed) await fs.writeFile(path.join(selected, 'license-acceptance.json'), JSON.stringify({ license: 'android-sdk-license', acceptedAt: new Date().toISOString() }));
+    await fs.writeFile(path.join(selected, DIRECT_ONLY), JSON.stringify({ version: 1, skippedAt: new Date().toISOString() }));
+    // Remembered like a setup in progress, so the next start opens this folder.
+    await this.select(selected);
+    this.directory = selected;
+    this.runtime.settings = { ...this.runtime.settings, sdk: path.join(selected, 'sdk') };
+    this.environment();
+    await this.refreshCurrent();
+    this.update({ phase: 'ready', directOnly: true, error: '' });
+  }
+  async resumeEmulatorSetup() {
+    if (this.status.active || this.starting) throw new Error('Setup is already running.');
+    await fs.rm(path.join(this.directory, DIRECT_ONLY), { force: true });
+    await this.check();
   }
   async start({ directory, accepted, storageGB = 32, useCurrent = false, archives = [], forceReinstall = false }) {
     if (this.status.active || this.starting) throw new Error('Setup is already running.');
@@ -424,6 +459,7 @@ export class Setup {
     await this.save(this.directory, installed);
     this.currentDirectory = this.directory;
     this.resumableDirectory = '';
-    this.update({ phase: 'ready', component: '', completed: 0, total: 0 });
+    await fs.rm(path.join(this.directory, DIRECT_ONLY), { force: true });
+    this.update({ phase: 'ready', directOnly: false, component: '', completed: 0, total: 0 });
   }
 }

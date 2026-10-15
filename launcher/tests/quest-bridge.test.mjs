@@ -68,6 +68,14 @@ test('preparation merges splits, caches content, keeps saves across updates and 
   let version = '7';
   const args = { root: dir, directory: path.join(dir, 'profile'), sdk, game, execute: async (_, argv) => argv[1] === 'badging' ? `package: name='com.example.game' versionCode='${version}'` : '' };
   const first = await prepareBridge(args);
+  // A fresh launcher install has the reader but no Android SDK.
+  const bundledReader = path.join(dir, 'tools/aapt2/aapt2.exe');
+  await fs.mkdir(path.dirname(bundledReader), { recursive: true });
+  await fs.writeFile(bundledReader, 'fixture');
+  await prepareBridge({ ...args, sdk: path.join(dir, 'absent-sdk'), execute: async (executable, argv) => {
+    assert.equal(executable, bundledReader);
+    return args.execute(executable, argv);
+  } });
   assert.equal(await fs.readFile(path.join(first.root, 'data/app/com.example.game/lib/arm64/libconfig.so'), 'utf8'), '{"setting":true}');
   assert.match(await fs.readFile(path.join(first.root, 'proc/meminfo'), 'utf8'), /MemTotal:\s+8388608 kB/);
   assert.equal(await fs.readFile(path.join(first.root, 'sys/devices/system/cpu/possible'), 'utf8'), '0-5\n');

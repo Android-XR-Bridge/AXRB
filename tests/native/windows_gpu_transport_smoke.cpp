@@ -154,6 +154,51 @@ int run_batch_case(unsigned short port, bool consumed, bool duplicateSession = f
     return sent && (invalid ? !called : called && correct) && received == sizeof(ack) && more == 0 &&
            ack == (!invalid && consumed ? 104 : UINT64_MAX) ? 0 : 1;
 }
+// Pixel-transfer layer stacks tag each layer like mixed GPU parts. Pixel
+// frames carry no acknowledgment, so a rejected part is followed by a plain
+// frame on a new connection: only that one may reach the callback.
+int run_pixel_part_case(unsigned short port, uint32_t part, bool quad, bool valid) {
+    using namespace axrb::protocol;
+    uint32_t delivered = UINT32_MAX; size_t payloadBytes = 0;
+    std::thread server([&] {
+        TcpImageServer listener;
+        listener.serve_with_callback(port, 1, [&](const ImageFrameHeader& h, const ImageProjection&, std::vector<uint8_t>&& bytes) {
+            delivered = h.reserved; payloadBytes = bytes.size();
+            return true;
+        });
+    });
+    auto send_frame = [&](uint32_t reserved) {
+        SOCKET client = socket(AF_INET, SOCK_STREAM, 0);
+        sockaddr_in address{}; address.sin_family = AF_INET; address.sin_port = htons(port); address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        bool connected = false;
+        for (int i = 0; i < 100 && !connected; ++i) {
+            connected = connect(client, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0;
+            if (!connected) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        if (!connected) std::terminate();
+        ImageFrameHeader header{}; header.version = quad ? kQuadImageFrameVersion : kProjectionImageFrameVersion;
+        header.header_size += sizeof(ImageProjection); header.width = 8; header.height = 4; header.layers = 2;
+        header.reserved = reserved; header.sequence = 7; header.payload_size = 8 * 4 * 2 * 4;
+        ImageProjection projection{};
+        if (quad) {
+            projection.view_count = kQuadCompositionBit | (valid ? 1 : 2);
+            for (auto& q : projection.quads) q = {{0,1,-2,0,0,0,1},2,1,0,7};
+        } else {
+            projection.view_count = 2;
+            for (auto& view : projection.views) { view.pose.qw = 1; view.angle_left = view.angle_down = -0.9f; view.angle_right = view.angle_up = 0.9f; }
+        }
+        std::vector<uint8_t> pixels(header.payload_size, 0x80);
+        send(client, reinterpret_cast<const char*>(&header), sizeof(header), 0);
+        send(client, reinterpret_cast<const char*>(&projection), sizeof(projection), 0);
+        send(client, reinterpret_cast<const char*>(pixels.data()), static_cast<int>(pixels.size()), 0);
+        char byte; recv(client, &byte, 1, 0); // The server closes after one frame or a rejection.
+        closesocket(client);
+    };
+    send_frame(part);
+    if (!valid) { quad = false; send_frame(0); }
+    server.join();
+    return delivered == (valid ? part : 0u) && payloadBytes == 8 * 4 * 2 * 4 ? 0 : 1;
+}
 int main() {
     WSADATA data{}; if (WSAStartup(MAKEWORD(2,2), &data)) return 1;
     int result = run_case(38495, true) | run_case(38496, false) | run_case(38497, true, true) | run_case(38498, true, false, 3u << 16) | run_case(38499, true, true, (16u << 16) | 15);
@@ -196,6 +241,12 @@ int main() {
     result |= run_batch_case(38502, true) | run_batch_case(38503, false) |
               run_batch_case(38504, true, true) | run_batch_case(38505, true, false, true) |
               run_batch_case(38508, true, false, false, true);
+    result |= run_pixel_part_case(38512, (3u << 16) | 1, false, true) |
+              run_pixel_part_case(38513, (2u << 16) | 1, true, true) |
+              run_pixel_part_case(38514, (2u << 16) | 2, false, false) |
+              run_pixel_part_case(38515, (2u << 16) | 1, true, false);
+    if (!valid_pixel_part(kEquirectImageFrameVersion, (2u << 16) | 1) || valid_pixel_part(kImageFrameVersion, (2u << 16) | 1) ||
+        valid_pixel_part(kMixedProjectionGpuFrameVersion, (2u << 16) | 1) || valid_pixel_part(kProjectionImageFrameVersion, 1u << 16)) result = 1;
     WSACleanup();
     if (!result) std::puts("GPU metadata fragmentation and completion/rejection acknowledgments passed");
     return result;

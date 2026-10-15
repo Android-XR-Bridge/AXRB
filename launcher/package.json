@@ -1,6 +1,6 @@
 {
-  "name": "axrb-launcher",
-  "version": "1.0.4",
+  "name": "axrb-emulatorless-launcher",
+  "version": "2.0.0",
   "private": true,
   "description": "Quest library and native Windows AXRB launcher",
   "license": "GPL-3.0-or-later",
@@ -40,11 +40,11 @@
     "yauzl": "^3.4.0",
     "yazl": "3.3.1"
   },
-  "productName": "AXRB",
+  "productName": "AXRB-Emulatorless",
   "author": "AXRB contributors",
   "build": {
-    "appId": "org.axrb.launcher",
-    "productName": "AXRB",
+    "appId": "org.axrb.emulatorless",
+    "productName": "AXRB-Emulatorless",
     "directories": {
       "output": "../out/releases"
     },
@@ -74,30 +74,24 @@
           ]
         }
       ],
-      "artifactName": "AXRB-${version}.${ext}",
+      "artifactName": "AXRB-Emulatorless-${version}.${ext}",
       "icon": "assets/axrb.ico"
     },
     "portable": {
       "unpackDirName": false
     },
     "nsis": {
-      "artifactName": "AXRB-Setup-${version}.${ext}",
-      "oneClick": true,
+      "artifactName": "AXRB-Emulatorless-Setup-${version}.${ext}",
+      "oneClick": false,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": false,
+      "allowToChangeInstallationDirectory": true,
       "deleteAppDataOnUninstall": false,
       "createDesktopShortcut": true,
-      "shortcutName": "AXRB",
+      "shortcutName": "AXRB-Emulatorless",
       "runAfterFinish": true
     },
-    "beforePack": "./verify-release.cjs",
-    "publish": [
-      {
-        "provider": "github",
-        "owner": "Android-XR-Bridge",
-        "repo": "AXRB",
-        "releaseType": "release"
-      }
-    ]
+    "beforePack": "./prepare-builder.cjs",
+    "afterPack": "./verify-packaged-release.cjs",
+    "publish": null
   }
 }

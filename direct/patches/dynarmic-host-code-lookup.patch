@@ -1,0 +1,63 @@
+diff --git a/src/dynarmic/backend/x64/a64_interface.cpp b/src/dynarmic/backend/x64/a64_interface.cpp
+index 7c0fa8d2..24906846 100644
+--- a/src/dynarmic/backend/x64/a64_interface.cpp
++++ b/src/dynarmic/backend/x64/a64_interface.cpp
+@@ -151,6 +151,11 @@ public:
+         return jit_state.pc;
+     }
+ 
++    u64 GuestPCForHostCode(const void* host) const {
++        const auto location = emitter.LocationForHostCode(static_cast<CodePtr>(host));
++        return location ? A64::LocationDescriptor{*location}.PC() : ~u64{0};
++    }
++
+     void SetPC(u64 value) {
+         jit_state.pc = value;
+     }
+@@ -370,6 +375,10 @@ u64 Jit::GetPC() const {
+     return impl->GetPC();
+ }
+ 
++u64 Jit::GuestPCForHostCode(const void* host) const {
++    return impl->GuestPCForHostCode(host);
++}
++
+ void Jit::SetPC(u64 value) {
+     impl->SetPC(value);
+ }
+diff --git a/src/dynarmic/backend/x64/emit_x64.h b/src/dynarmic/backend/x64/emit_x64.h
+index 5a46f04e..d043c10a 100644
+--- a/src/dynarmic/backend/x64/emit_x64.h
++++ b/src/dynarmic/backend/x64/emit_x64.h
+@@ -78,6 +78,16 @@ public:
+         size_t size;         // Length in bytes of emitted code
+     };
+ 
++    /// The block whose emitted code contains `host` (linear search; profilers).
++    std::optional<IR::LocationDescriptor> LocationForHostCode(CodePtr host) const {
++        for (const auto& [location, block] : block_descriptors) {
++            const auto* begin = static_cast<const std::uint8_t*>(block.entrypoint);
++            const auto* at = static_cast<const std::uint8_t*>(host);
++            if (at >= begin && at < begin + block.size) return location;
++        }
++        return std::nullopt;
++    }
++
+     explicit EmitX64(BlockOfCode& code);
+     virtual ~EmitX64();
+ 
+diff --git a/src/dynarmic/interface/A64/a64.h b/src/dynarmic/interface/A64/a64.h
+index a150da84..31d75986 100644
+--- a/src/dynarmic/interface/A64/a64.h
++++ b/src/dynarmic/interface/A64/a64.h
+@@ -72,6 +72,10 @@ public:
+ 
+     /// Read Program Counter
+     std::uint64_t GetPC() const;
++    /// Guest address of the translated block containing host code address
++    /// `host`, or ~0 when it is not code of this JIT. For profilers: call only
++    /// while the thread running this JIT is stopped.
++    std::uint64_t GuestPCForHostCode(const void* host) const;
+     /// Modify Program Counter
+     void SetPC(std::uint64_t value);
+ 

@@ -1,3 +1,4 @@
+import { requireEmulator } from './build-profile.mjs';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
@@ -100,8 +101,8 @@ function parseInstalledIdentity(output, packageName) {
   return { package: packageName, version: name === 'null' ? '' : name ?? '', versionCode: code };
 }
 export class Runtime {
-  constructor(root, settings, onOutput = () => {}) { this.root = root; this.settings = settings; this.onOutput = onOutput; this.child = null; }
-  adb(args, options) { return run(path.join(this.settings.sdk, 'platform-tools/adb.exe'), ['-s', `emulator-${this.settings.port}`, ...args], options); }
+  constructor(root, settings, onOutput = () => {}, { emulatorEnabled = true } = {}) { Object.defineProperty(this, 'emulatorEnabled', { value: emulatorEnabled }); this.root = root; this.settings = settings; this.onOutput = onOutput; this.child = null; }
+  adb(args, options) { requireEmulator(this.emulatorEnabled); return run(path.join(this.settings.sdk, 'platform-tools/adb.exe'), ['-s', `emulator-${this.settings.port}`, ...args], options); }
   // AXRB's private ADB server (port 5038) otherwise outlives the launcher,
   // holding the port and, in portable mode, an adb.exe inside the folder. It
   // stays while a game or the emulator still runs: the game's image stream
@@ -109,12 +110,14 @@ export class Runtime {
   // watchedPhase is the watchdog's latest reading; trusting it spares quit a
   // PowerShell status run of up to 10 seconds. Without one, ask directly.
   async adbServerIdle(watchedPhase) {
+    if (!this.emulatorEnabled) return false;
     if (this.child || !this.settings.sdk) return false;
     try { await fs.access(path.join(this.settings.sdk, 'platform-tools/adb.exe')); } catch { return false; }
     if (['stopped', 'online', 'starting'].includes(watchedPhase)) return watchedPhase === 'stopped';
     return !(await this.status()).running;
   }
   stopAdbServer() {
+    requireEmulator(this.emulatorEnabled);
     return run(path.join(this.settings.sdk, 'platform-tools/adb.exe'), ['-P', '5038', 'kill-server'], { timeout: 5000 }).catch(() => {});
   }
   async online() { try { return (await this.adb(['get-state'], { timeout: 2500 })).trim() === 'device'; } catch { return false; } }
@@ -122,6 +125,7 @@ export class Runtime {
   // this can tell a genuinely stopped emulator apart from one whose OS process
   // is still alive but unreachable (a stalled boot, a hung shutdown).
   async status() {
+    if (!this.emulatorEnabled) return { running: false, pid: null, count: 0, adbState: '' };
     const output = await run('powershell.exe', powershellArgs(path.join(this.root, 'scripts/emulator/windows_android_emulator.ps1'), {
       Action: 'Status', Avd: this.settings.avd, Port: this.settings.port, Sdk: this.settings.sdk
     }), { timeout: 10000 });
@@ -135,7 +139,8 @@ export class Runtime {
       adbState: typeof parsed.adbState === 'string' ? parsed.adbState : '',
     };
   }
-  async startEmulator({ onOutput, coldBoot = false, recoverUnresponsive = false }) {
+  async startEmulator({ onOutput, coldBoot = false, recoverUnresponsive = false } = {}) {
+    requireEmulator(this.emulatorEnabled);
     // Allow the script's 180-second graceful shutdown, full boot deadline,
     // and bounded ADB verification retries before timing out its wrapper.
     const guestClock = await selectGuestClock(this.root, this.settings);
@@ -149,6 +154,7 @@ export class Runtime {
     }), { timeout, onOutput });
   }
   async ensure({ onOutput = this.onOutput } = {}) {
+    requireEmulator(this.emulatorEnabled);
     if (await this.online()) {
       let name = '';
       try { name = (await this.adb(['emu', 'avd', 'name'], { timeout: 8000 })).split(/\r?\n/)[0].trim(); } catch { /* Check the guest before deciding the console is stale. */ }
@@ -302,15 +308,27 @@ export class Runtime {
   launch(game, onExit, compatibility = {}, options = {}) {
     if (this.child) throw new Error('A game is already running.');
     validPackage(game.package);
-    const bridge = options.bridge;
-    if (!bridge && (!/^[A-Za-z0-9_./]+$/.test(game.activity || '') || game.activity.split('/')[0] !== game.package)) throw new Error('Invalid launch activity. Refresh installed games.');
+    const bridge = options.bridge, direct = options.direct;
+    if (!direct) requireEmulator(this.emulatorEnabled);
+    if (!bridge && (!/^[A-Za-z0-9_.$/]+$/.test(game.activity || '') || game.activity.split('/')[0] !== game.package)) throw new Error('Invalid launch activity. Refresh installed games.');
     // Preparation may have booted Android before the session script runs, so
     // ownership arrives explicitly instead of being inferred from the device.
     const ownsEmulator = options?.ownsEmulator === true;
     const sessionId = options?.sessionId;
     if (sessionId !== undefined && !/^[a-f0-9]{8}$/.test(sessionId)) throw new Error('Invalid session identifier.');
     this.fpsHudEvent = `Local\\AXRB.FpsHud.${randomUUID().replaceAll('-', '')}`;
-    const args = bridge ? [] : powershellArgs(path.join(this.root, 'scripts/run/run_windows_game.ps1'), { Avd: this.settings.avd, Port: this.settings.port,
+    const precompose = this.settings.precomposeProjectionLayers === true || compatibility.precomposeProjectionLayers === true;
+    const args = bridge ? [] : direct ? powershellArgs(direct.script, { Apk: direct.apk, Package: game.package, GameName: game.name || game.package,
+      Activity: game.activity,
+      Translator: this.settings.directTranslator || 'dynarmic',
+      Executable: direct.executable, DataDirectory: direct.data, Sysroot: direct.sysroot, FpsHudEventName: this.fpsHudEvent,
+      ...(direct.assetList ? { AssetList: direct.assetList } : {}),
+      ...(compatibility.legacyOculusDriver ? { LegacyOculusDriver: true } : {}),
+      ...(compatibility.questIdentity ? { QuestIdentity: true } : {}),
+      ...(compatibility.controllersOnly ? { ControllersOnly: true } : {}),
+      ...(sessionId ? { SessionId: sessionId } : {}),
+      ...(precompose ? { PrecomposeProjectionLayers: true } : {}) })
+      : powershellArgs(path.join(this.root, 'scripts/run/run_windows_game.ps1'), { Avd: this.settings.avd, Port: this.settings.port,
       Sdk: this.settings.sdk, MemoryMB: this.settings.memoryMB, CpuCores: this.settings.cpuCores ?? 4, TextureMode: this.settings.textureMode ?? 'gpu', Package: game.package, Activity: game.activity, GameName: game.name, FpsHud: this.settings.fpsHud === true, FpsHudEventName: this.fpsHudEvent,
       // Recovery inside the game script must use the same CPU policy as ensure().
       GuestClock: this.settings.guestClock || 'Auto',
@@ -329,7 +347,7 @@ export class Runtime {
         windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], cwd: path.dirname(bridge.executable),
         env: bridgeEnvironment(process.env, bridge, this.bridgeStopEvent) })
       : spawn('powershell.exe', args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-    this.child = child; this.game = game.id;
+    this.child = child; this.game = game.id; this.direct = Boolean(direct);
     let tail = '';
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
     const stdout = { stream: `${child.pid}:stdout`, tag: 'game launch' }, stderr = { stream: `${child.pid}:stderr`, tag: 'game launch', level: 'E' };
@@ -345,7 +363,7 @@ export class Runtime {
       finished = true; clearTimeout(drain);
       child.stdout.destroy(); child.stderr.destroy();
       endStdout(); endStderr();
-      this.child = null; this.game = null; this.fpsHudEvent = null; this.bridgeStopEvent = null;
+      this.child = null; this.game = null; this.fpsHudEvent = null; this.bridgeStopEvent = null; this.direct = false;
       onExit(code, error || tail);
     };
     child.on('error', async e => {
@@ -370,6 +388,7 @@ export class Runtime {
     this.settings.fpsHud = enabled;
   }
   async stopEmulator() {
+    requireEmulator(this.emulatorEnabled);
     const child = this.child;
     if (child) {
       await this.stop();
