@@ -101,11 +101,10 @@ copyrighted game files.
 
 ## License and attribution
 
-AXRB uses multiple licenses; see [LICENSE](LICENSE) for the exact scope.
-Designated new AXRB-owned contributions are source-available: use, unchanged
-forks and contributions to AXRB are allowed, while distributing modified
-standalone projects requires separate permission. These restrictions do not
-apply to the GPL launcher, third-party code, or earlier MIT releases.
+AXRB is released under the [MIT License](LICENSE). The launcher in
+`launcher/` is the exception: it contains GPL-licensed code and is
+distributed under GPL-3.0-or-later ([launcher/LICENSE](launcher/LICENSE)).
+Third-party code keeps its own license and notices.
 See [CONTRIBUTING.md](CONTRIBUTING.md) before submitting changes.
 Third-party components and RiftLift attribution are listed in
 [launcher/THIRD_PARTY_NOTICES.md](launcher/THIRD_PARTY_NOTICES.md).

@@ -7,10 +7,9 @@ The Meta native-SSO protocol in `core/meta.mjs` is adapted from
 revision `8eddda67d18eace7935d5d385656ed897e4e6c50`, by RiftLift contributors.
 RiftLift is licensed under GPL-3.0-or-later. The RiftLift-derived code remains
 under that license. The launcher is distributed under GPL-3.0-or-later;
-previously MIT-licensed portions retain their separate grant. Separately
-distributed native AXRB components have the mixed terms described by the
-repository LICENSE; its source-available restrictions do not apply to this
-launcher or other GPL-covered material. Changes include a JavaScript implementation,
+previously MIT-licensed portions retain their separate grant. The native AXRB
+components outside the launcher are MIT-licensed; see the repository LICENSE.
+Changes include a JavaScript implementation,
 Electron-hosted Meta login, Windows credential encryption, and callback handling
 without replacing the user's system-wide Oculus protocol association.
 
@@ -28,7 +27,7 @@ Apache-2.0. Its accompanying notice is in `licenses/bc7e.txt`; the prebuilt
 objects are generated from that source with `scripts/build/build_bc7e.py`.
 The test-side bc7decomp sources retain Richard Geldreich's MIT/public-domain
 choice in `runtime/vulkan/texture/bc7enc/LICENSE` (`licenses/bc7enc.txt` in
-distributions). AXRB's source-available terms do not replace these licenses.
+distributions). AXRB's own license does not replace these licenses.
 
 ## API research
 
@@ -96,6 +95,15 @@ redistributed. The NDK's other build tools are used to compile AXRB and are not
 redistributed, so the copyleft terms in the NDK's whole-toolchain notice cover
 nothing that AXRB ships.
 
+Direct mode additionally bundles the matched AOSP NDK frontend from the official
+Android 16 ARM64 r02 image as `out/direct/art/lib64/libaxrbndk.so`. Its SONAME is
+renamed from `libandroid.so`; exported Android implementations are retained, with
+AXRB's host adapter forwarding to them. The image's complete system notice file
+is preserved as `licenses/AOSP-NOTICE.xml.gz` and
+`runtime/out/direct/art/AOSP-NOTICE.xml.gz`. The remainder of ART, the framework,
+fonts and APEX modules is downloaded from Google during Direct-mode setup rather
+than embedded in the installer. AOSP source: https://android.googlesource.com/.
+
 The Windows x64 desktop `openxr_loader.dll` is redistributed unmodified from
 Khronos Group's `OpenXR.Loader.1.1.60.nupkg`, matching the OpenXR header version.
 Source and release: https://github.com/KhronosGroup/OpenXR-SDK/releases/tag/release-1.1.60
@@ -119,6 +127,22 @@ Copyright (C) 2016 InfoTeCS JSC. All rights reserved.
 Google's Android emulator, platform tools, build tools and Google APIs system image
 are downloaded directly from Google after acceptance of the Android SDK license;
 they are not embedded in the installer. Their archives retain their notices.
+
+The standalone AAPT2 8.6.1-11315950 APK reader from Google's Maven repository
+is embedded in the launcher so APK inspection needs no installed Android SDK
+or Java. It is distributed under Apache-2.0 with its complete upstream and
+third-party notices in `licenses/aapt2-NOTICE.txt` and `runtime/tools/aapt2/NOTICE`.
+Upstream: https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/tools/aapt2/
+
+AXRB Direct includes Digitalis/Berberis's ARM64 lite JIT and interpreter under
+Apache-2.0, copyright The Android Open Source Project and 2026 utzcoz.
+Source: https://github.com/DigitalisX64/platform_frameworks_libs_binary_translation
+at f5f1c90b17d0c1df9e9be41534c653a3e74bfc64. AXRB supplies Windows platform glue
+in direct/digitalis; the upstream translator sources are unmodified.
+The AOSP native_bridge_support ARM64 CPU-state declaration is also Apache-2.0.
+The license is included in licenses/Apache-2.0.txt; source headers retain their
+individual copyright notices. The Android NativeBridge and heavy optimizer
+are not included in this build.
 
 The launcher uses jose 6.2.12 (MIT, copyright 2018 Filip Skokan) for OpenID Connect token validation. Its license is included in licenses/jose.txt. https://github.com/panva/jose
 
