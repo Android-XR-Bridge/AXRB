@@ -1,0 +1,84 @@
+Native x86 ART / ARM games: 2026-10-07
+====================================
+This is an isolated developer backend, not an installed launcher update.
+Version remains 2.0.0. No hypervisor, emulator or adb is used by this backend.
+
+Verified on North Star (com.meta.samples.NorthStar)
+------------------------------------------------
+Real x86_64 AOSP app_process64/ART starts the unmodified staged APK's activity.
+ARM Unity, IL2CPP, Oculus and interaction libraries load through real ARM Bionic.
+The game creates its OpenXR session and renders the dock and start/options panel.
+Fast Vulkan GPU sharing delivers actual game images to the existing headset host.
+Captured image: out/native-x64/game-attempt/native-art-3-1177.png.
+Audio now opens a Windows output stream: 48000 Hz, stereo. The earlier FMOD
+output initialization failure came from staging a stale OpenSL ES stub; the
+platform target now builds the real OpenSL ES -> AAudio adapter from source.
+Unity preference XML is written in the experimental sysroot, with the earlier
+backup-rename failure fixed. Atomic save/reopen regression also passes.
+15 CTest tests pass, including JNI direct/V variadic arguments overflowing both
+register banks, a >512 KiB ARM native stack, callbacks, concurrency, and saves.
+Latest logs: out/native-x64/northstar/game.{out,err}, final-regression.log.
+
+After disabling the diagnostic timeout and restarting, the user confirmed
+"Okay, works" in response to the live-scene/controller/Start check. North Star
+is now user-confirmed playable on this experimental native x86 ART backend.
+NOT yet verified: audible sound in the headset, prolonged gameplay, other games,
+or emulator performance parity.
+
+Changes required to reach this point
+-----------------------------------
+* arm_service.cpp/arm_service_guest.c: embedded ARM kernel, Bionic linker/TLS,
+  isolated game namespace, persistent ARM workers for Java-created threads;
+  shared app storage, APK asset reader, Binder, GPU, media and audio host services.
+* arm_bridge.cpp: preserve original library identity across Java loading and
+  native dlopen, avoiding two copies of OculusXRPlugin and inconsistent globals.
+  Release the x86 kernel mutex while ARM calls execute/wait.
+* arm_jni_bridge.c: reflected method descriptors, field/array/reflection/string
+  operations and full ordinary direct/V/A JNI call families, 8 MiB guarded
+  per-thread native call stacks, native-window forwarding to x86 JNI/NDK.
+* art_bridge.c: ARM app ABI view after AOSP framework JNI registration;
+  native x86 framework/platform adapters. Bootstrap is on the boot classpath to
+  share the platform linker namespace instead of duplicating JNI library globals.
+* main.cpp/files.cpp: eventfd/epoll/poll, priority mapping, app-data write/rename/
+  sync/truncate/unlink, bounded MADV_DONTNEED concurrent-access recovery.
+* build_platform.py/CMakeLists.txt: reproducible x86 platform bridge and matched
+  ARM NDK/OpenSL ES adapters. Default ARM libandroid behavior is unchanged.
+* prepare_properties.py/run_game.py: property area and complete isolated game
+  staging/launch harness. No developer tool dependency is added to the launcher.
+
+Build and launch
+----------------
+Prepare x64 and ARM AOSP sysroots using the existing preparation tools first.
+Build x64: cmake --build out/native-x64 --config Release --parallel
+Build ARM: cmake -S direct -B build/direct -DAXRB_BUILD_ARM_SERVICE=ON
+           cmake --build build/direct --config Release --target arm-service-test native-arm-helper --parallel 8
+Tests:     ctest --test-dir out/native-x64 -C Release --output-on-failure
+
+Start a complete host runtime (EXE plus its adjacent dependencies):
+  axrb-host-bridge.exe --serve-openxr 38490 0 "North Star - native x86 ART test"
+Then, from the repository root (PowerShell, replace APK and GPU layer paths):
+  python direct/x64/run_game.py --sysroot out/deps/aosp-x64-native --arm-sysroot out/deps/aosp-36-r02-art --build out/native-x64 --arm-build build/direct --apk "PATH/TO/base-axrb.apk" --activity com.meta.northstar.NorthStarActivity --bootstrap out/direct/art/axrb-bootstrap.dex --proxies build/direct/guest/lib64 --gpu-dir "PATH/TO/runtime/out/gpu/Release" --logs out/native-x64/northstar --seconds 600
+
+Run only one game against a given experimental sysroot. Stop it before restaging
+or building the runner/service. The host must remain running throughout a session.
+Interactive runs now default to --seconds 0, with no automatic timeout. Use a
+positive --seconds (maximum 600) only for bounded diagnostics. The earlier
+ten-minute diagnostic timeout left a still image on the host after game exit;
+that timeout is now disabled for interactive play.
+Do not interpret host display-loop Hz or UDP timeouts as game FPS: this run uses
+the image TCP transport carrying shared GPU handles, not video UDP packets.
+
+Remaining engineering limits
+----------------------------
+ART remains -Xint; JIT/W+X and native syscall acceleration are still absent.
+Native-created ARM threads cannot yet attach to x86 ART; their JavaVM calls are
+not generally bridged. The tested Java-created thread path works. Not all JNI
+slots, CriticalNative ABIs, linker namespace combinations or Android APIs work.
+Workers/trampolines are bounded and some resources live until process exit.
+Occasional early x86 TLS/Windows exception-context faults need further work;
+the current successful launches do not establish production reliability.
+The Linux syscall boundary is partial and uses Windows exception dispatch plus
+a global state mutex. Asynchronous signals and arbitrary ELF safety are not
+proven. Require FSGSBASE; trusted local game execution only, not a sandbox.
+External OBB/bundle staging is not yet exposed by this developer game harness.
+Do not ship this backend as the launcher default based on this scene milestone.

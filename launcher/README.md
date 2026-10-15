@@ -1,3 +1,27 @@
+# AXRB-Emulatorless launcher
+
+This build uses a separate installation, profile, runtime and downloads folder.
+The Android Emulator backend is disabled at build time. See
+[Direct mode build configuration](../docs/direct_mode.md#axrb-emulatorless-build)
+for storage locations, persistence tests, and the single flag that restores the
+legacy backend in future builds. The release version is 2.0.0.
+
+Direct mode requires Windows x64, a GPU with Vulkan support, and at least 6 GB
+of system RAM. Setup has no GPU-vendor restriction or hypervisor screen.
+The RAM minimum is a system requirement, not a reserved memory allocation.
+
+The setup installer lets you choose the program folder. On first launch, the
+runtime data and game-download folders are prefilled with recommended locations.
+Each has a Browse button and a Use recommended option. Runtime data includes
+Android libraries and saves; game downloads include imported ZIPs and patched APKs.
+
+Settings > ARM64 translator selects Dynarmic (default) or Digitalis
+(experimental) for the next Direct game launch. Digitalis uses its public lite
+JIT and interpreter through a native Windows adapter; its heavy optimizer is
+not included. It may be substantially slower than Dynarmic. Both translators
+are bundled and require no additional installation. This does not guarantee
+compatibility with every game; Batman has not been tested.
+
 # AXRB launcher
 
 A native Windows desktop frontend for the AXRB runtime: your installed Android
@@ -55,8 +79,8 @@ verified compatibility strategy requires a maintainer decision; neither is
 implemented here. Full emulator filesystem tracing and a moved-AVD cold boot
 with the original folder unavailable are also not yet verified.
 
-Extract `AXRB-Portable-<version>.zip` into a writable folder and run `AXRB.exe`.
-Keep the `AXRB.portable` marker beside it. The portable folder contains:
+Extract `AXRB-Emulatorless-Portable-<version>.zip` into a writable folder and run `AXRB-Emulatorless.exe`.
+Keep the `AXRB-Emulatorless.portable` marker beside it. The portable folder contains:
 
 - `data/`: launcher profile, Chromium storage/cache, logs and crash dumps.
 - `temp/`: temporary files, also used by AXRB's child processes. Windows never
@@ -134,7 +158,7 @@ The script keeps the version from `launcher/package.json`, runs the launcher tes
 and writes `SHA256SUMS-<version>.txt`. Use `-SkipNative` when only launcher files
 changed and the existing native/runtime artifacts are still current; use
 `-SkipTests` only for a packaging retry after tests have already passed.
-Add `-Portable` to build `AXRB-Portable-<version>.zip` instead of the EXE, with
+Add `-Portable` to build `AXRB-Emulatorless-Portable-<version>.zip` instead of the EXE, with
 `SHA256SUMS-<version>-portable.txt`. `npm run dist:portable --prefix launcher`
 uses the same build wrapper. Neither package includes an existing profile or
 managed Android installation.

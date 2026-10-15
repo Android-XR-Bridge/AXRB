@@ -35,6 +35,10 @@ struct VulkanSwapchain {
     std::array<VkDeviceMemory, 3> memory{};
     VkImage surfaceImage = VK_NULL_HANDLE;
     VkDeviceMemory surfaceMemory = VK_NULL_HANDLE;
+    // CPU-produced surface frames (no Android hardware buffers): RGBA staging.
+    VkBuffer surfaceBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory surfaceBufferMemory = VK_NULL_HANDLE;
+    void* surfaceMapped = nullptr;
     VkFormat format = VK_FORMAT_UNDEFINED;
     uint32_t layers = 0;
 };
@@ -83,6 +87,7 @@ public:
     void destroy(VulkanSwapchain& sc);
     bool import_surface(VulkanSwapchain& sc, AHardwareBuffer* buffer, uint32_t width, uint32_t height);
     bool copy_surface(VulkanSwapchain& sc, uint32_t width, uint32_t height);
+    bool create_surface_upload(VulkanSwapchain& sc, uint32_t width, uint32_t height);
     bool readback(const VulkanSwapchain* const swapchains[2], const uint32_t indices[2],
                   const XrSwapchainSubImage* const subimages[2], uint32_t width, uint32_t height, std::vector<uint8_t> rgba[2], const bool* verticalFlip = nullptr, bool defer = false);
 private:

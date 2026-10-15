@@ -16,8 +16,11 @@ XrResult XRAPI_CALL xrCreateSwapchainAndroidSurfaceKHR_impl(XrSession session,
     if (!g_vulkan.active() || info->createFlags)
         return XR_ERROR_FEATURE_UNSUPPORTED;
     auto producer = std::make_shared<AndroidSurface>();
-    if (!producer->initialize(pose_client(), info->width, info->height))
-        return XR_ERROR_RUNTIME_FAILURE;
+    if (!producer->initialize(pose_client(), info->width, info->height)) {
+        producer = std::make_shared<AndroidSurface>();
+        if (!producer->initialize_direct(pose_client(), info->width, info->height))
+            return XR_ERROR_RUNTIME_FAILURE;
+    }
     auto create = *info;
     create.format = VK_FORMAT_R8G8B8A8_SRGB;
     create.sampleCount = create.faceCount = create.arraySize = create.mipCount = 1;
@@ -27,7 +30,11 @@ XrResult XRAPI_CALL xrCreateSwapchainAndroidSurfaceKHR_impl(XrSession session,
     if (result != XR_SUCCESS)
         return result;
     auto *sc = find_swapchain(*swapchain);
-    if (!g_vulkan.import_surface(sc->vulkan, producer->buffer(), info->width, info->height)) {
+    const bool imported = producer->direct()
+        ? g_vulkan.create_surface_upload(sc->vulkan, info->width, info->height)
+        : g_vulkan.import_surface(sc->vulkan, producer->buffer(), info->width, info->height);
+    if (producer->direct()) producer->set_direct_target(sc->vulkan.surfaceMapped);
+    if (!imported) {
         xrDestroySwapchain_impl(*swapchain);
         *swapchain = nullptr;
         return XR_ERROR_RUNTIME_FAILURE;

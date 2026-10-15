@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <!-- Public. -->
+  <string name="ok">OK</string>
+  <string name="cancel">Cancel</string>
+  <string name="yes">OK</string>
+  <string name="no">Cancel</string>
+  <string name="copy">Copy</string>
+  <string name="copyUrl">Copy URL</string>
+  <string name="cut">Cut</string>
+  <string name="paste">Paste</string>
+  <string name="paste_as_plain_text">Paste as plain text</string>
+  <string name="selectAll">Select all</string>
+  <string name="selectTextMode">Select text</string>
+  <string name="untitled">&lt;Untitled&gt;</string>
+  <string name="unknownName">Unknown</string>
+  <string name="emptyPhoneNumber">(No phone number)</string>
+  <string name="defaultVoiceMailAlphaTag">Voicemail</string>
+  <string name="defaultMsisdnAlphaTag">MSISDN1</string>
+  <string name="dialog_alert_title">Attention</string>
+  <string name="search_go">Search</string>
+  <string name="httpErrorBadUrl">Couldn\'t open the page because the URL is invalid.</string>
+  <string name="httpErrorUnsupportedScheme">The protocol isn\'t supported.</string>
+  <string name="status_bar_notification_info_overflow">999+</string>
+  <string name="autofill">Autofill</string>
+  <string name="VideoView_error_title">Can\'t play video</string>
+  <string name="VideoView_error_button">OK</string>
+  <string name="VideoView_error_text_unknown">Can\'t play this video.</string>
+  <string name="VideoView_error_text_invalid_progressive_playback">This video isn\'t valid for streaming to this device.</string>
+
+  <!-- Private. -->
+  <string name="capital_on">ON</string>
+  <string name="capital_off">OFF</string>
+  <string name="font_family_sans_serif">sans-serif</string>
+  <string name="font_family_medium">sans-serif-medium</string>
+  <string name="font_family_light">sans-serif-light</string>
+  <string name="action_bar_up_description">Navigate up</string>
+</resources>

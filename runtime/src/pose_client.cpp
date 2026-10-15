@@ -338,7 +338,15 @@ void PoseClient::read_available_frames()
     for (int batch = 0; batch < 64; ++batch) {
         const ssize_t received = recv(socket_, bytes, sizeof(bytes), MSG_DONTWAIT);
         if (received > 0) {
-            if (decoder_.append(bytes, static_cast<size_t>(received), latest_)) { continue; }
+            if (decoder_.append(bytes, static_cast<size_t>(received), latest_)) {
+                // Direct mode shares the host's monotonic clock; an emulator
+                // guest does not, so there the capture becomes the receipt.
+                const auto now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count());
+                if (latest_.monotonic_time_ns > now || now - latest_.monotonic_time_ns > 1'000'000'000)
+                    latest_.monotonic_time_ns = now;
+                continue;
+            }
             log_pose_client("invalid pose record");
         } else if (received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
             return;

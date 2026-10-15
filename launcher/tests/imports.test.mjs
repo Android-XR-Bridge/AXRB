@@ -5,8 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { assetDestination, classifyAsset, importGameZip, inspectGameFolder, installFiles, shellQuote, describeInstallFailure, findOriginalApk } from '../core/game-files.mjs';
-import { parseDevices, Quest } from '../core/quest.mjs';
+import { assetDestination, classifyAsset, findCompanionAssets, importGameZip, inspectGameFolder, installFiles, shellQuote, describeInstallFailure, findOriginalApk } from '../core/game-files.mjs';
+import { ensurePlatformTools, parseDevices, Quest } from '../core/quest.mjs';
+import { createHash } from 'node:crypto';
 import { run } from '../core/runtime.mjs';
 import { State } from '../core/state.mjs';
 
@@ -32,6 +33,23 @@ test('assets retain package-specific destinations and reject escape/ambiguous la
   assert.equal(shellQuote("a'b"), "'a'\\''b'");
 });
 
+test('flat game exports retain custom OBB names and sibling Unity bundles', async t => {
+  const dir = await workspace(t);
+  for (const prefix of ['', 'Game/']) {
+    const archive = path.join(dir, prefix ? 'wrapped.zip' : 'flat.zip');
+    const assets = ['Audio_NonVO.obb', 'Audio_en-US.obb', 'application_assets_all.bundle'];
+    await zip(archive, [[`${prefix}base.apk`, 'base'], ...assets.map(name => [`${prefix}${name}`, `payload:${name}`])]);
+    const game = await importGameZip(archive, dir, inspect, { reserve: 0 });
+    for (const name of assets) {
+      const file = game.files.find(f => f.name === prefix + name);
+      assert.equal(file.destination, `Android/obb/${pkg}/${name}`);
+      assert.equal(await fs.readFile(file.path, 'utf8'), `payload:${name}`);
+    }
+  }
+  assert.equal(classifyAsset('Audio_NonVO.obb', pkg), `Android/obb/${pkg}/Audio_NonVO.obb`);
+  assert.throws(() => classifyAsset('Android/obb/com.other.game/Audio_NonVO.obb', pkg), /does not belong/);
+});
+
 test('ZIP import keeps splits, nested assets, identity and integrity hashes', async t => {
   const dir = await workspace(t), archive = path.join(dir, 'game.zip');
   await zip(archive, [['Game/base.output.apk', 'base'], ['Game/split_config.arm64.apk', 'split'],
@@ -53,13 +71,34 @@ test('ZIP import keeps splits, nested assets, identity and integrity hashes', as
   assert.equal(reloaded.data.games[0].files.length, 4); assert.equal(reloaded.data.games[0].installed, true);
 });
 
+test('ZIP import preserves unversioned package-qualified OBB names', async t => {
+  const dir = await workspace(t), archive = path.join(dir, 'PFXVR.zip');
+  const packageName = 'com.zenstudios.PFXVRQuest';
+  const name = `main.${packageName}.obb`;
+  const overflow = `overflow1.${packageName}.obb`;
+  await zip(archive, [['base.apk', 'base'], [name, 'pinball expansion'], [overflow, 'overflow expansion']]);
+  const game = await importGameZip(archive, dir, async file => ({ ...await inspect(file), package: packageName }), { reserve: 0 });
+  const asset = game.files.find(f => f.kind === 'asset');
+  assert.equal(asset.destination, `Android/obb/${packageName}/${name}`);
+  assert.equal(await fs.readFile(asset.path, 'utf8'), 'pinball expansion');
+  assert.equal(game.files.find(f => f.name === overflow).destination, `Android/obb/${packageName}/${overflow}`);
+  assert.equal(classifyAsset(`overflow2.7.${packageName}.obb`, packageName), `Android/obb/${packageName}/overflow2.7.${packageName}.obb`);
+  assert.equal(classifyAsset(`Game/patch.${packageName}.obb`, packageName), `Android/obb/${packageName}/patch.${packageName}.obb`);
+  for (const invalid of ['main.com.other.game.obb', 'overflow1.com.other.game.obb', `overflow.${packageName}.obb`, `main.bad.${packageName}.obb`, `main.${packageName}.extra.obb`, 'main.obb']) {
+    assert.throws(() => classifyAsset(invalid, packageName), /does not match/);
+  }
+});
+
 test('invalid and cancelled ZIP imports remove their partial directory', async t => {
   const dir = await workspace(t);
   for (const [label, entries] of [
     ['traversal', [['../escape', 'bad']]], ['duplicate', [['base.apk', 'a'], ['BASE.APK', 'b']]],
     ['two-games', [['base.apk', 'a'], ['other.apk', 'b']]],
     ['wrong-assets', [['base.apk', 'a'], ['Android/obb/com.other.game/data', 'bad']]],
-    ['ambiguous', [['base.apk', 'a'], ['data.bundle', 'unknown']]]
+    ['ambiguous', [['base.apk', 'a'], ['unscoped/data.bundle', 'unknown']]],
+    ['unknown-type', [['base.apk', 'a'], ['unknown.bin', 'unknown']]],
+    ['asset-collision', [['base.apk', 'a'], ['Audio_NonVO.obb', 'one'], [`Android/obb/${pkg}/Audio_NonVO.obb`, 'two']]],
+    ['bundle-collision', [['base.apk', 'a'], ['application_assets_all.bundle', 'one'], [`Android/obb/${pkg}/application_assets_all.bundle`, 'two']]]
   ]) {
     const archive = path.join(dir, `${label}.zip`); await zip(archive, entries);
     await assert.rejects(importGameZip(archive, dir, inspect, { reserve: 0 }));
@@ -351,4 +390,41 @@ test('a portable import patched before its original was recorded is found in the
   const game = { package: 'com.camouflaj.manta', apk: patchedApk };
   assert.equal(await findOriginalApk(game, identities.get(patchedApk), inspect), null, 'nothing beside the patch folder');
   assert.equal((await findOriginalApk(game, identities.get(patchedApk), inspect, { searchRoots: [downloads] })).file, original);
+});
+
+test('an imported APK brings the expansion files sideloaded beside it, and nothing else', async t => {
+  const dir = await workspace(t), apk = path.join(dir, 'game.apk');
+  const write = async (name, body = 'x') => { const file = path.join(dir, ...name.split('/')); await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, body); };
+  for (const name of ['game.apk', `${pkg}/main.7.${pkg}.obb`, `${pkg}/Content/a.pak`, `Android/data/${pkg}/files/save.dat`,
+    `patch.7.${pkg}.obb`, `main.7.com.other.game.obb`, 'notes.txt', `com.other.game/main.1.com.other.game.obb`]) await write(name);
+  const found = await findCompanionAssets(apk, pkg);
+  assert.deepEqual(found.map(asset => asset.destination).sort(), [
+    `Android/data/${pkg}/files/save.dat`, `Android/obb/${pkg}/Content/a.pak`, `Android/obb/${pkg}/main.7.${pkg}.obb`, `Android/obb/${pkg}/patch.7.${pkg}.obb`]);
+  for (const asset of found) assert.ok((await fs.stat(asset.file)).isFile());
+  assert.deepEqual(await findCompanionAssets(path.join(dir, 'nothing', 'x.apk'), pkg), []);
+});
+
+test('Quest transfers fetch and verify adb once when no Android SDK is installed', async t => {
+  const dir = await workspace(t), source = path.join(dir, 'platform-tools.zip');
+  await zip(source, [['platform-tools/adb.exe', 'adb'], ['platform-tools/AdbWinApi.dll', 'dll']]);
+  const bytes = await fs.readFile(source);
+  const component = { id: 'platform-tools', name: 'Android platform tools', size: bytes.length,
+    sha256: createHash('sha256').update(bytes).digest('hex'), destination: 'platform-tools', prefix: 'platform-tools', probe: 'adb.exe',
+    url: 'https://dl.google.com/android/repository/platform-tools.zip' };
+  const sdk = path.join(dir, 'runtime', 'sdk');
+  let downloads = 0;
+  const download = async ({ destination, validate, url }) => { validate(url); downloads++; await fs.mkdir(path.dirname(destination), { recursive: true }); await fs.copyFile(source, destination); };
+  await Promise.all([ensurePlatformTools(sdk, component, { download }), ensurePlatformTools(sdk, component, { download })]);
+  await ensurePlatformTools(sdk, component, { download });
+  assert.equal(downloads, 1);
+  assert.equal(await fs.readFile(path.join(sdk, 'platform-tools', 'adb.exe'), 'utf8'), 'adb');
+  assert.deepEqual(await fs.readdir(path.join(dir, 'runtime', 'downloads')), [], 'the archive and extraction are cleaned up');
+  const corrupt = path.join(dir, 'other', 'sdk');
+  await assert.rejects(ensurePlatformTools(corrupt, { ...component, sha256: '0'.repeat(64) }, { download: async ({ destination }) => {
+    await fs.mkdir(path.dirname(destination), { recursive: true }); await fs.copyFile(source, destination); } }), /Could not set up adb/);
+  const calls = [];
+  const quest = new Quest({ sdk }, async (...call) => { calls.push(call); return ''; }, { prepare: async () => calls.push('prepare') });
+  await quest.devices();
+  assert.equal(calls[0], 'prepare');
+  assert.equal(calls[1][0], path.join(sdk, 'platform-tools/adb.exe'));
 });

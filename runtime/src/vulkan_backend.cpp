@@ -253,6 +253,9 @@ void VulkanBackend::destroy(VulkanSwapchain& sc) {
         vkQueueWaitIdle(queue_);
         if (sc.surfaceImage) vkDestroyImage(device_, sc.surfaceImage, nullptr);
         if (sc.surfaceMemory) vkFreeMemory(device_, sc.surfaceMemory, nullptr);
+        if (sc.surfaceMapped) vkUnmapMemory(device_, sc.surfaceBufferMemory);
+        if (sc.surfaceBuffer) vkDestroyBuffer(device_, sc.surfaceBuffer, nullptr);
+        if (sc.surfaceBufferMemory) vkFreeMemory(device_, sc.surfaceBufferMemory, nullptr);
         for (auto image : sc.images) if (image) vkDestroyImage(device_, image, nullptr);
         for (auto memory : sc.memory) if (memory) vkFreeMemory(device_, memory, nullptr);
     }

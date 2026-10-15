@@ -6,9 +6,13 @@
 // last ran on, so transcoding competes with the render and job threads at
 // most, never with the main thread. With a single CPU there is no other core
 // and the affinity is left alone.
+#if defined(_WIN32)
+#include <windows.h>
+#else
 #include <sched.h>
 #include <sys/resource.h>
 #include <unistd.h>
+#endif
 #include <algorithm>
 #include <condition_variable>
 #include <cstdio>
@@ -66,8 +70,16 @@ private:
         std::function<void()> run;
     };
 
+    static long online_cpus() {
+#if defined(_WIN32)
+        return long(std::max(1u, std::thread::hardware_concurrency()));
+#else
+        return std::max(1L, sysconf(_SC_NPROCESSORS_ONLN));
+#endif
+    }
+
     Workers() {
-        const long cpus = std::max(1L, sysconf(_SC_NPROCESSORS_ONLN));
+        const long cpus = online_cpus();
         const int count = int(std::clamp(cpus - 1, 1L, 3L));
         for (int i = 0; i < count; ++i) threads_.emplace_back([this] { loop(); });
         for (auto& thread : threads_) thread.detach();
@@ -75,6 +87,13 @@ private:
 
     // The CPU the main thread (the thread group leader) last ran on: field 39
     // of its stat line, counted after the parenthesised command name.
+#if defined(_WIN32)
+    // Windows schedules lower-priority threads around the game's own; no
+    // per-job affinity is needed.
+    static void avoid_main_thread() {}
+    static void lower_priority() { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL); }
+#else
+    static void lower_priority() { setpriority(PRIO_PROCESS, 0, 10); }
     static int main_thread_cpu() {
         char path[64], line[1024];
         std::snprintf(path, sizeof(path), "/proc/self/task/%d/stat", int(getpid()));
@@ -101,9 +120,10 @@ private:
             if (cpu != avoid) CPU_SET(cpu, &set);
         sched_setaffinity(0, sizeof(set), &set);
     }
+#endif
 
     void loop() {
-        setpriority(PRIO_PROCESS, 0, 10);
+        lower_priority();
         for (;;) {
             Job job;
             {

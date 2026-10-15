@@ -1,0 +1,75 @@
+diff --git a/heavy_optimizer/arm64/frontend.cc b/heavy_optimizer/arm64/frontend.cc
+index c978f8b..b371996 100644
+--- a/heavy_optimizer/arm64/frontend.cc
++++ b/heavy_optimizer/arm64/frontend.cc
+@@ -306,14 +306,65 @@ Register HeavyOptimizerFrontend::EmitArmCondPredicate(Decoder::Condition cond) {
+ // Branch to then_bb when `cond` is met, else_bb otherwise. The predicate is a
+ // 0/1 value; TestlRegReg sets ZF=1 when it is 0 (not taken) and ZF=0 when it is
+ // 1 (taken), so the then_bb is selected on kNotZero.
++//
++// AXRB: the NZCV word is tested in place rather than first reduced to a 0/1
++// predicate (EmitArmCondPredicate: up to a dozen instructions per branch).
++// One flag is a TEST of its bit; HI/LS compare the C and Z bits with "C set,
++// Z clear"; the signed conditions fold N into V's position first.
+ void HeavyOptimizerFrontend::EmitCondBranch(Decoder::Condition cond,
+                                             MachineBasicBlock* then_bb,
+                                             MachineBasicBlock* else_bb) {
+-  Register pred = EmitArmCondPredicate(cond);
+-  builder_.Gen<PseudoCondBranch>(x86_64::Assembler::Condition::kNotZero,
+-                                 then_bb,
+-                                 else_bb,
+-                                 std::get<0>(Gen<x86_64::TestlRegReg>(pred, pred)));
++  using HostCondition = x86_64::Assembler::Condition;
++  const int32_t flags_disp = static_cast<int32_t>(offsetof(ThreadState, cpu.flags));
++  const int32_t n = int32_t{1} << kFlagNegativeBit, z = int32_t{1} << kFlagZeroBit;
++  const int32_t c = int32_t{1} << kFlagCarryBit, v = int32_t{1} << kFlagOverflowBit;
++  // The 16-bit load is the form RemoveLoopGuestContextAccesses recognizes (see
++  // EmitArmCondPredicate); it leaves the register's upper bits undefined.
++  Register flags =
++      std::get<0>(Gen<x86_64::MovwRegOp>({.base = x86_64::kMachineRegRBP, .disp = flags_disp}));
++  auto branch = [&](HostCondition taken, Register host_flags) {
++    builder_.Gen<PseudoCondBranch>(taken, then_bb, else_bb, host_flags);
++  };
++  auto test = [&](Register value, int32_t mask, bool taken_when_set) {
++    branch(taken_when_set ? HostCondition::kNotZero : HostCondition::kZero,
++           std::get<0>(Gen<x86_64::TestlRegImm>(value, mask)));
++  };
++  switch (cond) {
++    case Decoder::Condition::kEq: return test(flags, z, true);
++    case Decoder::Condition::kNe: return test(flags, z, false);
++    case Decoder::Condition::kCs: return test(flags, c, true);
++    case Decoder::Condition::kCc: return test(flags, c, false);
++    case Decoder::Condition::kMi: return test(flags, n, true);
++    case Decoder::Condition::kPl: return test(flags, n, false);
++    case Decoder::Condition::kVs: return test(flags, v, true);
++    case Decoder::Condition::kVc: return test(flags, v, false);
++    case Decoder::Condition::kHi:    // C==1 && Z==0
++    case Decoder::Condition::kLs: {  // C==0 || Z==1
++      Register bits = std::get<0>(Gen<x86_64::MovlRegReg>(flags));
++      bits = std::get<0>(Gen<x86_64::AndlRegImm, kNoSSA>(bits, c | z));
++      return branch(cond == Decoder::Condition::kHi ? HostCondition::kEqual : HostCondition::kNotEqual,
++                    std::get<0>(Gen<x86_64::CmplRegImm>(bits, c)));
++    }
++    case Decoder::Condition::kGe:    // N==V
++    case Decoder::Condition::kLt:    // N!=V
++    case Decoder::Condition::kGt:    // Z==0 && N==V
++    case Decoder::Condition::kLe: {  // Z==1 || N!=V
++      static_assert(kFlagNegativeBit == 15 && kFlagOverflowBit == 0 && kFlagZeroBit == 14);
++      Register clean = std::get<0>(Gen<x86_64::MovlRegReg>(flags));
++      clean = std::get<0>(Gen<x86_64::AndlRegImm, kNoSSA>(clean, int32_t{0xFFFF}));
++      // Bit 0 becomes N^V; bit 14 stays Z (the shifted copy is zero there).
++      Register folded = std::get<0>(Gen<x86_64::MovlRegReg>(clean));
++      folded = std::get<0>(Gen<x86_64::ShrlRegImm, kNoSSA>(folded, int8_t{15}));
++      folded = std::get<0>(Gen<x86_64::XorlRegReg, kNoSSA>(folded, clean));
++      const bool with_zero = cond == Decoder::Condition::kGt || cond == Decoder::Condition::kLe;
++      return test(folded, with_zero ? (v | z) : v,
++                  cond == Decoder::Condition::kLt || cond == Decoder::Condition::kLe);
++    }
++    case Decoder::Condition::kAl:
++    case Decoder::Condition::kNv:
++      break;  // Unconditional: handled by the caller.
++  }
++  CHECK(false);
+ }
+ 
+ // B.cond (conditional). AL/NV are unconditional. Otherwise split into a taken

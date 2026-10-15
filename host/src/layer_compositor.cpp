@@ -1,4 +1,5 @@
 #include "openxr_session.h"
+#include "debug_frame_capture.h"
 #if defined(_WIN32)
 namespace axrb::host::detail {
 namespace {
@@ -66,6 +67,13 @@ void OpenXrSession::trim_composition_resources(uint32_t spheres, bool panels) {
 
 bool OpenXrSession::should_precompose(const GpuFrameBatch& frame) const
 {
+    // Diagnostic captures need the complete submitted scene, including overlay
+    // layers that normally remain separate in the native OpenXR compositor.
+    static const bool captureAllLayers = [] {
+        const char* value = std::getenv("AXRB_CAPTURE_ALL_LAYERS");
+        return value && std::strcmp(value, "1") == 0;
+    }();
+    if (captureAllLayers && frame.count > 1) return true;
     if (frame.count > nativeLayerLimit_) return true;
     if (!precomposeProjectionLayers_) return false;
     // Optionally collapse projection stacks so runtimes that cannot order
@@ -103,6 +111,17 @@ bool OpenXrSession::compose_overflow(
         const XrExtent2Di extent{
             static_cast<int32_t>(part.header.width), static_cast<int32_t>(part.header.height)};
         auto metadata = part.projection;
+        if (std::getenv("AXRB_CAPTURE_ALL_LAYERS") &&
+            debug_capture_frame(d3dContext_.get(), source, part.header.width,
+                part.header.height, frame.header.sequence, "-layer" + std::to_string(i))) {
+            const auto& pose = metadata.quad_count() ? metadata.quads[0].pose : metadata.views[0].pose;
+            const auto& view = overflowViews_[0].pose;
+            std::fprintf(stderr, "AXRB capture layer %u: views=%u quads=%u sphere=%d pose=(%f %f %f / %f %f %f %f) eye=(%f %f %f / %f %f %f %f)\n",
+                i, metadata.view_count, metadata.quad_count(), metadata.is_equirect(),
+                pose.x, pose.y, pose.z, pose.qx, pose.qy, pose.qz, pose.qw,
+                view.position.x, view.position.y, view.position.z,
+                view.orientation.x, view.orientation.y, view.orientation.z, view.orientation.w);
+        }
         for (uint32_t eye = 0; eye < 2; ++eye) {
             const auto& targetView = targetViews[eye];
             bool rendered = false;

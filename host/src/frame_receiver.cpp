@@ -2,6 +2,24 @@
 #include "gpu_frame_packet.h"
 
 namespace axrb::host::detail {
+namespace {
+// CPU-transfer frames apply layer-local fades here, as the GPU path's color
+// renderer does while copying.
+void apply_layer_colors(const axrb::protocol::ImageFrameHeader& header,
+                        const axrb::protocol::ImageProjection& projection, std::vector<uint8_t>& pixels)
+{
+    const size_t eyeBytes=static_cast<size_t>(header.width)*header.height*4;
+    for(uint32_t eye=0;eye<header.layers && eye<2;++eye) {
+        const auto& color=projection.colors[eye];
+        if(color.identity()) continue;
+        for(size_t at=eye*eyeBytes;at<(eye+1)*eyeBytes && at+3<pixels.size();at+=4) {
+            float value[4];for(int c=0;c<4;++c)value[c]=pixels[at+c]/255.f;
+            protocol::apply_layer_color(value,color,protocol::image_layer_flags(projection,eye));
+            for(int c=0;c<4;++c)pixels[at+c]=static_cast<uint8_t>((std::max)(0.f,(std::min)(1.f,value[c]))*255.f+0.5f);
+        }
+    }
+}
+}
 
 bool OpenXrSession::receive_image(const axrb::protocol::ImageFrameHeader& header,
                    const axrb::protocol::ImageProjection& projection,
@@ -106,23 +124,57 @@ bool OpenXrSession::receive_image(const axrb::protocol::ImageFrameHeader& header
         // reuse its source, even while the host displays an older pinned slot.
         return true;
     }
+    if (header.reserved) {
+        // One layer of a stack sent as pixels. Assemble the stack exactly as
+        // mixed GPU parts are and publish it once every layer has arrived.
+        using namespace axrb::protocol;
+        const uint32_t count = header.reserved >> 16, index = header.reserved & 0xffff;
+        auto drop = [&] { pendingGpuFrame_.reset(); pendingMixedCount_ = 0; return false; };
+        if (!valid_pixel_part(header.version, header.reserved) ||
+            header.width > projectionWidth_ || header.height > projectionHeight_ ||
+            pixels.size() != static_cast<size_t>(header.width) * header.height * header.layers * 4) return drop();
+        if (index == 0) {
+            pendingGpuFrame_.reset();
+            pendingGpuFrame_ = gpuFrames_.acquire();
+            if (!pendingGpuFrame_) return drop();
+            pendingGpuFrame_->resize(count);
+            pendingMixedCount_ = count; pendingMixedIndex_ = 0; pendingMixedSequence_ = header.sequence;
+        }
+        if (!pendingGpuFrame_ || count != pendingMixedCount_ || index != pendingMixedIndex_ ||
+            header.sequence != pendingMixedSequence_) return drop();
+        apply_layer_colors(header, projection, pixels);
+        auto& part = pendingGpuFrame_->parts[index];
+        if (!part.receiver.receive_pixels(receiveDevice_.get(), receiveContext_.get(), pixels.data(),
+                header.width, header.height, header.layers, static_cast<DXGI_FORMAT>(projectionFormat_))) {
+            gpuFrames_.retire(pendingGpuFrame_);
+            return drop();
+        }
+        part.header = header; part.projection = projection;
+        ++pendingMixedIndex_; ++pendingMixedSequence_;
+        if (pendingMixedIndex_ == count) {
+            // Presentation treats the assembled stack as a mixed GPU frame:
+            // every layer now lives in its receiver's host-owned image.
+            const auto& first = pendingGpuFrame_->parts[0];
+            auto complete = first.header;
+            complete.version = first.projection.is_equirect() ? kMixedEquirectGpuFrameVersion :
+                first.projection.quad_count() ? kMixedQuadGpuFrameVersion : kMixedProjectionGpuFrameVersion;
+            complete.sequence = header.sequence;
+            imageFrame_->store(complete, std::vector<uint8_t>(1), first.projection, pendingGpuFrame_);
+            gpuFrames_.trim([count](auto& slot) { slot.trim(count); });
+            pendingGpuFrame_.reset(); pendingMixedCount_ = 0;
+            static bool reported = false;
+            if (!reported) { std::fprintf(stderr, "AXRB OpenXR: %u-layer frames arrive as pixels; composing them as layers\n", count); reported = true; }
+        }
+        return true;
+    }
     pendingGpuFrame_.reset(); pendingMixedCount_ = 0;
 #else
+    if (header.reserved) return false;
     if (axrb::protocol::mixed_gpu_version(header.version) ||
         header.version == axrb::protocol::kWindowsGpuFrameVersion ||
         axrb::protocol::equirect_gpu_version(header.version) || header.version == axrb::protocol::kQuadGpuFrameVersion) return false;
 #endif
-    // CPU-transfer fallback uses the same layer-local fade semantics.
-    const size_t eyeBytes=static_cast<size_t>(header.width)*header.height*4;
-    for(uint32_t eye=0;eye<header.layers && eye<2;++eye) {
-        const auto& color=projection.colors[eye];
-        if(color.identity()) continue;
-        for(size_t at=eye*eyeBytes;at<(eye+1)*eyeBytes && at+3<pixels.size();at+=4) {
-            float value[4];for(int c=0;c<4;++c)value[c]=pixels[at+c]/255.f;
-            protocol::apply_layer_color(value,color,protocol::image_layer_flags(projection,eye));
-            for(int c=0;c<4;++c)pixels[at+c]=static_cast<uint8_t>((std::max)(0.f,(std::min)(1.f,value[c]))*255.f+0.5f);
-        }
-    }
+    apply_layer_colors(header, projection, pixels);
     imageFrame_->store(header, std::move(pixels), projection);
     return true;
 }

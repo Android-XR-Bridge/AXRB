@@ -3,8 +3,69 @@ import { Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { call } from './common';
+import { buildProfile } from '../core/build-profile.mjs';
+
+// Direct mode runs games on Windows without the emulator, so its setup (and
+// the hypervisor it needs) can be skipped. The SDK license still applies to
+// the Android system libraries direct mode downloads.
+function DirectModeSkip({ setup, invoke, directory, licensed, accepted, setAccepted, hypervisor = false }) {
+  const [ownAccepted, setOwnAccepted] = useState(false);
+  const [skipping, setSkipping] = useState(false);
+  const shared = setAccepted !== undefined;
+  const agreed = licensed || (shared ? accepted : ownAccepted);
+  const skip = async () => {
+    setSkipping(true);
+    try { await invoke('setupSkip', { directory, accepted: agreed }); } finally { setSkipping(false); }
+  };
+  return <div className="space-y-3 rounded-lg border p-4" data-setup-skip>
+    <p className="font-medium">Skip the Android emulator</p>
+    <p className="text-sm text-muted-foreground">Use direct mode instead: games run on Windows without the emulator{hypervisor ? ', so Windows Hypervisor Platform is not needed' : ''}. Direct mode plays APKs patched with ovrport and downloads 810 MB of Android system libraries the first time you play. You can set up the emulator later in Settings.</p>
+    {!licensed && !shared && <label className="flex items-start gap-3 text-sm"><input id="skip-license" type="checkbox" checked={ownAccepted} onChange={e => setOwnAccepted(e.target.checked)} className="mt-1" /><span>I accept the <button className="underline" onClick={e => { e.preventDefault(); invoke('setupLicense'); }}>Android SDK license</button>.</span></label>}
+    <Button variant="outline" data-setup-skip-button disabled={skipping || setup.active || !agreed} onClick={skip}>{skipping ? 'Preparing direct mode…' : 'Skip and use direct mode'}</Button>
+  </div>;
+}
 
 export function SetupScreen({ setup }) {
+  return !buildProfile.emulatorEnabled || setup.emulatorDisabled ? <DirectSetupScreen setup={setup} /> : <LegacySetupScreen setup={setup} />;
+}
+function DirectSetupScreen({ setup }) {
+  const [directory, setDirectory] = useState(setup.directory || '');
+  const [downloads, setDownloads] = useState(setup.downloadDirectory || setup.recommendedDownloadDirectory || '');
+  const [accepted, setAccepted] = useState(false);
+  const [error, setError] = useState('');
+  const [starting, setStarting] = useState(false);
+  const start = async () => {
+    setStarting(true); setError('');
+    try { await call('setupStart', { runtimeDirectory: directory, downloadDirectory: downloads, accepted }); } catch (e) { setError(e.message); }
+    finally { setStarting(false); }
+  };
+  const browse = async setter => {
+    try { setError(''); const value = await call('chooseFolder'); if (value) setter(value); }
+    catch (e) { setError(e.message); }
+  };
+  const folder = (id, label, value, setter, recommended, description) => <div className="space-y-2">
+    <label htmlFor={id} className="text-sm font-medium">{label}</label>
+    <div className="flex gap-2"><Input id={id} value={value} disabled={starting} onChange={e => setter(e.target.value)} />
+      <Button variant="outline" disabled={starting} onClick={() => browse(setter)} aria-label={`Browse ${label.toLowerCase()}`}>Browse</Button></div>
+    <p className="text-xs text-muted-foreground">{description}</p>
+    <p className="break-all text-xs text-muted-foreground">Recommended: {recommended}</p>
+    <button className="text-xs underline" disabled={starting || !recommended} onClick={() => setter(recommended)}>Use recommended</button>
+  </div>;
+  return <main className="flex min-h-screen items-center justify-center p-6"><section className="w-full max-w-xl space-y-5" aria-label="Direct runtime setup">
+    <h1 className="text-xl font-semibold">AXRB-Emulatorless</h1>
+    <p>Run APKs with the Android framework directly on Windows. Android system libraries download automatically the first time you play.</p>
+    <p className="text-sm text-muted-foreground">Requires Windows x64, a GPU with Vulkan support, and at least {buildProfile.minimumMemoryGB} GB of system RAM. Memory is allocated as needed.</p>
+    {setup.phase === 'unsupported' && <p role="alert">At least {buildProfile.minimumMemoryGB} GB of system RAM is required. This PC reports {Number(setup.memoryGB).toFixed(1)} GB.</p>}
+    {folder('runtime-directory', 'Runtime data folder', directory, setDirectory, setup.recommendedDirectory || setup.directory,
+      'Android system libraries, game saves, and runtime files. The exact folder shown will be used.')}
+    {folder('download-directory', 'Game downloads folder', downloads, setDownloads, setup.recommendedDownloadDirectory,
+      'Downloaded games, imported ZIPs, and patched APKs.')}
+    <label className="flex gap-3 text-sm"><input type="checkbox" checked={accepted} onChange={e => setAccepted(e.target.checked)} /><span>I accept the <button className="underline" onClick={() => call('setupLicense')}>Android SDK license</button> for the Android system libraries.</span></label>
+    {error && <p role="alert">{error}</p>}
+    <Button disabled={!accepted || !directory.trim() || !downloads.trim() || starting || setup.phase === 'unsupported' || setup.phase === 'checking'} onClick={start}>{starting ? 'Preparing...' : 'Continue'}</Button>
+  </section></main>;
+}
+function LegacySetupScreen({ setup }) {
   const current = setup.current;
   const [newDirectory, setDirectory] = useState(null);
   const normalizeDirectory = value => String(value || '').replaceAll('/', '\\').replace(/[\\]+$/, '').toLowerCase();
@@ -72,6 +133,7 @@ export function SetupScreen({ setup }) {
       <p>Enable Windows Hypervisor Platform to run Android.</p>
       <ol className="list-decimal space-y-2 pl-5 text-sm text-muted-foreground"><li>Open the Windows Start menu, search for <strong>Turn Windows features on or off</strong>, and open it.</li><li>Select <strong>Windows Hypervisor Platform</strong>, click <strong>OK</strong>, and wait for Windows to apply the change.</li><li>Restart your PC, then reopen AXRB.</li><li>If it remains unavailable, enable Intel VT-x or AMD SVM in your BIOS/UEFI settings.</li></ol>
       <Button variant="outline" onClick={() => invoke('setupCheck')}>Check again</Button>
+      <DirectModeSkip setup={setup} invoke={invoke} licensed={Boolean(setup.needs?.licensed)} hypervisor />
     </> : setup.active || setup.phase === 'checking' ? <>
       <div className="flex items-center gap-3" role="status"><Loader2 className="size-4 animate-spin" /><span>{labels[setup.phase] || setup.phase}{setup.component ? ` · ${setup.component}` : ''}</span>{setup.active && <span className="ml-auto tabular-nums text-sm text-muted-foreground" aria-label="Elapsed time">{elapsedText}</span>}</div>
       {setup.total > 0 && <><progress aria-label="Setup progress" value={setup.completed} max={setup.total} className="h-2 w-full accent-primary" /><div className="flex justify-between text-sm text-muted-foreground"><span>{setup.phase === 'download' ? `${(setup.completed / 1024 ** 2).toFixed(0)} / ${(setup.total / 1024 ** 2).toFixed(0)} MB` : 'Files'}</span><span>{percent}%</span></div></>}
@@ -128,6 +190,8 @@ export function SetupScreen({ setup }) {
       <Button data-setup-start disabled={starting || selectingArchives || (licenseNeeded && !accepted) || (!useCurrent && !directory) || !validStorage} onClick={start}>{starting ? 'Checking setup files…' : ['error', 'cancelled'].includes(setup.phase) ? 'Retry setup' : useCurrent ? needs ? 'Finish setup' : 'Set up current installation' : archives.length ? 'Set up Android' : 'Download and set up'}</Button>
       {setup.phase === 'error' && <Button variant="outline" className="ml-3" onClick={() => invoke('setupCheck')}>Check again</Button>}
       </div>
+      <DirectModeSkip setup={setup} invoke={invoke} directory={useCurrent ? undefined : directory}
+        licensed={Boolean(needs?.licensed)} accepted={accepted} setAccepted={setAccepted} />
       <p className="text-xs text-muted-foreground">SteamVR or another active OpenXR runtime is required to play. ovrport is not included; import APKs you have patched separately.</p>
     </>}
     {(error || setup.error) && <p role="alert" className="break-words text-sm text-destructive">{error || setup.error}</p>}

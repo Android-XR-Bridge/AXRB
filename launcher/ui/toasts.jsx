@@ -37,7 +37,7 @@ export function Toasts({ jobs, notice, dismissNotice }) {
       const active = activeStatuses.includes(job.status), error = ['failed', 'interrupted'].includes(job.status);
       const title = error ? `${job.name}: ${job.kind === 'uninstall' ? 'uninstall' : 'import'} failed`
         : job.status === 'cancelled' ? `${job.name}: import cancelled`
-        : job.status === 'complete' ? `${job.name}: ${job.kind === 'uninstall' ? 'uninstalled' : job.kind === 'zip' ? 'installed' : 'imported'}` : job.name;
+        : job.status === 'complete' ? `${job.name}: ${job.kind === 'uninstall' ? 'uninstalled' : job.kind === 'zip' && job.stage !== 'Imported for direct mode' ? 'installed' : 'imported'}` : job.name;
       return <div key={job.id} data-job-toast={job.id} role={error ? 'alert' : 'status'} className={cn('rounded-md border bg-popover p-4 shadow-lg', error && 'text-destructive')}>
         <div className="flex items-start gap-3">{active ? <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin" aria-hidden="true" /> : job.status === 'complete' ? <Check className="mt-0.5 size-4 shrink-0" aria-hidden="true" /> : null}
           <div className="min-w-0 flex-1"><div className="break-words text-sm font-medium">{title}</div>{(active || error) && <div className="mt-1 break-words text-xs text-muted-foreground">{error ? job.error : job.stage}</div>}</div>

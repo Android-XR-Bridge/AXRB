@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "recorded": "2026-09-20",
+  "host": {
+    "os": "Windows 11 Pro",
+    "os_build": "10.0.26200",
+    "arch": "x86_64"
+  },
+  "host_toolchain": {
+    "compiler": "clang",
+    "compiler_version": "21.0.0",
+    "compiler_provider": "android-ndk",
+    "ndk_for_host_clang": "29.0.14206865",
+    "target_triple": "x86_64-pc-windows-msvc",
+    "linker": "link.exe",
+    "linker_provider": "msvc",
+    "msvc_toolset": "14.50.35717",
+    "msvc_root": "C:/Program Files (x86)/Microsoft Visual Studio/18/BuildTools",
+    "windows_sdk": "10.0.26100.0",
+    "windows_sdk_root": "C:/Program Files (x86)/Windows Kits/10",
+    "cxx_standard": 20,
+    "rationale": "MSVC cl.exe lacks __attribute__((sysv_abi)); NDK ships no lld-link."
+  },
+  "guest_toolchain": {
+    "ndk": "27.3.13750724",
+    "clang_version": "18.0.4",
+    "api_level": 29,
+    "current_ndk_fixture_api": 35,
+    "_current_ndk_fixture_note": "One ELF fixture (libreloc_ndk_current.so) is built by host_toolchain.ndk_for_host_clang at this API level with no packing flags, to capture what a current NDK emits by default. Measured: NDK 29 adds --pack-dyn-relocs=relr --use-android-relr-tags at API >= 28; NDK 27 does not.",
+    "abis": [
+      "x86_64"
+    ],
+    "future_abis": [
+      "x86"
+    ]
+  },
+  "fixture_toolchain": {
+    "jdk": "25.0.2",
+    "build_tools": "35.0.0",
+    "compile_sdk": "android-29",
+    "public_ids_platform": "android-36",
+    "_public_ids_note": "The framework resource package pins every PUBLIC resource id of this platform jar (tools/build-framework-res.ps1), so apps compiled against any SDK up to it resolve @android: references.",
+    "note": "JDK and Android SDK are BUILD-time only. The shipped runner must not need them."
+  },
+  "build_tools": {
+    "cmake": "4.3.1",
+    "ninja": "1.10.2",
+    "ninja_path": "%LOCALAPPDATA%/Android/Sdk/cmake/3.22.1/bin/ninja.exe",
+    "python": "3.14.3"
+  },
+  "_note_paths": "All paths use forward slashes; they are valid for Win32 APIs and CMake."
+}

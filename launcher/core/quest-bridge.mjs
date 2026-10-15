@@ -113,13 +113,17 @@ export async function prepareBridge({ root, directory, sdk, game, execute, onOut
   const executable = path.join(root, 'out/quest-bridge/Release/qb-test.exe');
   try { await fs.access(executable); } catch { throw new Error('Build Quest Bridge first: powershell -File scripts/build/quest_bridge.ps1'); }
   if (!game.apk) throw new Error('Import or download the APK and its content first.');
-  const versions = (await fs.readdir(path.join(sdk, 'build-tools'))).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
-  let aapt;
+  let aapt = path.join(root, 'tools/aapt2/aapt2.exe');
+  if (!(await fs.stat(aapt).catch(() => null))?.size) aapt = null;
+  const versions = aapt ? [] : (await fs.readdir(path.join(sdk, 'build-tools')).catch(error => {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  })).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
   for (const version of versions) {
     const candidate = path.join(sdk, 'build-tools', version, 'aapt2.exe');
     try { await fs.access(candidate); aapt = candidate; break; } catch {}
   }
-  if (!aapt) throw new Error('Android SDK build-tools (aapt2.exe) are required to prepare an APK.');
+  if (!aapt) throw new Error('The launcher APK reader is missing. Reinstall the AXRB launcher.');
   const identity = parseBridgeManifest(await execute(aapt, ['dump', 'badging', game.apk]), await execute(aapt, ['dump', 'xmltree', game.apk, '--file', 'AndroidManifest.xml']));
   if (identity.package !== game.package) throw new Error('APK package changed. Import it again.');
   const apks = [game.apk, ...(game.files || []).filter(f => f.kind === 'split').map(f => f.path)];

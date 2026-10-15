@@ -410,7 +410,7 @@ bool OpenXrSession::update_projection_layers(XrTime displayTime, XrDuration disp
         const auto sequence = uploadedAndroidSequenceByImage_[imageIndex];
         mirror_.present(d3dContext_.get(), projectionImages_[imageIndex].texture,
             extent.width, extent.height, static_cast<DXGI_FORMAT>(projectionFormat_), sequence);
-        if (frame.gpu && (mixedBatch || frame.projection.view_count == 2))
+        if (mixedBatch || frame.projection.view_count == 2)
             debug_capture_frame(d3dContext_.get(), projectionImages_[imageIndex].texture,
                 extent.width, extent.height, sequence);
     }

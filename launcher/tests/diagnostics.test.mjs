@@ -74,7 +74,7 @@ test('the bundle carries the useful logs, redacted, and never the game library',
 
 test('diagnostic sources cover the emulator and host logs a failure needs', () => {
   const names = diagnosticSources('C:\\data').map(([label]) => label);
-  assert.deepEqual(names, ['emulator.stdout.log', 'emulator.stderr.log', 'guest-gles.txt', 'guest-vulkan.json', 'host.log', 'host.err', 'session.json']);
+  assert.deepEqual(names, ['emulator.stdout.log', 'emulator.stderr.log', 'guest-gles.txt', 'guest-vulkan.json', 'host.log', 'host.err', 'direct.log', 'direct.out', 'direct.err', 'session.json']);
 });
 
 test('game sessions and performance windows appear as their own bundle sections', async () => {
@@ -115,6 +115,18 @@ test('a game that quit by itself is not reported as a crash', () => {
   assert.equal(describeSessionEnd({ hostProcessLost: true }, 4).outcome, 'host crash');
   assert.deepEqual(describeSessionEnd({ closeRequested: true }, 0), { outcome: 'user stop', detail: null });
   assert.deepEqual(describeSessionEnd({}, 1), { outcome: 'exit 1', detail: null });
+});
+
+test('Direct guest failures are reported even when the session wrapper exits zero', () => {
+  for (const status of [1, 137, 139, -1073741819]) {
+    const record = { backend: 'direct', gameExit: { kind: 'exited', status } };
+    const result = describeSessionEnd(record, 0);
+    assert.equal(result.outcome, `direct exit ${status}`);
+    assert.match(result.detail, new RegExp(`exit code ${status}`));
+    assert.deepEqual(describeSessionEnd({ ...record, closeRequested: true }, 0),
+      { outcome: 'user stop', detail: null });
+  }
+  assert.equal(describeSessionEnd({ backend: 'direct', gameExit: { kind: 'exited', status: 0 } }, 0).detail, null);
 });
 
 test('upload posts the bundle and returns the link the service reports', async () => {

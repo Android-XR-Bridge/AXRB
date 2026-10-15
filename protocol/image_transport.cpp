@@ -160,7 +160,7 @@ int TcpImageServer::serve_with_callback(uint16_t port, uint32_t maxFrames, const
             const bool gpu = empty || batch || header.version == kWindowsGpuFrameVersion || header.version == kQuadGpuFrameVersion || equirect_gpu_version(header.version) || mixed;
             const bool projected = !empty && (header.version == kProjectionImageFrameVersion || gpu || quads || equirect_version(header.version));
             const uint32_t expectedHeaderSize = sizeof(ImageFrameHeader) + (projected ? sizeof(ImageProjection) : 0);
-            if ((batch ? (header.reserved < 2 || header.reserved > kMaxWireCompositionLayers) : mixed ? !valid_mixed_part(header.version, header.reserved) : header.reserved != 0) || header.magic != kImageFrameMagic ||
+            if ((batch ? (header.reserved < 2 || header.reserved > kMaxWireCompositionLayers) : mixed ? !valid_mixed_part(header.version, header.reserved) : header.reserved != 0 && !valid_pixel_part(header.version, header.reserved)) || header.magic != kImageFrameMagic ||
                 (header.version != kImageFrameVersion && !empty && !projected) ||
                 header.type != (gpu ? kWindowsGpuFrameType : kImageFrameTypeRgba8) ||
                 (header.header_size != expectedHeaderSize && (!projected || header.header_size != sizeof(ImageFrameHeader)+kLegacyProjectionBytes)) ||
@@ -187,7 +187,7 @@ int TcpImageServer::serve_with_callback(uint16_t port, uint32_t maxFrames, const
             ImageProjection projection{};
             if (projected && (!recv_all(client, &projection, header.header_size-sizeof(ImageFrameHeader)) ||
                 !(batch ? (valid_projection(projection) || valid_quads(projection) || valid_equirect(projection)) : equirect_version(header.version) ? valid_equirect(projection) : quads ? valid_quads(projection) : valid_projection(projection)) ||
-                (mixed && quads && projection.quad_count() != 1))) {
+                ((mixed || (!batch && header.reserved)) && quads && projection.quad_count() != 1))) {
                 std::fprintf(stderr, "AXRB Image TCP: invalid projection metadata\n");
                 close_socket(client);
                 break;

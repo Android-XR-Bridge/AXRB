@@ -5,7 +5,9 @@ const TOP_KEYS = new Set(['schemaVersion', 'profiles']);
 const PROFILE_KEYS = new Set(['id', 'label', 'package', 'versions', 'ovrport', 'runtime', 'summary']);
 const VERSION_KEYS = new Set(['versionCode', 'versionName']);
 const OVRPORT_KEYS = new Set(['recommended', 'extraPatches']);
-const RUNTIME_KEYS = new Set(['precomposeProjectionLayers']);
+// legacyOculusDriver, questIdentity and controllersOnly serve unmodified Quest
+// APKs with older Oculus loaders in Direct mode (docs/iron_man_vr_compatibility.md).
+const RUNTIME_KEYS = new Set(['precomposeProjectionLayers', 'legacyOculusDriver', 'questIdentity', 'controllersOnly']);
 // Patch names travel inside a semicolon-separated `--extra-patches` value where
 // `=` introduces per-patch arguments, so anything outside a plain identifier
 // would either split the value or inject arguments.
@@ -100,16 +102,18 @@ function checkProfile(profile, seenIds) {
   if (Object.hasOwn(profile, 'runtime') && profile.runtime !== undefined) {
     if (!isRecord(profile.runtime)) throw new Error(`${context} runtime must be an object.`);
     assertKnownKeys(profile.runtime, RUNTIME_KEYS, `${context} runtime`);
-    if (!Object.hasOwn(profile.runtime, 'precomposeProjectionLayers')) {
-      throw new Error(`${context} runtime needs precomposeProjectionLayers.`);
+    if (!Object.keys(profile.runtime).length) throw new Error(`${context} runtime needs at least one option.`);
+    runtime = {};
+    for (const [key, value] of Object.entries(profile.runtime)) {
+      if (typeof value !== 'boolean') throw new Error(`${context} runtime.${key} must be a boolean.`);
+      runtime[key] = value;
     }
-    if (typeof profile.runtime.precomposeProjectionLayers !== 'boolean') {
-      throw new Error(`${context} runtime.precomposeProjectionLayers must be a boolean.`);
+    if (runtime.controllersOnly && !runtime.legacyOculusDriver) {
+      throw new Error(`${context} runtime.controllersOnly needs legacyOculusDriver, which applies it.`);
     }
-    runtime = { precomposeProjectionLayers: profile.runtime.precomposeProjectionLayers };
   }
 
-  if (!ovrport && runtime?.precomposeProjectionLayers !== true) {
+  if (!ovrport && !Object.values(runtime ?? {}).includes(true)) {
     throw new Error(`${context} has no compatibility actions.`);
   }
 
@@ -197,6 +201,5 @@ export function compatibilityPatchArgs(resolution) {
 
 export function compatibilityRuntimeOptions(resolution) {
   if (!resolution || resolution.status !== 'matched' || !resolution.profile) return {};
-  if (resolution.profile.runtime?.precomposeProjectionLayers === true) return { precomposeProjectionLayers: true };
-  return {};
+  return Object.fromEntries(Object.entries(resolution.profile.runtime ?? {}).filter(([, value]) => value === true));
 }

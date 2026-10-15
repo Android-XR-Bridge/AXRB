@@ -1,0 +1,1 @@
+AXRB_1 { global: dep_*; local: *; };

@@ -35,7 +35,7 @@ axrb::protocol::PoseFrame OpenXrSession::make_frame(uint64_t sequence)
     pump_events();
 
     axrb::protocol::PoseFrame frame = latest_frame(sequence);
-    frame.hmd_flags = frame.local_origin_flags = 0;
+    frame.hmd_flags = frame.local_origin_flags = frame.display_lead_ns = 0;
     frame.hmd_velocity = frame.local_origin_velocity = {};
     frame.controllers[0] = {};
     frame.controllers[1] = {};
@@ -78,6 +78,14 @@ axrb::protocol::PoseFrame OpenXrSession::make_frame(uint64_t sequence)
                 frame.display_period_ns = static_cast<uint32_t>(frameState.predictedDisplayPeriod);
                 frameDisplayPeriod = frameState.predictedDisplayPeriod;
             }
+            // Test-only: AXRB_TEST_DISPLAY_HZ paces the game at a fixed rate
+            // (headless runtimes such as SteamVR's null driver throttle).
+            static const uint32_t testPeriod = [] {
+                const char* value = std::getenv("AXRB_TEST_DISPLAY_HZ");
+                const int hz = value ? std::atoi(value) : 0;
+                return hz > 0 ? static_cast<uint32_t>(1000000000 / hz) : 0u;
+            }();
+            if (testPeriod) frame.display_period_ns = testPeriod;
 
             XrFrameBeginInfo beginInfo{XR_TYPE_FRAME_BEGIN_INFO};
             {
@@ -112,6 +120,20 @@ axrb::protocol::PoseFrame OpenXrSession::make_frame(uint64_t sequence)
     if (locateTime == 0) {
         publish_pose(frame);
         return frame;
+    }
+    // The poses below are sampled now, after xrWaitFrame blocked, and are
+    // predicted for frameDisplayTime. The guest predicts controllers onward
+    // from there to its own (later) display time.
+    frame.monotonic_time_ns = monotonic_time_ns();
+    if (beganFrame) {
+#if defined(_WIN32)
+        const XrTime xrNow = windows_xr_time();
+#else
+        const XrTime xrNow = current_xr_time();
+#endif
+        // Never zero (unknown): headless runtimes may report a past display time.
+        if (xrNow) frame.display_lead_ns = static_cast<uint32_t>(
+            std::clamp<XrTime>(frameDisplayTime - xrNow, 1, 100'000'000));
     }
 
     const bool hadValidViewFovs = axrb::protocol::has_valid_view_fovs(frame);
@@ -213,13 +235,21 @@ axrb::protocol::PoseFrame OpenXrSession::make_frame(uint64_t sequence)
     // Test-only: benchmarks without a worn headset otherwise see invalid head
     // tracking, and many titles then stop drawing their scene. A fixed standing
     // pose keeps the normal rendering workload. Never used unless requested.
-    static const bool syntheticHmd = [] {
+    // AXRB_TEST_SYNTHETIC_HMD=2 also replaces a valid pose (headless drivers
+    // such as SteamVR's null driver report one at the floor).
+    static const char syntheticHmd = [] {
         const char* value = std::getenv("AXRB_TEST_SYNTHETIC_HMD");
-        return value && value[0] == '1';
+        return value && (value[0] == '1' || value[0] == '2') ? value[0] : char(0);
     }();
-    if (syntheticHmd && (frame.hmd_flags & 3) != 3) {
+    if (syntheticHmd && ((frame.hmd_flags & 3) != 3 || syntheticHmd == '2')) {
         frame.hmd = {};
         frame.hmd.y = 1.6f;
+        if (const char* height = std::getenv("AXRB_TEST_HMD_HEIGHT")) {
+            char* end = nullptr;
+            const float value = std::strtof(height, &end);
+            if (end != height && !*end && std::isfinite(value) && value >= -2 && value <= 3)
+                frame.hmd.y = value;
+        }
         frame.hmd.qw = 1.0f;
         frame.hmd_flags = 0xF;
         frame.hmd_velocity = {3, {}, {}};

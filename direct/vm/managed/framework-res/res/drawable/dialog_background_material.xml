@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<inset xmlns:android="http://schemas.android.com/apk/res/android" android:inset="16dp">
+  <shape android:shape="rectangle">
+    <corners android:radius="@dimen/dialog_corner_material" />
+    <solid android:color="?attr/colorBackground" />
+  </shape>
+</inset>

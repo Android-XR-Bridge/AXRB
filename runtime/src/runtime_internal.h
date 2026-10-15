@@ -79,7 +79,7 @@ struct ActionRecord {
     std::array<ActionSample, 3> samples{}; // Left, right, aggregate.
 };
 extern std::deque<ActionRecord> g_actionHandles;
-struct HandTrackerRecord { bool alive = true; uint32_t hand = 0; uint32_t sources = 3; };
+struct HandTrackerRecord { bool alive = true; uint32_t hand = 0; uint32_t sources = 1; };
 extern std::deque<HandTrackerRecord> g_handTrackers;
 extern XrSessionState g_sessionState;
 extern std::deque<XrSessionState> g_pendingSessionEvents;
@@ -171,6 +171,7 @@ XrPosef normalize_pose(XrPosef pose);
 XrPosef multiply_pose(const XrPosef& a, const XrPosef& b);
 XrPosef inverse_pose(const XrPosef& pose);
 XrPosef world_pose_for_space(const SpaceRecord& record, const axrb::protocol::PoseFrame& poseFrame);
+axrb::protocol::PoseFrame pose_frame_at(XrTime time);
 XrTime monotonic_time_ns();
 #if defined(__ANDROID__) || defined(AXRB_INPUT_FIXTURE)
 XrResult XRAPI_CALL xrConvertTimespecTimeToTimeKHR_impl(XrInstance instance, const timespec* source, XrTime* time);

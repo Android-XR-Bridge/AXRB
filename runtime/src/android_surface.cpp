@@ -223,10 +223,72 @@ bool AndroidSurface::initialize(PoseClient& client, uint32_t width, uint32_t hei
     __android_log_print(ANDROID_LOG_INFO, "AXRB.Surface", "GPU SurfaceTexture %ux%u ready", width, height);
     return e.clean() && glGetError() == GL_NO_ERROR;
 }
+bool AndroidSurface::initialize_direct(PoseClient& client, uint32_t width, uint32_t height) {
+    vm_ = client.java_vm();
+    width_ = width;
+    height_ = height;
+    Env e(vm_);
+    if (!e.env)
+        return false;
+    if (e.env->PushLocalFrame(16) < 0)
+        return false;
+    // Real ART uses an AOSP Surface subclass with a software Canvas producer.
+    // The older managed Direct runtime exposes readFrame on Surface itself.
+    jclass hostSurface = e.env->FindClass("com/axrb/runtime/HostSurface");
+    if (hostSurface) {
+        auto constructor = e.env->GetMethodID(hostSurface, "<init>", "(II)V");
+        read_ = e.env->GetMethodID(hostSurface, "readFrame", "(JIIJ)J");
+        jobject surface = constructor && read_ ? e.env->NewObject(hostSurface, constructor,
+            static_cast<jint>(width), static_cast<jint>(height)) : nullptr;
+        if (e.clean() && surface) surface_ = e.env->NewGlobalRef(surface);
+        e.env->PopLocalFrame(nullptr);
+        direct_ = surface_ != nullptr;
+        return direct_;
+    }
+    if (e.env->ExceptionCheck()) e.env->ExceptionClear();
+    jclass tc = e.env->FindClass("android/graphics/SurfaceTexture");
+    jclass sc = tc ? e.env->FindClass("android/view/Surface") : nullptr;
+    if (!e.clean() || !tc || !sc) { e.env->PopLocalFrame(nullptr); return false; }
+    auto textureConstructor = e.env->GetMethodID(tc, "<init>", "(I)V");
+    auto size = e.env->GetMethodID(tc, "setDefaultBufferSize", "(II)V");
+    auto surfaceConstructor = e.env->GetMethodID(sc, "<init>", "(Landroid/graphics/SurfaceTexture;)V");
+    read_ = e.env->GetMethodID(sc, "readFrame", "(JIIJ)J");
+    if (!e.clean() || !textureConstructor || !size || !surfaceConstructor || !read_) {
+        e.env->PopLocalFrame(nullptr);
+        return false;
+    }
+    jobject texture = e.env->NewObject(tc, textureConstructor, static_cast<jint>(0));
+    if (e.clean() && texture)
+        e.env->CallVoidMethod(texture, size, static_cast<jint>(width), static_cast<jint>(height));
+    jobject surface = e.clean() && texture ? e.env->NewObject(sc, surfaceConstructor, texture) : nullptr;
+    if (e.clean() && surface) {
+        texture_ = e.env->NewGlobalRef(texture);
+        surface_ = e.env->NewGlobalRef(surface);
+    }
+    e.env->PopLocalFrame(nullptr);
+    if (!surface_)
+        return false;
+    direct_ = true;
+    __android_log_print(ANDROID_LOG_INFO, "AXRB.Surface", "CPU Surface %ux%u ready", width, height);
+    return true;
+}
 bool AndroidSurface::update() {
     Env e(vm_);
     if (!e.env)
         return false;
+    if (direct_) {
+        if (!target_)
+            return true;
+        const jlong serial = e.env->CallLongMethod(surface_, read_, static_cast<jlong>(reinterpret_cast<uintptr_t>(target_)),
+                                                   static_cast<jint>(width_), static_cast<jint>(height_), serial_);
+        if (!e.clean())
+            return false;
+        if (serial != serial_) {
+            serial_ = serial;
+            dirty_ = true;
+        }
+        return true;
+    }
     const bool available = e.env->CallBooleanMethod(signal_, consume_);
     if (!e.clean()) return false;
     if (!available) return true;

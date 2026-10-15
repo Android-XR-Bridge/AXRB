@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical">
+  <LinearLayout android:id="@+id/topPanel" android:layout_width="match_parent" android:layout_height="wrap_content"
+      android:orientation="horizontal" android:gravity="center_vertical"
+      android:paddingStart="?attr/dialogPreferredPadding" android:paddingEnd="?attr/dialogPreferredPadding" android:paddingTop="18dp">
+    <ImageView android:id="@android:id/icon" android:layout_width="32dip" android:layout_height="32dip"
+        android:layout_marginEnd="8dip" android:scaleType="fitCenter" android:visibility="gone" />
+    <TextView android:id="@+id/alertTitle" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:singleLine="true" android:ellipsize="end" android:textAppearance="@style/TextAppearance.Material.DialogWindowTitle" />
+  </LinearLayout>
+  <FrameLayout android:id="@+id/contentPanel" android:layout_width="match_parent" android:layout_height="wrap_content">
+    <ScrollView android:id="@+id/scrollView" android:layout_width="match_parent" android:layout_height="wrap_content">
+      <TextView android:id="@android:id/message" android:layout_width="match_parent" android:layout_height="wrap_content"
+          android:paddingStart="?attr/dialogPreferredPadding" android:paddingEnd="?attr/dialogPreferredPadding"
+          android:paddingTop="16dp" android:paddingBottom="8dp" android:textAppearance="@style/TextAppearance.Material.Subhead"
+          android:textColor="?attr/textColorSecondary" />
+    </ScrollView>
+  </FrameLayout>
+  <FrameLayout android:id="@android:id/custom" android:layout_width="match_parent" android:layout_height="wrap_content" />
+  <LinearLayout android:id="@+id/buttonPanel" android:layout_width="match_parent" android:layout_height="wrap_content"
+      android:orientation="horizontal" android:gravity="end" android:paddingStart="12dp" android:paddingEnd="12dp"
+      android:paddingTop="4dp" android:paddingBottom="4dp">
+    <Button android:id="@android:id/button3" style="?attr/buttonBarButtonStyle" android:layout_width="wrap_content" android:layout_height="wrap_content" />
+    <Space android:layout_width="0dp" android:layout_height="0dp" android:layout_weight="1" />
+    <Button android:id="@android:id/button2" style="?attr/buttonBarButtonStyle" android:layout_width="wrap_content" android:layout_height="wrap_content" />
+    <Button android:id="@android:id/button1" style="?attr/buttonBarButtonStyle" android:layout_width="wrap_content" android:layout_height="wrap_content" />
+  </LinearLayout>
+</LinearLayout>

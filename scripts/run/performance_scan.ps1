@@ -26,7 +26,8 @@ param(
     [ValidateRange(3, 60)][int]$Seconds = 10,
     [ValidatePattern('^$|^[a-zA-Z0-9_.]+$')][string]$Package = '',
     [string]$Version = '',
-    [string]$OutFile = ''
+    [string]$OutFile = '',
+    [switch]$DisableEmulator
 )
 # See run_windows_game.ps1 for why these are set here rather than by the caller.
 $ErrorActionPreference = 'Stop'
@@ -72,6 +73,7 @@ $serial = "emulator-$Port"
 # Every guest read is bounded: a guest that is wedged is exactly the case this
 # script is meant to describe, so it must not hang on one.
 function Invoke-Adb([string[]]$Arguments, [int]$TimeoutMs = 15000) {
+    if ($DisableEmulator) { return @{ Code = -1; Text = ''; Error = 'Emulator disabled in this build' } }
     if (!(Test-Path -LiteralPath $adb)) { return @{ Code = -1; Text = ''; Error = 'adb not found' } }
     $info = New-Object System.Diagnostics.ProcessStartInfo
     $info.FileName = $adb

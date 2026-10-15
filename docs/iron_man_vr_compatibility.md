@@ -35,3 +35,13 @@ Quest identity must be configured separately before game startup. This project p
 The controller flag is opt-in and scoped to `persist.sys.axrb.legacy.controllers_only.com.camouflaj.salmon`; other titles keep their advertised hand tracking extensions. This portable packaging needs a fresh headset confirmation before promoting this draft as a general compatibility claim.
 
 The helper selects the project's normal local ADB server (AXRB 5038, Refract 5037). Pass `-AdbServerPort` if your guest uses another local server. The identity helper backs up guest build properties before changing them and addresses emulator serials only. It requires a writable, root-capable Android guest. Stop the game before installing packages or changing policy.
+
+## Direct mode
+
+Direct mode applies the same compatibility without the emulator, scripts or a root-capable guest. The launcher's compatibility profile for Iron Man VR (`launcher/core/game-compatibility.json`, version code 443305) turns on three per-game runtime options:
+
+- `legacyOculusDriver`: the session offers `com.oculus.systemdriver` as an installed package. Its APK (`out/direct/guest/axrb-systemdriver.apk`, staged by `scripts/build/build_direct.ps1`) supplies `DriverLoader` and the adapter library, and the session's own `libopenxr_runtime.so` is loaded through it. Such a game runs its unmodified store APK; it does not need an OVRPort patch.
+- `questIdentity`: the session reports manufacturer `Oculus`, brand `oculus` and model `Quest 3`. Other games keep the default identity.
+- `controllersOnly`: sets `persist.sys.axrb.legacy.controllers_only.<package>` for the session. The adapter reads it under the game's process name, which it now takes from `Application.getProcessName()` because a direct-mode command line is `app_process64`.
+
+`direct/tools/test_legacy_driver.py` builds a probe app that loads the runtime the way older Oculus loaders do and checks the identity and controller policy in a direct session. It passes; Iron Man VR itself has not been run in direct mode yet. The Meta Platform initialization package is still a separate prerequisite there.

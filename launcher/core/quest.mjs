@@ -4,8 +4,9 @@ import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { run, validPackage } from './runtime.mjs';
-import { archivePath } from './archive.mjs';
-import { checkSpace, safeName } from './download.mjs';
+import { archivePath, extractZip } from './archive.mjs';
+import { checkSpace, downloadFile, safeName } from './download.mjs';
+import { exists, officialDownload, verify } from './setup.mjs';
 import { inspectGameFolder, shellQuote } from './game-files.mjs';
 
 export function parseDevices(output) {
@@ -15,9 +16,50 @@ export function parseDevices(output) {
   });
 }
 
+// Direct-mode setup installs no Android SDK. Talking to a Quest only needs
+// adb, so Google's platform tools are fetched (checksum-verified) on first use.
+const pending = new Map();
+export function ensurePlatformTools(sdk, component, { download = downloadFile } = {}) {
+  const destination = path.join(sdk, component.destination);
+  const key = path.resolve(destination).toLowerCase();
+  if (!pending.has(key)) {
+    pending.set(key, (async () => {
+      if (await exists(path.join(destination, component.probe))) return;
+      const cache = path.join(path.dirname(sdk), 'downloads'), archive = path.join(cache, `${component.id}.zip`);
+      const staging = path.join(cache, `${component.id}-extract`);
+      // Room for the archive and its extraction; no Android storage reserve for a small tool.
+      await checkSpace(path.dirname(sdk), component.size * 4, { reserve: 0 });
+      if (!await verify(archive, component)) {
+        await fs.rm(archive, { force: true });
+        await download({ ...component, destination: archive, validate: officialDownload });
+        if (!await verify(archive, component)) throw new Error(`${component.name}: the download does not match its checksum.`);
+      }
+      await fs.rm(staging, { recursive: true, force: true });
+      try {
+        await extractZip(archive, staging);
+        const source = path.join(staging, component.prefix);
+        if (!await exists(path.join(source, component.probe))) throw new Error(`${component.name}: expected files are missing.`);
+        await fs.mkdir(path.dirname(destination), { recursive: true });
+        await fs.rm(destination, { recursive: true, force: true });
+        await fs.rename(source, destination);
+        await fs.writeFile(path.join(destination, '.axrb-component.json'), JSON.stringify({ digest: component.sha256 }));
+      } finally {
+        await fs.rm(staging, { recursive: true, force: true });
+        await fs.rm(archive, { force: true });
+      }
+    })().catch(error => { throw new Error(`Could not set up adb for Quest transfers: ${error.message}`, { cause: error }); })
+      .finally(() => pending.delete(key)));
+  }
+  return pending.get(key);
+}
+
 export class Quest {
-  constructor(settings, execute = run) { this.settings = settings; this.execute = execute; }
-  adb(args, options) { return this.execute(path.join(this.settings.sdk, 'platform-tools/adb.exe'), args, options); }
+  // prepare: makes adb available before its first use (see ensurePlatformTools).
+  constructor(settings, execute = run, { prepare = async () => {} } = {}) { Object.assign(this, { settings, execute, prepare }); }
+  async adb(args, options) {
+    await this.prepare();
+    return this.execute(path.join(this.settings.sdk, 'platform-tools/adb.exe'), args, options);
+  }
   device(serial, args, options) {
     if (typeof serial !== 'string' || !/^[A-Za-z0-9._:[\]-]+$/.test(serial) || serial.startsWith('-') || serial.startsWith('emulator-')) throw new Error('Invalid Quest device.');
     return this.adb(['-s', serial, ...args], options);

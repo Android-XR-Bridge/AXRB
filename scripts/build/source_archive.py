@@ -7,11 +7,11 @@ import zipfile
 
 root = Path(__file__).resolve().parents[2]
 version = json.loads((root / 'launcher/package.json').read_text())['version']
-output = root / f'out/releases/AXRB-{version}-source.zip'
+output = root / f'out/releases/AXRB-Emulatorless-{version}-source.zip'
 excluded = {'node_modules', 'out', 'dist', '__pycache__', '.git', '.local', 'meta-session.txt', 'meta-session.bin'}
 files = []
 with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
-    for directory in ('launcher', 'host', 'runtime', 'protocol', 'scripts', 'tests', 'modules', 'licenses', 'tools/translator', '.github'):
+    for directory in ('launcher', 'host', 'runtime', 'direct', 'protocol', 'scripts', 'tests', 'modules', 'licenses', 'tools/translator', '.github'):
         for file in (root / directory).rglob('*'):
             if file.is_file() and not excluded.intersection(file.relative_to(root).parts) and file.suffix not in ('.pyc', '.apk', '.so', '.keystore', '.jks', '.log'):
                 files.append((file, file.relative_to(root).as_posix()))
@@ -38,7 +38,7 @@ def sha256(file):
 # Both modes share this source ZIP. Refresh every available package's manifest
 # only after the archive is closed, including the mode not rebuilt this time.
 source_entry = f'{sha256(output)}  {output.name}\n'
-for name, suffix in ((f'AXRB-{version}.exe', ''), (f'AXRB-Portable-{version}.zip', '-portable'), (f'AXRB-Setup-{version}.exe', '-setup')):
+for name, suffix in ((f'AXRB-Emulatorless-{version}.exe', ''), (f'AXRB-Emulatorless-Portable-{version}.zip', '-portable'), (f'AXRB-Emulatorless-Setup-{version}.exe', '-setup')):
     package = output.parent / name
     manifest = output.parent / f'SHA256SUMS-{version}{suffix}.txt'
     if package.is_file():

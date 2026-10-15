@@ -1,0 +1,12 @@
+diff --git a/src/dynarmic/backend/x64/a64_interface.cpp b/src/dynarmic/backend/x64/a64_interface.cpp
+--- a/src/dynarmic/backend/x64/a64_interface.cpp
++++ b/src/dynarmic/backend/x64/a64_interface.cpp
+@@ -276,7 +276,7 @@
+         // JIT Compile
+         const auto get_code = [this](u64 vaddr) { return conf.callbacks->MemoryReadCode(vaddr); };
+         IR::Block ir_block = A64::Translate(A64::LocationDescriptor{current_location}, get_code,
+-                                            {conf.define_unpredictable_behaviour, conf.wall_clock_cntpct});
++                                            {conf.define_unpredictable_behaviour, conf.wall_clock_cntpct, conf.hook_hint_instructions});
+         Optimization::PolyfillPass(ir_block, polyfill_options);
+         Optimization::A64CallbackConfigPass(ir_block, conf);
+         Optimization::NamingPass(ir_block);

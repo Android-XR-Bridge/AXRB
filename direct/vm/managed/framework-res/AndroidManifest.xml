@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Framework resource package of the runtime (package id 0x01, name "android"). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="android" />

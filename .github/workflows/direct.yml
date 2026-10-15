@@ -1,0 +1,88 @@
+name: Direct mode
+# Builds AXRB Direct (the emulator-free runner) whenever it or what it embeds
+# changes; releases build it as part of the launcher setup (release.yml).
+on:
+  push:
+    paths: ['direct/**', 'runtime/**', 'protocol/**', 'scripts/build/build_direct.ps1', 'scripts/build/direct_deps.ps1',
+            'scripts/run/run_direct_game.ps1', '.github/workflows/direct.yml']
+  pull_request:
+    paths: ['direct/**', 'runtime/**', 'protocol/**', 'scripts/build/build_direct.ps1', 'scripts/build/direct_deps.ps1',
+            'scripts/run/run_direct_game.ps1', '.github/workflows/direct.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: direct-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+      - name: Install Android build dependencies
+        shell: pwsh
+        run: |
+          sdkmanager 'platforms;android-29' 'platforms;android-36' 'build-tools;36.1.0' 'build-tools;35.0.0' 'ndk;29.0.14206865' 'cmake;3.22.1'
+          if ($LASTEXITCODE -ne 0) { throw 'Android SDK installation failed' }
+          $target = Join-Path $env:LOCALAPPDATA 'Android/Sdk'
+          if (!(Test-Path -LiteralPath $target)) {
+            New-Item -ItemType Directory -Force (Split-Path $target) | Out-Null
+            New-Item -ItemType Junction -Path $target -Target $env:ANDROID_HOME | Out-Null
+          }
+      - uses: actions/cache@v4
+        with:
+          path: out/deps
+          key: direct-deps-${{ hashFiles('scripts/build/direct_deps.ps1', 'scripts/build/build_direct.ps1', 'direct/tools/make_sysroot.py') }}
+      - name: Build the arm64 OpenXR runtime
+        shell: powershell
+        run: ./runtime/apk/build_apk.ps1 -Abi arm64-v8a
+      - name: Build direct mode
+        shell: powershell
+        run: ./scripts/build/build_direct.ps1
+      - name: Check native time conversions and translators
+        shell: powershell
+        run: |
+          cmake --build out/distribution/build-direct --config Release --target axrb-time-math-test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir out/distribution/build-direct -C Release --output-on-failure
+          exit $LASTEXITCODE
+      - name: Check the system root builder
+        run: python -m unittest discover -s direct/tests -p test_art_session.py
+      - name: Build and test the experimental native x64 boundary
+        shell: powershell
+        run: |
+          cmake -S direct/x64 -B out/native-x64 -G "Visual Studio 17 2022" -A x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build out/native-x64 --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir out/native-x64 -C Release --output-on-failure
+          exit $LASTEXITCODE
+      - name: Exercise real ART, JNI, Binder and AOSP framework
+        shell: powershell
+        run: |
+          python direct/tools/test_art.py --runner out/direct/axrb-direct.exe --sysroot out/deps/aosp-36-r02-art --work out/art-tests --ndk "$env:LOCALAPPDATA/Android/Sdk/ndk/29.0.14206865" --build-tools "$env:LOCALAPPDATA/Android/Sdk/build-tools/35.0.0" --framework
+          exit $LASTEXITCODE
+      - name: Exercise Digitalis with real Android probes
+        shell: powershell
+        run: |
+          $env:AXRB_DIRECT_TRANSLATOR = 'digitalis'
+          python direct/tools/test_art.py --runner out/direct/axrb-direct.exe --sysroot out/deps/aosp-36-r02-art --work out/art-tests-digitalis --ndk "$env:LOCALAPPDATA/Android/Sdk/ndk/29.0.14206865" --build-tools "$env:LOCALAPPDATA/Android/Sdk/build-tools/35.0.0" --framework
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: axrb-direct-${{ github.sha }}
+          if-no-files-found: error
+          path: out/direct/

@@ -81,6 +81,9 @@ export function diagnosticSources(dataHome) {
     ['guest-vulkan.json', path.join(emulator, 'guest-vulkan.json')],
     ['host.log', path.join(game, 'host.log')],
     ['host.err', path.join(game, 'host.err')],
+    ['direct.log', path.join(game, 'direct.log')],
+    ['direct.out', path.join(game, 'direct.out')],
+    ['direct.err', path.join(game, 'direct.err')],
     ['session.json', path.join(game, 'session.json')],
   ];
 }
@@ -106,6 +109,12 @@ export function describeSessionEnd(record, code) {
   }
   if (record.hostProcessLost) return { outcome: 'host crash', detail: 'The AXRB host window closed unexpectedly (crash or forced stop).' };
   if (record.closeRequested) return { outcome: 'user stop', detail: null };
+  // Direct processes report their own status even when the PowerShell session
+  // wrapper exits successfully. A nonzero guest status is not a normal Quit.
+  if (record.backend === 'direct' && Number.isInteger(exit.status) && exit.status !== 0) {
+    return { outcome: `direct exit ${exit.status}${reason}`,
+      detail: `The game exited with an error in Direct mode (exit code ${exit.status})${reason}.` };
+  }
   if (exit.kind === 'exited') return { outcome: `game quit${reason}`, detail: null };
   return { outcome: code ? `exit ${code}` : 'stopped', detail: null };
 }

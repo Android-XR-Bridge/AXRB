@@ -1,5 +1,7 @@
 #include "runtime_internal.h"
 #include "frame_wait_budget.h"
+#include <deque>
+#include <mutex>
 
 namespace axrb::runtime::detail {
 
@@ -56,6 +58,47 @@ bool pacing_trace_enabled() {
 #endif
     }();
     return enabled;
+}
+
+// How long after xrWaitFrame returns the game submits that frame. Engines
+// pipeline frames (wait N+1 precedes end N): each xrBeginFrame takes the
+// oldest wait, and xrEndFrame ends the most recently begun frame. A frame
+// begun again without an end was discarded and is not sampled.
+class SubmitLatency {
+public:
+    void waited(XrTime now) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        waits_.push_back(now);
+        if (waits_.size() > 4) waits_.pop_front();
+    }
+    void began() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        began_ = waits_.empty() ? 0 : waits_.front();
+        if (!waits_.empty()) waits_.pop_front();
+    }
+    void submitted(XrTime now) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const XrTime sample = began_ ? now - began_ : 0;
+        began_ = 0;
+        if (sample <= 0 || sample > 250'000'000) return;
+        average_ = average_ ? average_ + (sample - average_) / 8 : sample;
+    }
+    XrTime average() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return average_;
+    }
+private:
+    std::mutex mutex_;
+    std::deque<XrTime> waits_;
+    XrTime began_ = 0, average_ = 0;
+};
+SubmitLatency g_submitLatency;
+
+// When a frame the game starts now reaches the display: its submit latency
+// plus the host's display lead. Controllers are predicted to this time, so
+// it must not be the next frame start. Older hosts (no lead) report zero.
+XrTime displayed_after(const axrb::protocol::PoseFrame& frame, XrTime now) {
+    return frame.display_lead_ns ? now + g_submitLatency.average() + frame.display_lead_ns : 0;
 }
 
 // Diagnostic only: no pacing policy change. Stop after 24 five-second windows.
@@ -157,7 +200,8 @@ XrResult XRAPI_CALL xrWaitFrame_impl(
             lastSequence = frame.sequence;
             lastNewPose = now;
             g_nextFrameStart = now + framePeriod;
-            previousPrediction = std::max(previousPrediction + 1, g_nextFrameStart);
+            previousPrediction = std::max({previousPrediction + 1, g_nextFrameStart, displayed_after(frame, now)});
+            g_submitLatency.waited(now);
             frameState->predictedDisplayTime = previousPrediction;
             frameState->predictedDisplayPeriod = framePeriod;
             frameState->shouldRender = 1;
@@ -168,7 +212,8 @@ XrResult XRAPI_CALL xrWaitFrame_impl(
     // Pace at the active host display period. Default resets after one late
     // period. Optional recovery tolerates at most two additional late periods,
     // still resetting after long stalls instead of accumulating unbounded debt.
-    const XrTime period = axrb::protocol::display_period_or_default(pose_client().latest_pose_frame());
+    const auto poseFrame = pose_client().latest_pose_frame();
+    const XrTime period = axrb::protocol::display_period_or_default(poseFrame);
     const bool tracePacing = pacing_trace_enabled();
     const uint32_t spinUs = pacing_spin_us();
     const uint32_t catchupPeriods = pacing_catchup_periods();
@@ -203,8 +248,9 @@ XrResult XRAPI_CALL xrWaitFrame_impl(
     g_nextFrameStart += period;
     if (oldDeadline == 0) previousPrediction = 0;
     XrTime prediction = pacing_predicted_display(g_nextFrameStart, now, period, catchupPeriods);
-    prediction = std::max(prediction, previousPrediction + 1);
+    prediction = std::max({prediction, previousPrediction + 1, displayed_after(poseFrame, now)});
     previousPrediction = prediction;
+    g_submitLatency.waited(now);
     frameState->predictedDisplayTime = prediction;
     frameState->predictedDisplayPeriod = period;
     frameState->shouldRender = 1;
@@ -228,6 +274,7 @@ XrResult XRAPI_CALL xrBeginFrame_impl(XrSession session, const XrFrameBeginInfo*
     if (frameBeginInfo != nullptr && frameBeginInfo->type != XR_TYPE_FRAME_BEGIN_INFO) {
         return XR_ERROR_VALIDATION_FAILURE;
     }
+    g_submitLatency.began();
     return XR_SUCCESS;
 }
 
@@ -245,7 +292,55 @@ XrResult XRAPI_CALL xrEndFrame_impl(XrSession session, const XrFrameEndInfo* fra
     if (g_sessionState != XR_SESSION_STATE_FOCUSED) {
         return XR_ERROR_SESSION_NOT_RUNNING;
     }
-    return submit_projection_frame(*frameEndInfo);
+    g_submitLatency.submitted(monotonic_time_ns());
+    // A frame the bridge cannot deliver is dropped, as a compositor would do.
+    // OVRPlugin exits the game on any xrEndFrame runtime failure; the cause
+    // is logged under AXRB.Frame and later frames may recover (export fallback).
+    auto submit = [](const XrFrameEndInfo& info) {
+        const XrResult result = submit_projection_frame(info);
+        return result == XR_ERROR_RUNTIME_FAILURE ? XR_SUCCESS : result;
+    };
+    // Applications keep submitting a layer whose swapchain could not be
+    // created (OVRPlugin's Android-surface layer without EGL): leave it out
+    // rather than failing the whole frame.
+    auto null_swapchain = [](const void* item) {
+        const auto* layer = static_cast<const XrCompositionLayerBaseHeader*>(item);
+        if (!layer) return false;
+        switch (layer->type) {
+            case XR_TYPE_COMPOSITION_LAYER_PROJECTION: {
+                const auto* p = reinterpret_cast<const XrCompositionLayerProjection*>(layer);
+                for (uint32_t v = 0; p->views && v < p->viewCount; ++v)
+                    if (p->views[v].subImage.swapchain == nullptr) return true;
+                return false;
+            }
+            case XR_TYPE_COMPOSITION_LAYER_QUAD:
+                return reinterpret_cast<const XrCompositionLayerQuad*>(layer)->subImage.swapchain == nullptr;
+            case XR_TYPE_COMPOSITION_LAYER_EQUIRECT2_KHR:
+                return reinterpret_cast<const XrCompositionLayerEquirect2KHR*>(layer)->subImage.swapchain == nullptr;
+            default:
+                return false;
+        }
+    };
+    if (frameEndInfo->layers) {
+        uint32_t dropped = 0;
+        for (uint32_t i = 0; i < frameEndInfo->layerCount; ++i) dropped += null_swapchain(frameEndInfo->layers[i]) ? 1 : 0;
+        if (dropped) {
+            static uint32_t reports = 0;
+#if defined(__ANDROID__)
+            if (reports++ < 4)
+                __android_log_print(ANDROID_LOG_WARN, "AXRB.Layer", "dropping %u of %u layers without a swapchain", dropped, frameEndInfo->layerCount);
+#endif
+            std::vector<const void*> kept;
+            for (uint32_t i = 0; i < frameEndInfo->layerCount; ++i)
+                if (!null_swapchain(frameEndInfo->layers[i])) kept.push_back(frameEndInfo->layers[i]);
+            if (kept.empty()) return XR_SUCCESS;
+            XrFrameEndInfo filtered = *frameEndInfo;
+            filtered.layerCount = static_cast<uint32_t>(kept.size());
+            filtered.layers = kept.data();
+            return submit(filtered);
+        }
+    }
+    return submit(*frameEndInfo);
 }
 
 XrResult XRAPI_CALL xrEnumerateDisplayRefreshRatesFB_impl(XrSession session, uint32_t capacity, uint32_t* count, float* rates) {

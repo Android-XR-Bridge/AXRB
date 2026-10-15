@@ -1,0 +1,41 @@
+diff --git a/src/dynarmic/backend/x64/emit_x64_floating_point.cpp b/src/dynarmic/backend/x64/emit_x64_floating_point.cpp
+--- a/src/dynarmic/backend/x64/emit_x64_floating_point.cpp
++++ b/src/dynarmic/backend/x64/emit_x64_floating_point.cpp
+@@ -1074,14 +1074,18 @@
+     const bool exact = inst->GetArg(2).GetU1();
+     const auto round_imm = ConvertRoundingModeToX64Immediate(rounding_mode);
+ 
+-    if (fsize != 16 && code.HasHostFeature(HostFeature::SSE41) && round_imm && !exact) {
++    if (fsize != 16 && code.HasHostFeature(HostFeature::SSE41) && round_imm) {
++        // AXRB: FRINTX (exact) is the same rounding with the inexact exception
++        // reported, which the host instruction does unless bit 3 suppresses it.
++        // It was a call into the software implementation for every value.
++        const u8 imm = static_cast<u8>(*round_imm | (exact ? 0 : 0b1000));
+         if (fsize == 64) {
+             FPTwoOp<64>(code, ctx, inst, [&](Xbyak::Xmm result) {
+-                code.roundsd(result, result, *round_imm);
++                code.roundsd(result, result, imm);
+             });
+         } else {
+             FPTwoOp<32>(code, ctx, inst, [&](Xbyak::Xmm result) {
+-                code.roundss(result, result, *round_imm);
++                code.roundss(result, result, imm);
+             });
+         }
+ 
+diff --git a/src/dynarmic/backend/x64/emit_x64_vector_floating_point.cpp b/src/dynarmic/backend/x64/emit_x64_vector_floating_point.cpp
+--- a/src/dynarmic/backend/x64/emit_x64_vector_floating_point.cpp
++++ b/src/dynarmic/backend/x64/emit_x64_vector_floating_point.cpp
+@@ -1684,8 +1684,10 @@
+     const bool exact = inst->GetArg(2).GetU1();
+ 
+     if constexpr (fsize != 16) {
+-        if (code.HasHostFeature(HostFeature::SSE41) && rounding != FP::RoundingMode::ToNearest_TieAwayFromZero && !exact) {
+-            const u8 round_imm = [&]() -> u8 {
++        if (code.HasHostFeature(HostFeature::SSE41) && rounding != FP::RoundingMode::ToNearest_TieAwayFromZero) {
++            // AXRB: also FRINTX (exact), which reports the inexact exception:
++            // the host instruction does unless bit 3 suppresses it.
++            const u8 round_imm = (exact ? 0 : 0b1000) | [&]() -> u8 {
+                 switch (rounding) {
+                 case FP::RoundingMode::ToNearest_TieEven:
+                     return 0b00;

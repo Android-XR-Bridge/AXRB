@@ -59,7 +59,7 @@ export async function uiSmoke(window, directory, snapshot, errors) {
 
   await check(`Boolean(document.querySelector('#library-search'))`, 'Library did not load');
   await diagnosticsSmoke(window);
-  await check(`Array.from(document.querySelectorAll('button')).some(b => b.textContent === 'Install ZIP')`, 'ZIP install action missing');
+  await check(`Array.from(document.querySelectorAll('button')).some(b => ['Install ZIP', 'Import ZIP'].includes(b.textContent))`, 'ZIP install action missing');
   wc.send('axrb:changed', { ...snapshot(), busy: false, games: [
     { id: 'local:com.export.one', name: 'Export fixture one', apk: 'fixture-one.apk' },
     { id: 'local:com.export.two', name: 'Export fixture two', apk: 'fixture-two.apk' },
@@ -90,12 +90,22 @@ export async function uiSmoke(window, directory, snapshot, errors) {
   await capture('ai-help');
   await click('[data-nav="settings"]');
   await check(`Boolean(document.querySelector('#settings-form'))`, 'Settings did not render');
+  await check(`document.querySelector('#directTranslator')?.value === 'dynarmic'`, 'Default ARM64 translator missing');
+  await js(`{
+    const selector = document.querySelector('#directTranslator');
+    selector.value = 'digitalis'; selector.dispatchEvent(new Event('change', { bubbles: true }));
+  }`);
+  await check(`document.querySelector('#directTranslator')?.value === 'digitalis'`, 'Digitalis selection did not update');
   await input('#downloadDir', 'C:\\AXRB UI draft');
   wc.send('axrb:changed', snapshot());
   await tick();
   await check(`document.querySelector('#downloadDir').value === 'C:\\\\AXRB UI draft'`, 'State updates erased settings draft');
-  await click('[data-runtime-settings] summary');
-  await check(`document.querySelector('[data-runtime-settings]').open`, 'Runtime settings did not expand');
+  if (snapshot().build?.emulatorEnabled !== false) {
+    await click('[data-runtime-settings] summary');
+    await check(`document.querySelector('[data-runtime-settings]').open`, 'Runtime settings did not expand');
+  } else {
+    await check(`Boolean(document.querySelector('[data-emulatorless]')) && !document.querySelector('[data-runtime-settings], [data-direct-only]')`, 'Emulator controls exposed in Emulatorless settings');
+  }
   const originalHud = await js(`document.querySelector('#fps-hud').checked`);
   await click('#fps-hud');
   await check(`document.querySelector('#fps-hud').checked !== ${originalHud}`, 'FPS HUD toggle did not update');
@@ -158,9 +168,21 @@ export async function uiSmoke(window, directory, snapshot, errors) {
   await capture('store-small');
   wc.send('axrb:launch-error', 'Game launch test failed');
   await check(`document.querySelector('[role="alert"]')?.textContent.includes('Game launch test failed')`, 'Launch failure was not shown');
+  if (snapshot().build?.emulatorEnabled === false) {
+    wc.send('axrb:changed', { ...snapshot(), setup: { phase: 'install', directory: 'C:\\AXRB-Emulatorless Runtime', emulatorDisabled: true, directOnly: true } });
+    await check(`Boolean(document.querySelector('[aria-label="Direct runtime setup"]'))`, 'Direct onboarding missing');
+    await check(`!document.body.textContent.includes('Hypervisor') && !document.querySelector('[data-setup-skip-button]')`, 'Emulator setup leaked into Direct onboarding');
+    await check(`Array.from(document.querySelectorAll('button')).find(b => b.textContent === 'Continue')?.disabled`, 'Direct setup requires license');
+    await click('input[type="checkbox"]');
+    await check(`!Array.from(document.querySelectorAll('button')).find(b => b.textContent === 'Continue')?.disabled`, 'Direct license did not enable continue');
+    await capture('setup-emulatorless');
+  }
   const setup = { phase: 'hypervisor', directory: 'C:\\AXRB Runtime', active: false };
   wc.send('axrb:changed', { ...snapshot(), setup });
   await check(`document.body.textContent.includes('Enable Windows Hypervisor Platform')`, 'Virtualization instructions missing');
+  await check(`document.querySelector('[data-setup-skip-button]')?.disabled`, 'Skipping the emulator did not require license acceptance');
+  await click('#skip-license');
+  await check(`!document.querySelector('[data-setup-skip-button]')?.disabled`, 'License acceptance did not enable direct mode');
   await capture('setup-hypervisor');
   setup.phase = 'install';
   wc.send('axrb:changed', { ...snapshot(), setup });
@@ -168,6 +190,7 @@ export async function uiSmoke(window, directory, snapshot, errors) {
   await check(`document.querySelector('[data-setup-start]')?.disabled`, 'Setup did not require license acceptance');
   await click('#setup-license');
   await check(`!document.querySelector('[data-setup-start]')?.disabled`, 'License acceptance did not enable setup');
+  await check(`!document.querySelector('[data-setup-skip-button]')?.disabled && !document.querySelector('#skip-license')`, 'Setup and direct mode ask for the license separately');
   await check(`Boolean(document.querySelector('[data-setup-archives] button'))`, 'New setup does not offer downloaded archives');
   await capture('setup-install');
   setup.current = { directory: 'C:\\Previous AXRB\\AXRB Runtime', storageGB: 64 };

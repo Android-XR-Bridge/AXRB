@@ -32,6 +32,20 @@ axrb::protocol::SpaceVelocity world_velocity(const SpaceRecord& record, const ax
 }
 }
 
+// The latest host poses with controllers advanced to `time`. The host
+// predicted them for its own display time, which passes while the game is
+// still rendering; without this, controllers trail by the game's frame time.
+axrb::protocol::PoseFrame pose_frame_at(XrTime time)
+{
+    auto frame = pose_client().latest_pose_frame();
+    if (frame.display_lead_ns && frame.monotonic_time_ns) {
+        const XrTime from = static_cast<XrTime>(frame.monotonic_time_ns) + frame.display_lead_ns;
+        const XrTime ahead = std::min<XrTime>(time - from, 80'000'000);
+        if (ahead > 0) axrb::protocol::predict_controllers(frame, static_cast<float>(ahead) / 1e9f);
+    }
+    return frame;
+}
+
 XrResult XRAPI_CALL xrEnumerateReferenceSpaces_impl(
     XrSession session,
     uint32_t spaceCapacityInput,
@@ -162,13 +176,12 @@ XrResult XRAPI_CALL xrLocateSpace_impl(
     if (location == nullptr || location->type != XR_TYPE_SPACE_LOCATION) {
         return XR_ERROR_VALIDATION_FAILURE;
     }
-    (void)time;
     location->locationFlags =
         XR_SPACE_LOCATION_ORIENTATION_VALID_BIT |
         XR_SPACE_LOCATION_POSITION_VALID_BIT |
         XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT |
         XR_SPACE_LOCATION_POSITION_TRACKED_BIT;
-    const axrb::protocol::PoseFrame& poseFrame = pose_client().latest_pose_frame();
+    const axrb::protocol::PoseFrame poseFrame = pose_frame_at(time);
     auto tracking_flags = [&](const SpaceRecord& record) -> XrSpaceLocationFlags {
         if (poseFrame.version >= 5 && record.kind == SpaceKind::Local) return poseFrame.local_origin_flags;
         if (poseFrame.version >= 5 && record.kind == SpaceKind::View) return poseFrame.hmd_flags;

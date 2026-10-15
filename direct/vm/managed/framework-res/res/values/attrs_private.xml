@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Attributes private to the runtime's framework package. They get ids after the
+  public range, so applications never reference them.
+-->
+<resources>
+  <attr name="colorSwitchThumbNormal" format="color|reference" />
+</resources>
