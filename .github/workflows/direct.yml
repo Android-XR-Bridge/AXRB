@@ -61,6 +61,13 @@ jobs:
           exit $LASTEXITCODE
       - name: Check the system root builder
         run: python -m unittest discover -s direct/tests -p test_art_session.py
+      - name: Check explicit companion APK staging and patch probes
+        shell: powershell
+        run: |
+          python -m unittest discover -s direct/tests -p test_companion_apks.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./direct/tests/patch_probe.ps1
+          exit $LASTEXITCODE
       - name: Build and test the experimental native x64 boundary
         shell: powershell
         run: |
@@ -74,6 +81,11 @@ jobs:
         shell: powershell
         run: |
           python direct/tools/test_art.py --runner out/direct/axrb-direct.exe --sysroot out/deps/aosp-36-r02-art --work out/art-tests --ndk "$env:LOCALAPPDATA/Android/Sdk/ndk/29.0.14206865" --build-tools "$env:LOCALAPPDATA/Android/Sdk/build-tools/35.0.0" --framework
+          exit $LASTEXITCODE
+      - name: Exercise explicit companion package contexts and code loading
+        shell: powershell
+        run: |
+          python direct/tools/test_companion_apks.py --direct out/direct --sysroot out/deps/aosp-36-r02-art --work out/companion-apk-probe --android-jar "$env:LOCALAPPDATA/Android/Sdk/platforms/android-36/android.jar" --build-tools "$env:LOCALAPPDATA/Android/Sdk/build-tools/35.0.0"
           exit $LASTEXITCODE
       - name: Exercise Digitalis with real Android probes
         shell: powershell
