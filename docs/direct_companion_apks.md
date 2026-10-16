@@ -1,0 +1,13 @@
+# Explicit companion APKs for Direct sessions
+
+Some Android games load initialization code from a separately supplied package. Direct sessions normally expose only the game and the legacy Oculus driver. This opt-in support mounts supplied companion APKs and their ARM64 libraries read-only, registers their package metadata, and permits package contexts and Java code loading. No third-party package is bundled, no ownership state is changed, and no remote account service is provided.
+
+Use `run_direct_game.ps1 -CompanionApk <APK>` for script launches, or set `AXRB_DIRECT_COMPANION_APKS_JSON` in the launcher's process environment to a JSON object mapping a game package to an array of local companion APK paths. Unlisted games receive no companions. Direct's Python preparation also accepts repeated `--companion-apk` arguments.
+
+At most eight distinct companion APKs are accepted. The game and the legacy driver cannot also be companions. Each APK has its own native-library directory; conflicting Android package identities are rejected before starting the game activity. Libraries use the existing checked ZIP extraction and cache invalidation. Sources are not modified. Only supplied companion metadata is exposed; this does not start companion services or implement a full Android package/service manager. Exported companion activities are exposed for MAIN discovery for legacy initialization loaders.
+
+Validation: eight Python staging regressions pass, including real ZIP extraction, isolated native libraries, read-only mounts, duplicate inputs, missing files and the companion limit. The complete AOSP bootstrap and both companion probe APKs compile. The Windows PowerShell patch-probe regression and both backend-specific launcher UI smoke suites pass.
+
+The Windows CI run for code revision `5b44206` passed the native build, translator checks, real ART/JNI/Binder/framework probes, companion package context/code-loading probe, and Digitalis framework probes. Its exact payload was downloaded, checked against GitHub's artifact digest, checked for matching driver/runtime libraries, and exercised locally. Both the companion package probe and the legacy Oculus loader probe pass locally. The separately supplied Platform initialization package also loads its Java entry point and ARM64 library in a real Direct session. No third-party package or ownership policy is included in this contribution.
+
+Iron Man itself has not been launched in the headset with this build. Startup paths and prepared content are not a claim of playable game compatibility or improved performance. Keep the contribution as a draft until that game/headset validation is complete.

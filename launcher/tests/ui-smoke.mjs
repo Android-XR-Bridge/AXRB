@@ -169,7 +169,7 @@ export async function uiSmoke(window, directory, snapshot, errors) {
   wc.send('axrb:launch-error', 'Game launch test failed');
   await check(`document.querySelector('[role="alert"]')?.textContent.includes('Game launch test failed')`, 'Launch failure was not shown');
   if (snapshot().build?.emulatorEnabled === false) {
-    wc.send('axrb:changed', { ...snapshot(), setup: { phase: 'install', directory: 'C:\\AXRB-Emulatorless Runtime', emulatorDisabled: true, directOnly: true } });
+    wc.send('axrb:changed', { ...snapshot(), setup: { phase: 'install', directory: 'C:\\AXRB-Emulatorless Runtime', downloadDirectory: 'C:\\AXRB-Downloads', emulatorDisabled: true, directOnly: true } });
     await check(`Boolean(document.querySelector('[aria-label="Direct runtime setup"]'))`, 'Direct onboarding missing');
     await check(`!document.body.textContent.includes('Hypervisor') && !document.querySelector('[data-setup-skip-button]')`, 'Emulator setup leaked into Direct onboarding');
     await check(`Array.from(document.querySelectorAll('button')).find(b => b.textContent === 'Continue')?.disabled`, 'Direct setup requires license');
@@ -177,6 +177,7 @@ export async function uiSmoke(window, directory, snapshot, errors) {
     await check(`!Array.from(document.querySelectorAll('button')).find(b => b.textContent === 'Continue')?.disabled`, 'Direct license did not enable continue');
     await capture('setup-emulatorless');
   }
+  if (snapshot().build?.emulatorEnabled !== false) {
   const setup = { phase: 'hypervisor', directory: 'C:\\AXRB Runtime', active: false };
   wc.send('axrb:changed', { ...snapshot(), setup });
   await check(`document.body.textContent.includes('Enable Windows Hypervisor Platform')`, 'Virtualization instructions missing');
@@ -234,6 +235,7 @@ export async function uiSmoke(window, directory, snapshot, errors) {
   await js(`document.querySelector('[data-setup-start]').scrollIntoView({ block: 'center' })`);
   await check(`(() => { const box = document.querySelector('[data-setup-start]').getBoundingClientRect(); return box.top >= 0 && box.bottom <= window.innerHeight; })()`, 'Setup action is unreachable at minimum window size');
   await capture('setup-small');
+  }
   if (errors.length) throw new Error(`Renderer errors: ${errors.join('; ')}`);
   console.log(`AXRB React smoke passed: navigation, settings draft, ${count} local store fixture, library add/filter, dialog/menu keyboard focus, download progress, 920px layout`);
   } finally { QuestStore.prototype.search = originalSearch; }

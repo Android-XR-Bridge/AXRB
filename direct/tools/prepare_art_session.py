@@ -76,7 +76,7 @@ LEGACY_DRIVER_ROOT = '/data/app/com.oculus.systemdriver-axrb'
 
 def prepare(*, apk, activity, sysroot, data, bootstrap, native, proxies,
             runtime=None, assets=None, check_jni=False, diagnostics=False,
-            legacy_oculus_driver=None, quest_identity=False, controllers_only=False):
+            legacy_oculus_driver=None, quest_identity=False, controllers_only=False, companion_apks=None):
     apk, bootstrap = required(apk), required(bootstrap)
     sysroot, data = Path(sysroot).resolve(), Path(data).resolve()
     native, proxies = Path(native), Path(proxies)
@@ -131,6 +131,21 @@ def prepare(*, apk, activity, sysroot, data, bootstrap, native, proxies,
         # The session's runtime, like the game's, even if the APK carries another build.
         mount(LEGACY_DRIVER_ROOT + '/lib/arm64/libopenxr_runtime.so', runtime or proxies / 'libopenxr_runtime.so')
         args.extend(['--prop', 'ro.axrb.legacy_oculus_driver=' + LEGACY_DRIVER_ROOT + '/base.apk'])
+    companions = [required(path) for path in (companion_apks or [])]
+    if len(companions) > 8:
+        raise ValueError('At most eight companion APKs are supported')
+    if len(set(companions)) != len(companions) or apk in companions or (legacy_oculus_driver and Path(legacy_oculus_driver).resolve() in companions):
+        raise ValueError('Companion APKs must be distinct from each other, the game and the legacy driver')
+    companion_paths = []
+    for index, companion in enumerate(companions):
+        guest = f'/data/app/axrb-companion-{index}'
+        mount(guest + '/base.apk', companion)
+        mount(guest + '/lib/arm64', stage_libraries(companion, data), True)
+        companion_paths.append(guest + '/base.apk')
+    if companion_paths:
+        args.extend(['--prop', 'ro.axrb.companion_count=' + str(len(companion_paths))])
+        for index, path in enumerate(companion_paths):
+            args.extend(['--prop', f'ro.axrb.companion_apk.{index}=' + path])
     if controllers_only:
         if not legacy_oculus_driver:
             raise ValueError('The controller-only policy is applied by the legacy Oculus driver')
@@ -167,6 +182,7 @@ def main():
     parser.add_argument('--legacy-oculus-driver', type=Path)
     parser.add_argument('--quest-identity', action='store_true')
     parser.add_argument('--controllers-only', action='store_true')
+    parser.add_argument('--companion-apk', dest='companion_apks', type=Path, action='append')
     parser.add_argument('--diagnostics', action='store_true')
     print(json.dumps(prepare(**vars(parser.parse_args())), ensure_ascii=True))
 

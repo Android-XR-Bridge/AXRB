@@ -12,6 +12,7 @@ final class HostPackageManager implements HostServices.Call {
     PackageInfo installed;
     /** com.oculus.systemdriver for older Oculus loaders, when the session offers it. */
     PackageInfo legacyDriver;
+    private final java.util.Map<String, PackageInfo> companions = new java.util.LinkedHashMap<>();
     String launcherActivity;
     final java.util.Map<String, android.content.pm.ProviderInfo> providers = new java.util.HashMap<>();
     private final java.util.List<android.content.pm.FeatureInfo> features = new java.util.ArrayList<>();
@@ -43,18 +44,33 @@ final class HostPackageManager implements HostServices.Call {
     private boolean known(Object value) { return installed != null && installed.packageName.equals(value); }
     private PackageInfo lookup(Object value) {
         if (known(value)) return installed;
-        return legacyDriver != null && legacyDriver.packageName.equals(value) ? legacyDriver : null;
+        if (legacyDriver != null && legacyDriver.packageName.equals(value)) return legacyDriver;
+        return companions.get(value);
     }
     private java.util.List<PackageInfo> all() {
         java.util.List<PackageInfo> result = new java.util.ArrayList<>();
         if (installed != null) result.add(installed);
         if (legacyDriver != null) result.add(legacyDriver);
+        result.addAll(companions.values());
         return result;
     }
     /** Registers the adapter APK mounted at path as an installed system package. */
     void offerLegacyDriver(android.content.Context context, String path) {
-        PackageInfo info = context.getPackageManager().getPackageArchiveInfo(path, 0);
-        if (info == null) throw new IllegalArgumentException("Cannot parse legacy Oculus driver " + path);
+        legacyDriver = parsePackage(context, path);
+    }
+    void offerCompanion(android.content.Context context, String path) {
+        PackageInfo info = parsePackage(context, path);
+        if (lookup(info.packageName) != null) throw new IllegalArgumentException("Duplicate companion package " + info.packageName);
+        companions.put(info.packageName, info);
+    }
+    void installGame(PackageInfo info) {
+        if (lookup(info.packageName) != null) throw new IllegalArgumentException("Companion package conflicts with game " + info.packageName);
+        installed = info;
+    }
+    private PackageInfo parsePackage(android.content.Context context, String path) {
+        PackageInfo info = context.getPackageManager().getPackageArchiveInfo(path,
+                PackageManager.GET_ACTIVITIES | PackageManager.GET_SERVICES | PackageManager.GET_RECEIVERS);
+        if (info == null) throw new IllegalArgumentException("Cannot parse supplied package " + path);
         ApplicationInfo app = info.applicationInfo;
         app.packageName = info.packageName;
         app.sourceDir = app.publicSourceDir = path;
@@ -68,7 +84,7 @@ final class HostPackageManager implements HostServices.Call {
             Reflect.set(app, "credentialProtectedDataDir", app.dataDir);
             Reflect.set(app, "primaryCpuAbi", "arm64-v8a");
         } catch (Exception error) { throw new IllegalStateException(error); }
-        legacyDriver = info;
+        return info;
     }
     public Object invoke(Method method, Object[] args) throws Throwable {
         switch (method.getName()) {
@@ -76,25 +92,27 @@ final class HostPackageManager implements HostServices.Call {
             case "queryIntentActivities": {
                 android.content.Intent intent = (android.content.Intent) args[0];
                 java.util.List<android.content.pm.ResolveInfo> matches = new java.util.ArrayList<>();
-                if (installed != null && installed.activities != null) for (android.content.pm.ActivityInfo activity : installed.activities) {
-                    boolean explicit = intent.getComponent() != null && intent.getComponent().getPackageName().equals(installed.packageName)
+                for (PackageInfo info : all()) if (info.activities != null) for (android.content.pm.ActivityInfo activity : info.activities) {
+                    boolean explicit = intent.getComponent() != null && intent.getComponent().getPackageName().equals(info.packageName)
                             && intent.getComponent().getClassName().equals(activity.name);
-                    boolean launcher = android.content.Intent.ACTION_MAIN.equals(intent.getAction()) && activity.name.equals(launcherActivity)
-                            && (intent.getPackage() == null || intent.getPackage().equals(installed.packageName));
+                    boolean launcher = android.content.Intent.ACTION_MAIN.equals(intent.getAction()) && (info == installed ? activity.name.equals(launcherActivity) : activity.exported)
+                            && (intent.getPackage() == null || intent.getPackage().equals(info.packageName));
                     if (explicit || launcher) { android.content.pm.ResolveInfo result = new android.content.pm.ResolveInfo(); result.activityInfo = activity; matches.add(result); }
                 }
                 return Reflect.create("android.content.pm.ParceledListSlice", matches);
             }
             case "getActivityInfo": case "getReceiverInfo": {
                 android.content.ComponentName component = (android.content.ComponentName) args[0];
-                android.content.pm.ActivityInfo[] entries = installed == null ? null : method.getName().equals("getActivityInfo") ? installed.activities : installed.receivers;
+                PackageInfo info = lookup(component.getPackageName());
+                android.content.pm.ActivityInfo[] entries = info == null ? null : method.getName().equals("getActivityInfo") ? info.activities : info.receivers;
                 if (entries != null) for (android.content.pm.ActivityInfo entry : entries)
                     if (entry.packageName.equals(component.getPackageName()) && entry.name.equals(component.getClassName())) return entry;
                 return null;
             }
             case "getServiceInfo": {
                 android.content.ComponentName component = (android.content.ComponentName) args[0];
-                if (installed != null && installed.services != null) for (android.content.pm.ServiceInfo entry : installed.services)
+                PackageInfo info = lookup(component.getPackageName());
+                if (info != null && info.services != null) for (android.content.pm.ServiceInfo entry : info.services)
                     if (entry.packageName.equals(component.getPackageName()) && entry.name.equals(component.getClassName())) return entry;
                 return null;
             }

@@ -17,6 +17,18 @@ function Run([string]$Exe, [string[]]$Arguments) {
     if ($LASTEXITCODE -ne 0) { throw "$Exe $($Arguments -join ' ') failed ($LASTEXITCODE)" }
 }
 
+# Reverse-check failure means the patch has not been applied yet. Windows
+# PowerShell 5 turns native stderr into a terminating error under Stop, so
+# handle that expected nonzero probe separately from the real apply operation.
+function Test-AxrbPatchApplied([string]$Repository, [string]$Patch) {
+    $savedPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & git -C $Repository apply --reverse --check --ignore-whitespace $Patch 2>$null
+        return $LASTEXITCODE -eq 0
+    } finally { $ErrorActionPreference = $savedPreference }
+}
+
 $thirdParty = Join-Path $AxrbRoot 'third_party'
 New-Item -ItemType Directory -Force $thirdParty | Out-Null
 
@@ -32,8 +44,7 @@ if ((& git -C $digitalis rev-parse HEAD).Trim() -ne $digitalisCommit) {
     throw "third_party/digitalis must be at $digitalisCommit."
 }
 foreach ($patch in Get-ChildItem -LiteralPath (Join-Path $AxrbRoot 'direct/patches') -Filter 'digitalis-*.patch' | Sort-Object Name) {
-    & git -C $digitalis apply --reverse --check --ignore-whitespace $patch.FullName 2>$null
-    if ($LASTEXITCODE -eq 0) { continue }  # already applied
+    if (Test-AxrbPatchApplied $digitalis $patch.FullName) { continue }  # already applied
     Run git @('-C', $digitalis, 'apply', '--ignore-whitespace', $patch.FullName)
     Write-Output "Applied $($patch.Name)"
 }
@@ -47,8 +58,7 @@ if (!(Test-Path -LiteralPath (Join-Path $dynarmic '.git'))) {
 $head = (& git -C $dynarmic rev-parse HEAD).Trim()
 if ($head -ne $dynarmicCommit) { throw "third_party/dynarmic is at $head; AXRB Direct needs $dynarmicCommit." }
 foreach ($patch in Get-ChildItem -LiteralPath (Join-Path $AxrbRoot 'direct/patches') -Filter 'dynarmic-*.patch' | Sort-Object Name) {
-    & git -C $dynarmic apply --reverse --check --ignore-whitespace $patch.FullName 2>$null
-    if ($LASTEXITCODE -eq 0) { continue }  # already applied
+    if (Test-AxrbPatchApplied $dynarmic $patch.FullName) { continue }  # already applied
     Run git @('-C', $dynarmic, 'apply', '--ignore-whitespace', $patch.FullName)
     Write-Output "Applied $($patch.Name)"
 }

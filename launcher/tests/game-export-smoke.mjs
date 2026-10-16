@@ -48,8 +48,9 @@ export async function gameExportSmoke(window, { state, runtime, dialog, persist 
     const installed = [];
     runtime.install = async game => { installed.push(game.package); assert.ok((await fs.stat(game.apk)).isFile()); };
     await waitJob(await invoke('importZip'));
-    assert.deepEqual(installed, games.map(game => game.package));
-    for (const game of games) assert.equal(state.data.games.find(item => item.package === game.package)?.installed, true);
+    const emulatorEnabled = runtime.emulatorEnabled !== false;
+    assert.deepEqual(installed, emulatorEnabled ? games.map(game => game.package) : []);
+    for (const game of games) assert.equal(state.data.games.find(item => item.package === game.package)?.installed, emulatorEnabled);
     console.log('AXRB game export smoke passed: two games exported and reimported through production IPC.');
   } finally {
     dialog.showSaveDialog = original.save; dialog.showOpenDialog = original.open;
