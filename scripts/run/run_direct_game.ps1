@@ -15,6 +15,7 @@ param(
     [switch]$LegacyOculusDriver,
     [switch]$QuestIdentity,
     [switch]$ControllersOnly,
+    [string[]]$CompanionApk = @(),
     [ValidatePattern('^Local\\AXRB\.FpsHud\.[a-f0-9]{32}$')][string]$FpsHudEventName,
     [ValidatePattern('^[a-f0-9]{8}$')][string]$SessionId
 )
@@ -51,6 +52,13 @@ if ($AssetList) { $prepare += @('--assets', $AssetList) }
 if ($LegacyOculusDriver) { $prepare += @('--legacy-oculus-driver', (Join-Path $directDirectory 'guest/axrb-systemdriver.apk')) }
 if ($QuestIdentity) { $prepare += '--quest-identity' }
 if ($ControllersOnly) { $prepare += '--controllers-only' }
+if (!$PSBoundParameters.ContainsKey('CompanionApk') -and $env:AXRB_DIRECT_COMPANION_APKS_JSON) {
+    $map = $env:AXRB_DIRECT_COMPANION_APKS_JSON | ConvertFrom-Json
+    $property = $map.PSObject.Properties[$Package]
+    if ($property) { $CompanionApk = @($property.Value) }
+}
+foreach ($companion in $CompanionApk) { $prepare += @('--companion-apk', $companion) }
+
 $prepared = & $python @prepare
 if ($LASTEXITCODE -ne 0) { throw 'Preparing the AOSP application failed. See the error above.' }
 $arguments = $prepared | ConvertFrom-Json

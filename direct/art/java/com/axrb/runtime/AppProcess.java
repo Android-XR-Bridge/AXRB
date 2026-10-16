@@ -127,6 +127,15 @@ public final class AppProcess {
                 services.packages.offerLegacyDriver((Context) context, legacyDriver);
                 System.out.println("AXRB_AOSP_LEGACY_DRIVER " + legacyDriver);
             }
+            Class<?> properties = Class.forName("android.os.SystemProperties");
+            String countText = (String) Reflect.call(properties, "get", "ro.axrb.companion_count");
+            int companionCount = countText.isEmpty() ? 0 : Integer.parseInt(countText);
+            if (companionCount < 0 || companionCount > 8) throw new IllegalArgumentException("Invalid companion package count");
+            for (int i = 0; i < companionCount; ++i) {
+                String path = (String) Reflect.call(properties, "get", "ro.axrb.companion_apk." + i);
+                services.packages.offerCompanion((Context) context, path);
+                System.out.println("AXRB_AOSP_COMPANION " + path);
+            }
             Object configuration = Reflect.field(thread, "mConfigurationController");
             Configuration initial = new Configuration(((Context) context).getResources().getConfiguration());
             initial.densityDpi = 320;
@@ -142,7 +151,7 @@ public final class AppProcess {
                         PackageManager.GET_ACTIVITIES | PackageManager.GET_SERVICES |
                         PackageManager.GET_PROVIDERS | PackageManager.GET_META_DATA | PackageManager.GET_PERMISSIONS);
                 if (info == null) throw new IllegalArgumentException("Cannot parse APK " + args[0]);
-                services.packages.installed = info;
+                services.packages.installGame(info);
                 if (args.length > 1) services.packages.launcherActivity = args[1];
                 System.out.println("AXRB_AOSP_PACKAGE " + info.packageName);
                 if (args.length > 1) launch(thread, info, args);
