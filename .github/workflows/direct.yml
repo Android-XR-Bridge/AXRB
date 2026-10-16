@@ -37,6 +37,7 @@ jobs:
         run: |
           sdkmanager 'platforms;android-29' 'platforms;android-36' 'build-tools;36.1.0' 'build-tools;35.0.0' 'ndk;29.0.14206865' 'cmake;3.22.1'
           if ($LASTEXITCODE -ne 0) { throw 'Android SDK installation failed' }
+          "ANDROID_NDK_HOME=$env:ANDROID_HOME/ndk/29.0.14206865" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $target = Join-Path $env:LOCALAPPDATA 'Android/Sdk'
           if (!(Test-Path -LiteralPath $target)) {
             New-Item -ItemType Directory -Force (Split-Path $target) | Out-Null
@@ -48,10 +49,10 @@ jobs:
           key: direct-deps-${{ hashFiles('scripts/build/direct_deps.ps1', 'scripts/build/build_direct.ps1', 'direct/tools/make_sysroot.py') }}
       - name: Build the arm64 OpenXR runtime
         shell: powershell
-        run: ./runtime/apk/build_apk.ps1 -Abi arm64-v8a
+        run: ./runtime/apk/build_apk.ps1 -Abi arm64-v8a -Sdk "$env:ANDROID_HOME" -NdkVersion 29.0.14206865
       - name: Build direct mode
         shell: powershell
-        run: ./scripts/build/build_direct.ps1
+        run: ./scripts/build/build_direct.ps1 -Sdk "$env:ANDROID_HOME"
       - name: Check native time conversions and translators
         shell: powershell
         run: |
@@ -71,7 +72,7 @@ jobs:
       - name: Build and test the experimental native x64 boundary
         shell: powershell
         run: |
-          cmake -S direct/x64 -B out/native-x64 -G "Visual Studio 17 2022" -A x64
+          cmake -S direct/x64 -B out/native-x64 -G "Visual Studio 17 2022" -A x64 "-DAXRB_NDK=$env:ANDROID_NDK_HOME"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build out/native-x64 --config Release --parallel
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -80,18 +81,18 @@ jobs:
       - name: Exercise real ART, JNI, Binder and AOSP framework
         shell: powershell
         run: |
-          python direct/tools/test_art.py --runner out/direct/axrb-direct.exe --sysroot out/deps/aosp-36-r02-art --work out/art-tests --ndk "$env:LOCALAPPDATA/Android/Sdk/ndk/29.0.14206865" --build-tools "$env:LOCALAPPDATA/Android/Sdk/build-tools/35.0.0" --framework
+          python direct/tools/test_art.py --runner out/direct/axrb-direct.exe --sysroot out/deps/aosp-36-r02-art --work out/art-tests --ndk "$env:ANDROID_HOME/ndk/29.0.14206865" --build-tools "$env:ANDROID_HOME/build-tools/35.0.0" --framework
           exit $LASTEXITCODE
       - name: Exercise explicit companion package contexts and code loading
         shell: powershell
         run: |
-          python direct/tools/test_companion_apks.py --direct out/direct --sysroot out/deps/aosp-36-r02-art --work out/companion-apk-probe --android-jar "$env:LOCALAPPDATA/Android/Sdk/platforms/android-36/android.jar" --build-tools "$env:LOCALAPPDATA/Android/Sdk/build-tools/35.0.0"
+          python direct/tools/test_companion_apks.py --direct out/direct --sysroot out/deps/aosp-36-r02-art --work out/companion-apk-probe --android-jar "$env:ANDROID_HOME/platforms/android-36/android.jar" --build-tools "$env:ANDROID_HOME/build-tools/35.0.0"
           exit $LASTEXITCODE
       - name: Exercise Digitalis with real Android probes
         shell: powershell
         run: |
           $env:AXRB_DIRECT_TRANSLATOR = 'digitalis'
-          python direct/tools/test_art.py --runner out/direct/axrb-direct.exe --sysroot out/deps/aosp-36-r02-art --work out/art-tests-digitalis --ndk "$env:LOCALAPPDATA/Android/Sdk/ndk/29.0.14206865" --build-tools "$env:LOCALAPPDATA/Android/Sdk/build-tools/35.0.0" --framework
+          python direct/tools/test_art.py --runner out/direct/axrb-direct.exe --sysroot out/deps/aosp-36-r02-art --work out/art-tests-digitalis --ndk "$env:ANDROID_HOME/ndk/29.0.14206865" --build-tools "$env:ANDROID_HOME/build-tools/35.0.0" --framework
           exit $LASTEXITCODE
       - uses: actions/upload-artifact@v4
         with:
